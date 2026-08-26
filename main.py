@@ -35,7 +35,7 @@ def send_telegram_message(message):
 
 def is_allowed_trading_time():
     """Kontrola obchodných hodín pre hlavné seansy (Londýn / New York)"""
-    now = datetime.utcnow()
+    now = datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()
     hour = now.hour
     if 8 <= hour < 20:
         return True
@@ -104,7 +104,7 @@ async def manage_positions(connection):
         print("Chyba pri manažmente pozícií:", e)
 
 async def check_strategy_and_trade(metaapi, connection):
-    """Obchodná logika: Engulfing formácia na M5 cez historické dáta"""
+    """Obchodná logika: Engulfing formácia na M5 cez Client API"""
     global last_processed_candle_time
     try:
         if not is_allowed_trading_time():
@@ -115,11 +115,12 @@ async def check_strategy_and_trade(metaapi, connection):
         if any(p['symbol'] == SYMBOL for p in positions):
             return
 
-        # Stiahneme historické sviečky cez správne MetaApi rozhranie
-        now = datetime.utcnow()
+        # Stiahneme historické sviečky cez Client API
+        client_api = metaapi.get_client_api()
+        now = datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()
         start_time = now - timedelta(hours=2)
         
-        candles = await metaapi.metatrader_account_api.get_historical_candles(ACCOUNT_ID, SYMBOL, '5m', start_time)
+        candles = await client_api.get_historical_candles(ACCOUNT_ID, SYMBOL, '5m', start_time)
         
         if not candles or len(candles) < 3:
             return
