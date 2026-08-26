@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import urllib.request
 import urllib.parse
 from metaapi_cloud_sdk import MetaApi
@@ -17,8 +17,9 @@ SL_POINTS = 15.0
 TP_POINTS = 60.0         
 BE_TRIGGER = 10.0        
 
-# Sledovanie predtým otvorených pozícií
+# Sledovanie predtým otvorených pozícií a poslednej spracovanej sviečky
 previous_positions = {}
+last_processed_candle_time = None
 
 def send_telegram_message(message):
     """Odoslanie notifikácie cez Riobota do Telegramu"""
@@ -102,18 +103,96 @@ async def manage_positions(connection):
     except Exception as e:
         print("Chyba pri manažmente pozícií:", e)
 
-async def check_market(connection):
-    """Stabilné sledovanie trhu a cien"""
+async def check_strategy_and_trade(metaapi, connection):
+    """Obchodná logika: Engulfing formácia na M5 po zatvorení sviečky"""
+    global last_processed_candle_time
     try:
         if not is_allowed_trading_time():
             return
 
+        # Chceme iba 1 pozíciu naraz v trhu
+        positions = await connection.get_positions()
+        if any(p['symbol'] == SYMBOL for p in positions):
+            return
+
+        # Stiahnutie historických sviečok cez správne Client API rozhranie
+        client_api = metaapi.client_api
+        now = datetime.utcnow()
+        start_time = now - timedelta(hours=2)
+        
+        candles = await client_api.get_historical_candles(ACCOUNT_ID, SYMBOL, '5m', start_time)
+        
+        if not candles or len(candles) < 3:
+            return
+
+        # candles[-2] je už uzavretá sviečka, candles[-3] je predchádzajúca
+        prev_candle = candles[-3]
+        closed_candle = candles[-2]
+        candle_time = closed_candle['time']
+
+        # Ak sme túto sviečku už vyhodnocovali, nerobíme to znovu
+        if last_processed_candle_time == candle_time:
+            return
+
+        # Zistíme aktuálne ceny pre výpočet SL a TP
         price = await connection.get_symbol_price(SYMBOL)
-        if price:
-            print(f"Trh aktívny - {SYMBOL} Bid: {price.get('bid')}, Ask: {price.get('ask')}")
+        if not price:
+            return
+        bid = price.get('bid')
+        ask = price.get('ask')
+        if not bid or not ask:
+            return
+
+        # Definícia farieb sviečok
+        prev_is_bearish = prev_candle['close'] < prev_candle['open']
+        prev_is_bullish = prev_candle['close'] > prev_candle['open']
+        closed_is_bullish = closed_candle['close'] > closed_candle['open']
+        closed_is_bearish = closed_candle['close'] < closed_candle['open']
+
+        # 1. BÝČÍ ENGULFING (Signál na BUY)
+        is_bullish_engulfing = (
+            prev_is_bearish and 
+            closed_is_bullish and 
+            closed_candle['open'] <= prev_candle['close'] and 
+            closed_candle['close'] >= prev_candle['open']
+        )
+
+        # 2. MEDVEDÍ ENGULFING (Signál na SELL)
+        is_bearish_engulfing = (
+            prev_is_bullish and 
+            closed_is_bearish and 
+            closed_candle['open'] >= prev_candle['close'] and 
+            closed_candle['close'] <= prev_candle['open']
+        )
+
+        if is_bullish_engulfing:
+            last_processed_candle_time = candle_time
+            sl = round(ask - 1.50, 2)
+            tp = round(ask + 6.00, 2)
+            
+            print(f"Zistený Býčí Engulfing! Otváram BUY pozíciu na {SYMBOL}")
+            await connection.create_market_buy_order(
+                symbol=SYMBOL,
+                volume=LOT_SIZE,
+                stop_loss=sl,
+                take_profit=tp
+            )
+
+        elif is_bearish_engulfing:
+            last_processed_candle_time = candle_time
+            sl = round(bid + 1.50, 2)
+            tp = round(bid - 6.00, 2)
+            
+            print(f"Zistený Medvedí Engulfing! Otváram SELL pozíciu na {SYMBOL}")
+            await connection.create_market_sell_order(
+                symbol=SYMBOL,
+                volume=LOT_SIZE,
+                stop_loss=sl,
+                take_profit=tp
+            )
 
     except Exception as e:
-        print("Chyba pri kontrole trhu:", e)
+        print("Chyba v obchodnej logike:", e)
 
 async def main():
     print("Čakám 5 sekúnd pred inicializáciou...")
@@ -132,12 +211,12 @@ async def main():
     print("Pripájam sa k MetaApi serveru...")
     await connection.connect()
     await connection.wait_synchronized()
-    print("Úspešne pripojené a synchronizované. Bot beží bez chýb.")
+    print("Úspešne pripojené a synchronizované. Obchodný bot je pripravený.")
     
     while True:
         try:
             await manage_positions(connection)
-            await check_market(connection)
+            await check_strategy_and_trade(metaapi, connection)
         except Exception as loop_err:
             print("Chyba v hlavnej slučke:", loop_err)
             
