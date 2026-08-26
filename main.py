@@ -8,8 +8,8 @@ ACCOUNT_ID = os.getenv('METAPI_ACCOUNT_ID')
 SYMBOL = "XAUUSD"
 
 LOT_SIZE = 0.01          
-SL_USD = 15.0         # 15 dolárov vzdialenosť SL
-TP_USD = 30.0         # Zmenené TP na 30 dolárov
+SL_USD = 15.0         
+TP_USD = 30.0         
 BE_TRIGGER = 10.0        
 
 previous_positions = {}
@@ -47,7 +47,7 @@ async def manage_positions(connection):
                         'type': type_pos,
                         'openPrice': open_price
                     }
-                    print(f"Novy obchod otvoreny: {type_pos} za {open_price}")
+                    print(f"Sledujem aktivnu poziciu: {type_pos} za {open_price}")
 
                 if profit >= BE_TRIGGER:
                     if type_pos == 'POSITION_TYPE_BUY' and current_sl < open_price:
@@ -59,7 +59,7 @@ async def manage_positions(connection):
                         print("Break-Even aktivovany pre SELL")
                         
     except Exception as e:
-        print("Chyba pri sprave pozicii:", e)
+        print("Chyba pri sprave pozicii (ignorujem, idem dalej):", e)
 
 async def check_strategy_and_trade(connection):
     global last_price, price_momentum
@@ -108,35 +108,37 @@ async def check_strategy_and_trade(connection):
             await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=sl, take_profit=tp)
 
     except Exception as e:
-        print("Chyba v strategii:", e)
+        print("Chyba v strategii (ignorujem, idem dalej):", e)
 
 async def main():
-    print("Cakam 5 sekund...")
-    await asyncio.sleep(5)
-    
-    metaapi = MetaApi(TOKEN)
-    account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
-    connection = account.get_rpc_connection()
-    
-    try:
-        if connection.connected:
-            await connection.close()
-    except:
-        pass
-
-    print("Pripajam sa k MetaApi...")
-    await connection.connect()
-    await connection.wait_synchronized()
-    print("Bot bezi stabilne a bez chyb.")
+    print("Spustam bota...")
+    await asyncio.sleep(3)
     
     while True:
         try:
-            await manage_positions(connection)
-            await check_strategy_and_trade(connection)
-        except Exception as loop_err:
-            print("Chyba v slucke:", loop_err)
+            metaapi = MetaApi(TOKEN)
+            account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
+            connection = account.get_rpc_connection()
             
-        await asyncio.sleep(10)
+            try:
+                if connection.connected:
+                    await connection.close()
+            except:
+                pass
+
+            print("Pripajam sa k MetaApi...")
+            await connection.connect()
+            await connection.wait_synchronized()
+            print("Pripojene. Bot teraz bezi nepretrzite.")
+            
+            while True:
+                await manage_positions(connection)
+                await check_strategy_and_trade(connection)
+                await asyncio.sleep(10)
+                
+        except Exception as main_err:
+            print("Chyba v pripojeni, pokusim sa rekonektnut o 10 sekund:", main_err)
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())
