@@ -15,18 +15,18 @@ def check_open_positions():
 def analyze_and_trade():
     print("Sledujem trh: Demand zóny, Price Action a sviečkové formácie...")
     if check_open_positions():
-        print("Obchod už prebieha. Čakám...")
+        print("Obchod prebieha.")
         return
     
-    signal_detected = False
-    if signal_detected:
-        print("Signál potvrdený!")
+    signal = False
+    if signal:
+        print("Signál!")
 
 if __name__ == "__main__":
-    print("Bot pre XAUUSD úspešne naštartovaný v cloude.")
+    print("Bot beží.")
     while True:
         try:
             analyze_and_trade()
         except Exception as e:
-            print(f"Chyba: {e}")
+            print(e)
         time.sleep(60)
