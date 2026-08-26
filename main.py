@@ -1,8 +1,8 @@
 import time
 import requests
 
-TOKEN = "tvoj_token"
-ACCOUNT_ID = "tvoj_account_id"
+TOKEN = "r8oq06EiQdSG2bZ7gLuaQLNRdhkwgaxRuUNrQi3pgw"
+ACCOUNT_ID = "39ace2a7-8a53-420d-800f-35a9d9feadf2"
 SYMBOL = "XAUUSD"
 
 SL = 15
@@ -29,3 +29,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(e)
         time.sleep(60)
+
