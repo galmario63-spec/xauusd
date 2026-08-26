@@ -1,32 +1,31 @@
 import time
 import requests
 
-TOKEN = "tvoj_token"
-ACCOUNT_ID = "tvoj_account_id"
-SYMBOL = "XAUUSD"
+T = "tvoj_token"
+A = "tvoj_account_id"
+S = "XAUUSD"
 
-SL_PIPS = 15
-RR_RATIO = 4
-RISK_REWARD_PIPS = SL_PIPS * RR_RATIO
+SL = 15
+RR = 4
+TP = SL * RR
 
-def check_open_positions():
+def check_pos():
     return False
 
-def analyze_and_trade():
-    print("Sledujem trh: Demand zóny, Price Action a sviečkové formácie...")
-    if check_open_positions():
-        print("Obchod prebieha.")
+def run():
+    print("Market check...")
+    if check_pos():
+        print("Busy.")
         return
-    
-    signal = False
-    if signal:
-        print("Signál!")
+    sig = False
+    if sig:
+        print("Signal!")
 
 if __name__ == "__main__":
-    print("Bot beží.")
+    print("Bot active.")
     while True:
         try:
-            analyze_and_trade()
+            run()
         except Exception as e:
             print(e)
         time.sleep(60)
