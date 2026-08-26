@@ -103,8 +103,8 @@ async def manage_positions(connection):
     except Exception as e:
         print("Chyba pri manažmente pozícií:", e)
 
-async def check_strategy_and_trade(account, connection):
-    """Obchodná logika: Engulfing formácia na M5 cez Client API sviečky"""
+async def check_strategy_and_trade(metaapi, connection):
+    """Obchodná logika: Engulfing formácia na M5 cez historické dáta"""
     global last_processed_candle_time
     try:
         if not is_allowed_trading_time():
@@ -115,12 +115,11 @@ async def check_strategy_and_trade(account, connection):
         if any(p['symbol'] == SYMBOL for p in positions):
             return
 
-        # Stiahneme historické sviečky cez stabilné MetaApi Client API
-        client_api = account.get_client_api()
+        # Stiahneme historické sviečky cez správne MetaApi rozhranie
         now = datetime.utcnow()
         start_time = now - timedelta(hours=2)
         
-        candles = await client_api.get_historical_candles(ACCOUNT_ID, SYMBOL, '5m', start_time)
+        candles = await metaapi.metatrader_account_api.get_historical_candles(ACCOUNT_ID, SYMBOL, '5m', start_time)
         
         if not candles or len(candles) < 3:
             return
@@ -216,7 +215,7 @@ async def main():
     while True:
         try:
             await manage_positions(connection)
-            await check_strategy_and_trade(account, connection)
+            await check_strategy_and_trade(metaapi, connection)
         except Exception as loop_err:
             print("Chyba v hlavnej slučke:", loop_err)
             
