@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv('METAPI_TOKEN')
-# Správne DEMO účet ID vo formáte UUID
 ACCOUNT_ID = "39ace2a7-8a53-420d-800f-35a9d9feadf2"
 SYMBOL = "XAUUSD"
 
@@ -13,7 +12,8 @@ SL_USD = 15.0
 TP_1_USD = 30.0       
 TP_2_USD = 30.0       
 TP_3_USD = 30.0       
-BE_TRIGGER = 5.0      
+# Break-Even sa aktivuje, keď sa cena posunie v tvojom smere o 5.0 dolárov na grafe
+BE_TRIGGER_PRICE_DIFF = 5.0      
 
 previous_positions = {}
 last_price = None
@@ -40,11 +40,20 @@ async def manage_positions(connection):
         for pos in positions:
             if pos['symbol'] == SYMBOL:
                 pos_id = pos['id']
-                profit = pos.get('profit', 0)
                 open_price = pos['openPrice']
                 current_sl = pos.get('stopLoss', 0)
                 type_pos = pos['type']
                 
+                # Získame aktuálnu trhovú cenu pre kontrolu posunu
+                price = await connection.get_symbol_price(SYMBOL)
+                if not price:
+                    continue
+                
+                bid = price.get('bid')
+                ask = price.get('ask')
+                if not bid or not ask:
+                    continue
+
                 if pos_id not in previous_positions:
                     previous_positions[pos_id] = {
                         'type': type_pos,
@@ -52,14 +61,18 @@ async def manage_positions(connection):
                     }
                     print(f"[NOTIFIKÁCIA] 🔔 Sledujem novú pozíciu: {type_pos} za {open_price}")
 
-                if profit >= BE_TRIGGER:
-                    if type_pos == 'POSITION_TYPE_BUY' and current_sl != open_price:
+                # Kontrola Break-Even podľa cenového posunu (nie dolárového zisku)
+                if type_pos == 'POSITION_TYPE_BUY':
+                    current_profit_distance = bid - open_price
+                    if current_profit_distance >= BE_TRIGGER_PRICE_DIFF and current_sl != open_price:
                         await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
-                        print(f"[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre BUY na cene {open_price}")
+                        print(f"[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre BUY! Cena prešla +{current_profit_distance:.2f} USD, SL posunutý na vstup: {open_price}")
                         
-                    elif type_pos == 'POSITION_TYPE_SELL' and current_sl != open_price:
+                elif type_pos == 'POSITION_TYPE_SELL':
+                    current_profit_distance = open_price - ask
+                    if current_profit_distance >= BE_TRIGGER_PRICE_DIFF and current_sl != open_price:
                         await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
-                        print(f"[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre SELL na cene {open_price}")
+                        print(f"[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre SELL! Cena prešla +{current_profit_distance:.2f} USD, SL posunutý na vstup: {open_price}")
                         
     except Exception as e:
         print("Chyba pri správe pozícií:", e)
@@ -122,7 +135,7 @@ async def check_strategy_and_trade(connection):
         print("Chyba v stratégii:", e)
 
 async def main():
-    print("Spúšťam bota na DEMO účte...")
+    print("Spúšťam bota na DEMO účte (s cenovým Break-Even)...")
     await asyncio.sleep(3)
     
     while True:
@@ -140,7 +153,7 @@ async def main():
             print("Pripájam sa k MetaApi na DEMO...")
             await connection.connect()
             await connection.wait_synchronized()
-            print("[NOTIFIKÁCIA] ✅ Úspešne pripojené na DEMO účet!")
+            print("[NOTIFIKÁCIA] ✅ Úspešne pripojené na DEMO účte!")
             
             while True:
                 await manage_positions(connection)
