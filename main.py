@@ -1,71 +1,122 @@
 import asyncio
 import os
 from datetime import datetime
+import urllib.request
+import urllib.parse
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv('METAPI_TOKEN')
 ACCOUNT_ID = os.getenv('METAPI_ACCOUNT_ID')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 SYMBOL = "XAUUSD"
 
 # Parametre stratégie a rizika
-LOT_SIZE = 0.01          # Veľkosť pozície na test
-SL_POINTS = 15.0         # Počiatočný Stop Loss (-15 bodov)
-TP_POINTS = 60.0         # Take Profit pre pomer 4:1 (15 * 4 = 60 bodov)
-BE_TRIGGER = 10.0        # Keď je zisk +10 bodov, posunúť na Break-Even
+LOT_SIZE = 0.01          
+SL_POINTS = 15.0         
+TP_POINTS = 60.0         
+BE_TRIGGER = 10.0        
+
+# Sledovanie predtým otvorených pozícií na detekciu zatvorenia
+previous_positions = {}
+
+def send_telegram_message(message):
+    """Odoslanie notifikácie cez Riobota do Telegramu"""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        data = urllib.parse.urlencode({'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}).encode('utf-8')
+        req = urllib.request.Request(url, data=data)
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        print("Chyba pri odosielaní Telegram správy:", e)
 
 def is_allowed_trading_time():
     """Kontrola obchodných hodín pre hlavné seansy (Londýn / New York)"""
     now = datetime.utcnow()
     hour = now.hour
-    # Povoľujeme trading v čase najvyššej likvidity (cca 08:00 - 20:00 UTC)
     if 8 <= hour < 20:
         return True
     return False
 
 async def manage_positions(connection):
-    """Manažment otvorených pozícií: posun na BE pri +10 zisku a ochrana 4:1"""
+    """Manažment pozícií: Break-Even a detekcia zatvorených obchodov (TP / SL)"""
+    global previous_positions
     try:
         positions = await connection.get_positions()
+        current_pos_ids = {p['id'] for p in positions if p['symbol'] == SYMBOL}
+        
+        # 1. Kontrola zatvorených pozícií (ak nejaká bola predtým a teraz už nie je)
+        for pos_id, pos_info in list(previous_positions.items()):
+            if pos_id not in current_pos_ids:
+                # Pozícia sa uzavrela (mohła ísť do TP, SL alebo ručne)
+                msg = (
+                    f"🔴 **XAUUSD Obchod uzavretý**\n"
+                    f"Typ: {pos_info['type']}\n"
+                    f"Vstupná cena: {pos_info['openPrice']}\n"
+                    f"ℹ️ Pozícia bola ukončená v trhu."
+                )
+                send_telegram_message(msg)
+                del previous_positions[pos_id]
+
+        # 2. Spracovanie aktívnych pozícií
         for pos in positions:
             if pos['symbol'] == SYMBOL:
+                pos_id = pos['id']
                 profit = pos.get('profit', 0)
                 open_price = pos['openPrice']
                 current_sl = pos.get('stopLoss', 0)
                 type_pos = pos['type']
                 
-                # Ak zisk dosiahol +10 bodov, posunieme SL na Break-Even
+                # Uložíme do pamäte, ak ešte nie je
+                if pos_id not in previous_positions:
+                    previous_positions[pos_id] = {
+                        'type': type_pos,
+                        'openPrice': open_price
+                    }
+                    # Notifikácia o otvorení nového obchodu
+                    msg = (
+                        f"⚡ **XAUUSD Nový Obchod Otvorený** ⚡\n"
+                        f"Smer: {type_pos}\n"
+                        f"Cena: {open_price}\n"
+                        f"🛡️ SL: {current_sl} | 🎯 TP: {pos.get('takeProfit', 'N/A')}"
+                    )
+                    send_telegram_message(msg)
+
+                # Posun na Break-Even pri +10 bodoch zisku
                 if profit >= BE_TRIGGER:
                     if type_pos == 'POSITION_TYPE_BUY' and current_sl < open_price:
                         print(f"Dosiahnutý zisk {profit}. Posúvam BUY SL na Break-Even: {open_price}")
                         await connection.modify_position(
-                            position_id=pos['id'],
+                            position_id=pos_id,
                             stop_loss=open_price,
                             take_profit=pos.get('takeProfit')
                         )
+                        send_telegram_message(f"🛡️ **Break-Even aktivovaný**\nBUY SL posunutý na vstupnú cenu: {open_price}")
+                        
                     elif type_pos == 'POSITION_TYPE_SELL' and (current_sl > open_price or current_sl == 0):
                         print(f"Dosiahnutý zisk {profit}. Posúvam SELL SL na Break-Even: {open_price}")
                         await connection.modify_position(
-                            position_id=pos['id'],
+                            position_id=pos_id,
                             stop_loss=open_price,
                             take_profit=pos.get('takeProfit')
                         )
+                        send_telegram_message(f"🛡️ **Break-Even aktivovaný**\nSELL SL posunutý na vstupnú cenu: {open_price}")
+                        
     except Exception as e:
         print("Chyba pri manažmente pozícií:", e)
 
 async def check_strategy_and_trade(connection):
-    """Kompletná obchodná logika: seansy, Supply/Demand a Price Action vstupy"""
+    """Obchodná logika a kontrola seáns"""
     try:
-        # 1. Skontrolujeme, či prebieha povolená obchodná seansa
         if not is_allowed_trading_time():
-            print("Mimo povolených hodín seansy. Bot čaká na stabilné okno...")
             return
 
         positions = await connection.get_positions()
-        # Ak už máme otvorenú pozíciu na XAUUSD, nové neotvárame
         if any(p['symbol'] == SYMBOL for p in positions):
             return
 
-        # Získame aktuálnu cenu symbolu
         price = await connection.get_symbol_price(SYMBOL)
         if not price:
             return
@@ -76,32 +127,37 @@ async def check_strategy_and_trade(connection):
         if not bid or not ask:
             return
 
-        # --- HLAVNÁ STRATÉGIA (Supply/Demand & Price Action na M5) ---
-        # Bot momentálne vyhodnocuje trh v rámci aktívnej seansy.
-        # Všetky parametre pre risk management (4:1, SL 15, TP 60, BE 10) sú pripravené.
-        print(f"Seansa aktívna. XAUUSD Bid: {bid}, Ask: {ask}. Monitorujem M5 zóny...")
+        # Tu v budúcnosti doplníme presné sviečkové vstupy z M5 zóny.
 
     except Exception as e:
         print("Chyba v obchodnej logike:", e)
 
 async def main():
-    print("Kompletný XAUUSD bot štartuje cez MetaApi SDK...")
+    print("Čakám 5 sekúnd pred inicializáciou...")
+    await asyncio.sleep(5)
+    
     metaapi = MetaApi(TOKEN)
     account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
-    
     connection = account.get_rpc_connection()
+    
+    try:
+        if connection.connected:
+            await connection.close()
+    except:
+        pass
+
+    print("Pripájam sa k MetaApi serveru...")
     await connection.connect()
     await connection.wait_synchronized()
-    print("Úspešne pripojené. Všetky moduly (seansy, riadenie rizika, BE) sú aktívne.")
+    print("Úspešne pripojené a synchronizované. Riobot notifikácie sú pripravené.")
     
     while True:
-        # 1. Spravuj existujúce pozície (Break-Even / SL / TP)
-        await manage_positions(connection)
-        
-        # 2. Kontroluj trh a vyhľadávaj vstupy podľa stratégie
-        await check_strategy_and_trade(connection)
-        
-        # Pauza medzi kontrolami
+        try:
+            await manage_positions(connection)
+            await check_strategy_and_trade(connection)
+        except Exception as loop_err:
+            print("Chyba v hlavnej slučke:", loop_err)
+            
         await asyncio.sleep(15)
 
 if __name__ == "__main__":
