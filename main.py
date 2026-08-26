@@ -17,8 +17,9 @@ SL_POINTS = 15.0
 TP_POINTS = 60.0         
 BE_TRIGGER = 10.0        
 
-# Sledovanie predtým otvorených pozícií na detekciu zatvorenia
+# Sledovanie predtým otvorených pozícií a poslednej spracovanej sviečky
 previous_positions = {}
+last_processed_candle_time = None
 
 def send_telegram_message(message):
     """Odoslanie notifikácie cez Riobota do Telegramu"""
@@ -47,20 +48,19 @@ async def manage_positions(connection):
         positions = await connection.get_positions()
         current_pos_ids = {p['id'] for p in positions if p['symbol'] == SYMBOL}
         
-        # 1. Kontrola zatvorených pozícií (ak nejaká bola predtým a teraz už nie je)
+        # 1. Kontrola zatvorených pozícií (TP / SL / manuál)
         for pos_id, pos_info in list(previous_positions.items()):
             if pos_id not in current_pos_ids:
-                # Pozícia sa uzavrela (mohła ísť do TP, SL alebo ručne)
                 msg = (
                     f"🔴 **XAUUSD Obchod uzavretý**\n"
-                    f"Typ: {pos_info['type']}\n"
+                    f"Smer: {pos_info['type']}\n"
                     f"Vstupná cena: {pos_info['openPrice']}\n"
                     f"ℹ️ Pozícia bola ukončená v trhu."
                 )
                 send_telegram_message(msg)
                 del previous_positions[pos_id]
 
-        # 2. Spracovanie aktívnych pozícií
+        # 2. Spracovanie aktívnych pozícií (Break-Even)
         for pos in positions:
             if pos['symbol'] == SYMBOL:
                 pos_id = pos['id']
@@ -69,13 +69,11 @@ async def manage_positions(connection):
                 current_sl = pos.get('stopLoss', 0)
                 type_pos = pos['type']
                 
-                # Uložíme do pamäte, ak ešte nie je
                 if pos_id not in previous_positions:
                     previous_positions[pos_id] = {
                         'type': type_pos,
                         'openPrice': open_price
                     }
-                    # Notifikácia o otvorení nového obchodu
                     msg = (
                         f"⚡ **XAUUSD Nový Obchod Otvorený** ⚡\n"
                         f"Smer: {type_pos}\n"
@@ -87,7 +85,6 @@ async def manage_positions(connection):
                 # Posun na Break-Even pri +10 bodoch zisku
                 if profit >= BE_TRIGGER:
                     if type_pos == 'POSITION_TYPE_BUY' and current_sl < open_price:
-                        print(f"Dosiahnutý zisk {profit}. Posúvam BUY SL na Break-Even: {open_price}")
                         await connection.modify_position(
                             position_id=pos_id,
                             stop_loss=open_price,
@@ -96,7 +93,6 @@ async def manage_positions(connection):
                         send_telegram_message(f"🛡️ **Break-Even aktivovaný**\nBUY SL posunutý na vstupnú cenu: {open_price}")
                         
                     elif type_pos == 'POSITION_TYPE_SELL' and (current_sl > open_price or current_sl == 0):
-                        print(f"Dosiahnutý zisk {profit}. Posúvam SELL SL na Break-Even: {open_price}")
                         await connection.modify_position(
                             position_id=pos_id,
                             stop_loss=open_price,
@@ -108,26 +104,92 @@ async def manage_positions(connection):
         print("Chyba pri manažmente pozícií:", e)
 
 async def check_strategy_and_trade(connection):
-    """Obchodná logika a kontrola seáns"""
+    """Obchodná logika: Engulfing formácia na M5 po zatvorení sviečky"""
+    global last_processed_candle_time
     try:
         if not is_allowed_trading_time():
             return
 
+        # Skontrolujeme, či už nie je otvorený nejaký obchod (chceme iba 1 pozíciu naraz)
         positions = await connection.get_positions()
         if any(p['symbol'] == SYMBOL for p in positions):
             return
 
+        # Stiahneme posledné sviečky z M5 (zoberieme posledné 3, kde index -2 je posledná uzavretá sviečka)
+        candles = await connection.get_candles(SYMBOL, '5m', 0, 3)
+        if not candles or len(candles) < 3:
+            return
+
+        # candles[-2] je už uzavretá sviečka, candles[-3] je predchádzajúca
+        prev_candle = candles[-3]
+        closed_candle = candles[-2]
+        candle_time = closed_candle['time']
+
+        # Ak sme túto sviečku už vyhodnocovali, nerobíme to znovu
+        if last_processed_candle_time == candle_time:
+            return
+
+        # Zistíme ceny pre výpočet SL a TP
         price = await connection.get_symbol_price(SYMBOL)
         if not price:
             return
-            
         bid = price.get('bid')
         ask = price.get('ask')
-        
         if not bid or not ask:
             return
 
-        # Tu v budúcnosti doplníme presné sviečkové vstupy z M5 zóny.
+        # Definícia farieb sviečok (Open vs Close)
+        prev_is_bearish = prev_candle['close'] < prev_candle['open']
+        prev_is_bullish = prev_candle['close'] > prev_candle['open']
+        closed_is_bullish = closed_candle['close'] > closed_candle['open']
+        closed_is_bearish = closed_candle['close'] < closed_candle['open']
+
+        # 1. BÝČÍ ENGULFING (Signál na BUY)
+        # Predchádzajúca bola červená, aktuálna uzavretá je zelená a úplne ju pohlcuje
+        is_bullish_engulfing = (
+            prev_is_bearish and 
+            closed_is_bullish and 
+            closed_candle['open'] <= prev_candle['close'] and 
+            closed_candle['close'] >= prev_candle['open']
+        )
+
+        # 2. MEDVEDÍ ENGULFING (Signál na SELL)
+        # Predchádzajúca bola zelená, aktuálna uzavretá je červená a úplne ju pohlcuje
+        is_bearish_engulfing = (
+            prev_is_bullish and 
+            closed_is_bearish and 
+            closed_candle['open'] >= prev_candle['close'] and 
+            closed_candle['close'] <= prev_candle['open']
+        )
+
+        if is_bullish_engulfing:
+            last_processed_candle_time = candle_time
+            sl = ask - (SL_POINTS * 0.1)  # Pre zlato upravíme bodovú štruktúru podľa potreby
+            tp = ask + (TP_POINTS * 0.1)
+            # Pre istotu zadáme presné SL/TP prirátané k ASK/BID
+            sl = round(ask - 1.50, 2)
+            tp = round(ask + 6.00, 2)
+            
+            print(det := f"Zistený Býčí Engulfing! Otváram BUY pozíciu na {SYMBOL}")
+            await connection.create_market_buy_order(
+                symbol=SYMBOL,
+                volume=LOT_SIZE,
+                stop_loss=sl,
+                take_profit=tp
+            )
+
+        elif is_bearish_engulfing:
+            last_processed_candle_time = candle_time
+            sl = round(bid + 1.50, 2)
+            tp = round(bid - 6.00, 2)
+            
+            print(f"Zistený Medvedí Engulfing! Otváram SELL pozíciu na {SYMBOL}")
+            await connection.create_market_sell_order(
+                symbol=SYMBOL,
+                volume=LOT_SIZE,
+                stop_loss=sl,
+                take_profit=tp
+            )
 
     except Exception as e:
         print("Chyba v obchodnej logike:", e)
@@ -149,7 +211,7 @@ async def main():
     print("Pripájam sa k MetaApi serveru...")
     await connection.connect()
     await connection.wait_synchronized()
-    print("Úspešne pripojené a synchronizované. Riobot notifikácie sú pripravené.")
+    print("Úspešne pripojené a synchronizované. Engulfing stratégia a Riobot sú pripravené.")
     
     while True:
         try:
