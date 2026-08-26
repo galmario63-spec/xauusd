@@ -33,7 +33,7 @@ async def manage_positions(connection):
     except Exception as e:
         print("Chyba pri manažmente pozícií:", e)
 
-async def check_strategy_and_trade(connection):
+async def check_strategy_and_trade(metaapi, account, connection):
     """Logika pre Price Action, Supply/Demand zóny a vstup do obchodu"""
     try:
         positions = await connection.get_positions()
@@ -41,21 +41,27 @@ async def check_strategy_and_trade(connection):
         if any(p['symbol'] == SYMBOL for p in positions):
             return
 
-        # Tu ťaháme sviečkové dáta z M5 pre Price Action a Demand/Supply zóny
-        rates = await connection.get_candles(SYMBOL, 'M5', 10)
-        if not rates or len(rates) < 3:
+        # Správne ťahanie sviečok z M5 cez MetaApi history API
+        historical_data = metaapi.metatrader_account_api.get_historical_candle_client(ACCOUNT_ID)
+        candles = await historical_data.get_candles(SYMBOL, 'M5', count=3)
+        
+        if not candles or len(candles) < 3:
             return
 
         # Sviečková analýza (Price Action)
-        last_candle = rates[-1]
-        prev_candle = rates[-2]
+        last_candle = candles[-1]
+        prev_candle = candles[-2]
         
         is_bullish_pa = last_candle['close'] > last_candle['open'] and prev_candle['close'] < prev_candle['open']
         
-        # Ak cena reaguje na Demand zónu a máme sviečkový signál:
+        # Ak máme sviečkový signál:
         if is_bullish_pa:
             print("Signál detekovaný na XAUUSD (Price Action / Demand zóna)! Otváram BUY pozíciu...")
-            bid = last_candle['close']
+            
+            # Získame aktuálnu cenu pre presný výpočet SL a TP
+            price = await connection.get_symbol_price(SYMBOL)
+            bid = price['bid']
+            
             sl = bid - SL_POINTS
             tp = bid + TP_POINTS
             
@@ -85,7 +91,7 @@ async def main():
         await manage_positions(connection)
         
         # 2. Hľadaj nové vstupy (Price Action / S&D)
-        await check_strategy_and_trade(connection)
+        await check_strategy_and_trade(metaapi, account, connection)
         
         # Pauza medzi kontrolami (každých 15 sekúnd)
         await asyncio.sleep(15)
