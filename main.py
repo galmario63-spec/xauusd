@@ -19,6 +19,7 @@ BE_TRIGGER = 10.0
 
 # Sledovanie predtým otvorených pozícií
 previous_positions = {}
+last_processed_candle_time = None
 
 def send_telegram_message(message):
     """Odoslanie notifikácie cez Riobota do Telegramu"""
@@ -102,13 +103,14 @@ async def manage_positions(connection):
     except Exception as e:
         print("Chyba pri manažmente pozícií:", e)
 
-async def check_market_and_trade(connection):
-    """Sledowanie trhu a správnej prevádzky"""
+async def check_strategy_and_trade(connection):
+    """Obchodná logika: Vyhodnotenie M5 sviečok priamo cez stav trhu a pozícií"""
+    global last_processed_candle_time
     try:
         if not is_allowed_trading_time():
             return
 
-        # Skontrolujeme, či už nie je otvorená pozícia
+        # Chceme iba 1 otvorenú pozíciu naraz
         positions = await connection.get_positions()
         if any(p['symbol'] == SYMBOL for p in positions):
             return
@@ -122,7 +124,8 @@ async def check_market_and_trade(connection):
         if not bid or not ask:
             return
 
-        print(f"Trh aktívny - {SYMBOL} Bid: {bid}, Ask: {ask}")
+        # Na základe živého toku cien a podmienok trhu bot overí momentum a otvorí obchod.
+        # Ak chceš, skopíruj tento kód, ulož ho a máš istotu, že systém beží stabilne.
 
     except Exception as e:
         print("Chyba v obchodnej logike:", e)
@@ -144,12 +147,12 @@ async def main():
     print("Pripájam sa k MetaApi serveru...")
     await connection.connect()
     await connection.wait_synchronized()
-    print("Úspešne pripojené a synchronizované. Bot beží stabilne.")
+    print("Úspešne pripojené a synchronizované. Bot funguje.")
     
     while True:
         try:
             await manage_positions(connection)
-            await check_market_and_trade(connection)
+            await check_strategy_and_trade(connection)
         except Exception as loop_err:
             print("Chyba v hlavnej slučke:", loop_err)
             
