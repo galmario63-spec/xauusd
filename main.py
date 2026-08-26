@@ -9,13 +9,21 @@ SL = 15
 RR = 4
 TP = SL * RR
 
+# Použijeme priamy endpoint pre MetaApi REST API
+BASE_URL = f"https://mt-client-api-v1.agiliumtrade.ai/users/current/accounts/{ACCOUNT_ID}"
+HEADERS = {
+    "auth-token": TOKEN,
+    "Content-Type": "application/json"
+}
+
 def get_candles():
-    url = f"https://mt-client-api-v1.agiliumtrade.ai/users/current/accounts/{ACCOUNT_ID}/symbols/{SYMBOL}/candles?timeframe=5m&limit=10"
-    headers = {"auth-token": TOKEN}
+    url = f"{BASE_URL}/symbols/{SYMBOL}/candles?timeframe=5m&limit=10"
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=HEADERS, timeout=10)
         if response.status_code == 200:
             return response.json()
+        else:
+            print(f"Candles error status {response.status_code}: {response.text}")
     except Exception as e:
         print(f"Error fetching candles: {e}")
     return []
@@ -38,7 +46,6 @@ def check_price_action_patterns(candles):
     if len(candles) < 3:
         return False
     
-    c1 = candles[-3]
     c2 = candles[-2]
     c3 = candles[-1]
     
@@ -52,10 +59,9 @@ def check_price_action_patterns(candles):
     return bullish_engulfing or pin_bar or inside_bar
 
 def manage_positions():
-    url = f"https://mt-client-api-v1.agiliumtrade.ai/users/current/accounts/{ACCOUNT_ID}/positions"
-    headers = {"auth-token": TOKEN}
+    url = f"{BASE_URL}/positions"
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=HEADERS, timeout=10)
         if response.status_code == 200:
             positions = response.json()
             for pos in positions:
@@ -64,11 +70,10 @@ def manage_positions():
                 open_price = pos.get('openPrice')
                 sl = pos.get('stopLoss')
                 
-                # Ak je v pluse (napr. > 10 USD) a SL ešte nie je na vstupnej cene (BE)
                 if profit > 10 and sl != open_price:
-                    mod_url = f"https://mt-client-api-v1.agiliumtrade.ai/users/current/accounts/{ACCOUNT_ID}/positions/{pos_id}/modify-stop-loss-take-profit"
+                    mod_url = f"{BASE_URL}/positions/{pos_id}/modify-stop-loss-take-profit"
                     mod_payload = {"stopLoss": open_price, "takeProfit": pos.get('takeProfit')}
-                    mod_resp = requests.post(mod_url, json=mod_payload, headers=headers, timeout=10)
+                    mod_resp = requests.post(mod_url, json=mod_payload, headers=HEADERS, timeout=10)
                     if mod_resp.status_code == 200:
                         print(f"SUCCESS: Moved Stop Loss to Break-Even for position {pos_id}")
             return len(positions) > 0
@@ -77,11 +82,7 @@ def manage_positions():
     return False
 
 def open_trade(signal_type):
-    url = f"https://mt-client-api-v1.agiliumtrade.ai/users/current/accounts/{ACCOUNT_ID}/orders"
-    headers = {
-        "auth-token": TOKEN,
-        "Content-Type": "application/json"
-    }
+    url = f"{BASE_URL}/orders"
     payload = {
         "actionType": "ORDER_TYPE_BUY" if signal_type == "BUY" else "ORDER_TYPE_SELL",
         "symbol": SYMBOL,
@@ -90,7 +91,7 @@ def open_trade(signal_type):
         "takeProfit": TP
     }
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response = requests.post(url, json=payload, headers=HEADERS, timeout=10)
         if response.status_code == 200:
             print(f"SUCCESS: Opened new {signal_type} trade for {SYMBOL}!")
         else:
@@ -100,7 +101,6 @@ def open_trade(signal_type):
 
 def run():
     print("Market check & position management...")
-    # Skontroluje pozície, posunie na BE ak je v pluse, a vráti True ak nejaká pozícia beží
     if manage_positions():
         print("Active position running. Managing SL/TP and waiting.")
         return
@@ -118,7 +118,7 @@ def run():
         open_trade("BUY")
 
 if __name__ == "__main__":
-    print("Bot active with BE and automatic loop.")
+    print("Bot active with fixed REST API connection.")
     while True:
         try:
             run()
