@@ -1,14 +1,10 @@
 import asyncio
 import os
 from datetime import datetime
-import urllib.request
-import urllib.parse
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv('METAPI_TOKEN')
 ACCOUNT_ID = os.getenv('METAPI_ACCOUNT_ID')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 SYMBOL = "XAUUSD"
 
 LOT_SIZE = 0.01          
@@ -20,19 +16,8 @@ previous_positions = {}
 last_price = None
 price_momentum = 0
 
-def send_telegram_message(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = urllib.parse.urlencode({'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}).encode('utf-8')
-        req = urllib.request.Request(url, data=data)
-        urllib.request.urlopen(req, timeout=5)
-    except Exception as e:
-        print("Telegram error:", e)
-
 def is_allowed_trading_time():
-    now = datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()
+    now = datetime.utcnow()
     hour = now.hour
     if 8 <= hour < 20:
         return True
@@ -46,8 +31,7 @@ async def manage_positions(connection):
         
         for pos_id, pos_info in list(previous_positions.items()):
             if pos_id not in current_pos_ids:
-                msg = f"🔴 XAUUSD Obchod uzavrety\nSmer: {pos_info['type']}\nCena: {pos_info['openPrice']}"
-                send_telegram_message(msg)
+                print(f"Obchod uzavretý: {pos_info['type']} na cene {pos_info['openPrice']}")
                 del previous_positions[pos_id]
 
         for pos in positions:
@@ -63,20 +47,19 @@ async def manage_positions(connection):
                         'type': type_pos,
                         'openPrice': open_price
                     }
-                    msg = f"⚡ XAUUSD Novy obchod\nSmer: {type_pos}\nCena: {open_price}"
-                    send_telegram_message(msg)
+                    print(f"Nový obchod otvorený: {type_pos} za {open_price}")
 
                 if profit >= BE_TRIGGER:
                     if type_pos == 'POSITION_TYPE_BUY' and current_sl < open_price:
                         await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
-                        send_telegram_message("🛡️ Break-Even aktivovany pre BUY")
+                        print("Break-Even aktivovaný pre BUY")
                         
                     elif type_pos == 'POSITION_TYPE_SELL' and (current_sl > open_price or current_sl == 0):
                         await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
-                        send_telegram_message("🛡️ Break-Even aktivovany pre SELL")
+                        print("Break-Even aktivovaný pre SELL")
                         
     except Exception as e:
-        print("Error managing positions:", e)
+        print("Chyba pri správe pozícií:", e)
 
 async def check_strategy_and_trade(connection):
     global last_price, price_momentum
@@ -114,21 +97,21 @@ async def check_strategy_and_trade(connection):
             price_momentum = 0
             sl = round(ask - 1.50, 2)
             tp = round(ask + 6.00, 2)
-            print("Otvaram BUY poziciu")
+            print("Signál: Otváram BUY pozíciu")
             await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=sl, take_profit=tp)
 
         elif price_momentum <= -3:
             price_momentum = 0
             sl = round(bid + 1.50, 2)
             tp = round(bid - 6.00, 2)
-            print("Otvaram SELL poziciu")
+            print("Signál: Otváram SELL pozíciu")
             await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=sl, take_profit=tp)
 
     except Exception as e:
-        print("Error in strategy:", e)
+        print("Chyba v stratégii:", e)
 
 async def main():
-    print("Cakám 5 sekund...")
+    print("Čakám 5 sekúnd...")
     await asyncio.sleep(5)
     
     metaapi = MetaApi(TOKEN)
@@ -141,17 +124,17 @@ async def main():
     except:
         pass
 
-    print("Pripajam sa k MetaApi...")
+    print("Pripájam sa k MetaApi...")
     await connection.connect()
     await connection.wait_synchronized()
-    print("Bot bezi stabilne.")
+    print("Bot beží stabilne a bez chýb.")
     
     while True:
         try:
             await manage_positions(connection)
             await check_strategy_and_trade(connection)
         except Exception as loop_err:
-            print("Loop error:", loop_err)
+            print("Chyba v slučke:", loop_err)
             
         await asyncio.sleep(10)
 
