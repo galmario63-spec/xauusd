@@ -8,8 +8,8 @@ ACCOUNT_ID = os.getenv('METAPI_ACCOUNT_ID')
 SYMBOL = "XAUUSD"
 
 LOT_SIZE = 0.01          
-SL_USD = 15.0         # 15 dolárov vzdialenosť SL (bezpečné pre zlato)
-TP_USD = 60.0         # 60 dolárov vzdialenosť TP
+SL_USD = 15.0         # 15 dolárov vzdialenosť SL
+TP_USD = 30.0         # Zmenené TP na 30 dolárov
 BE_TRIGGER = 10.0        
 
 previous_positions = {}
