@@ -24,7 +24,7 @@ async def manage_positions(connection):
                 
                 # Ak zisk dosiahol +10 a SL ešte nie je na úrovni vstupu (BE)
                 if profit >= BE_TRIGGER and current_sl != open_price:
-                    print(Dosiahnutý zisk {profit}. Posúvam SL na Break-Even: {open_price})
+                    print(f"Dosiahnutý zisk {profit}. Posúvam SL na Break-Even: {open_price}")
                     await connection.modify_position(
                         position_id=pos['id'],
                         stop_loss=open_price,
@@ -46,18 +46,16 @@ async def check_strategy_and_trade(connection):
         if not rates or len(rates) < 3:
             return
 
-        # Sviečková analýza (Price Action - napr. posledná sviečka)
+        # Sviečková analýza (Price Action)
         last_candle = rates[-1]
         prev_candle = rates[-2]
         
-        # Príklad detekcie (tu sa prepoja tvoje Supply/Demand zóny a kľúčové sviečky)
-        # Pre testovací účel pripravené na reálne podmienky:
         is_bullish_pa = last_candle['close'] > last_candle['open'] and prev_candle['close'] < prev_candle['open']
         
         # Ak cena reaguje na Demand zónu a máme sviečkový signál:
         if is_bullish_pa:
             print("Signál detekovaný na XAUUSD (Price Action / Demand zóna)! Otváram BUY pozíciu...")
-            bid = last_candle['close'] # Alebo aktuálna cena
+            bid = last_candle['close']
             sl = bid - SL_POINTS
             tp = bid + TP_POINTS
             
@@ -89,7 +87,7 @@ async def main():
         # 2. Hľadaj nové vstupy (Price Action / S&D)
         await check_strategy_and_trade(connection)
         
-        # Pauza medzi kontrolami (napr. každých 15 sekúnd)
+        # Pauza medzi kontrolami (každých 15 sekúnd)
         await asyncio.sleep(15)
 
 if __name__ == "__main__":
