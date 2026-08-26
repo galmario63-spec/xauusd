@@ -34,7 +34,7 @@ def send_telegram_message(message):
 
 def is_allowed_trading_time():
     """Kontrola obchodných hodín pre hlavné seansy (Londýn / New York)"""
-    now = datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()
+    now = datetime.utcnow()
     hour = now.hour
     if 8 <= hour < 20:
         return True
@@ -102,30 +102,18 @@ async def manage_positions(connection):
     except Exception as e:
         print("Chyba pri manažmente pozícií:", e)
 
-async def check_strategy_and_trade(connection):
-    """Monitorovanie ceny a pripravenosť na obchod"""
+async def check_market(connection):
+    """Stabilné sledovanie trhu a cien"""
     try:
         if not is_allowed_trading_time():
             return
 
-        positions = await connection.get_positions()
-        if any(p['symbol'] == SYMBOL for p in positions):
-            return
-
         price = await connection.get_symbol_price(SYMBOL)
-        if not price:
-            return
-            
-        bid = price.get('bid')
-        ask = price.get('ask')
-        
-        if not bid or not ask:
-            return
-
-        # Bot stabilne sleduje trh, bid/ask ceny sú k dispozícii
+        if price:
+            print(f"Trh aktívny - {SYMBOL} Bid: {price.get('bid')}, Ask: {price.get('ask')}")
 
     except Exception as e:
-        print("Chyba v obchodnej logike:", e)
+        print("Chyba pri kontrole trhu:", e)
 
 async def main():
     print("Čakám 5 sekúnd pred inicializáciou...")
@@ -144,12 +132,12 @@ async def main():
     print("Pripájam sa k MetaApi serveru...")
     await connection.connect()
     await connection.wait_synchronized()
-    print("Úspešne pripojené a synchronizované. Bot je plne pripravený.")
+    print("Úspešne pripojené a synchronizované. Bot beží bez chýb.")
     
     while True:
         try:
             await manage_positions(connection)
-            await check_strategy_and_trade(connection)
+            await check_market(connection)
         except Exception as loop_err:
             print("Chyba v hlavnej slučke:", loop_err)
             
