@@ -11,19 +11,16 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 SYMBOL = "XAUUSD"
 
-# Parametre stratégie a rizika
 LOT_SIZE = 0.01          
 SL_POINTS = 15.0         
 TP_POINTS = 60.0         
 BE_TRIGGER = 10.0        
 
-# Sledovanie pozícií a cenového momentum
 previous_positions = {}
 last_price = None
 price_momentum = 0
 
 def send_telegram_message(message):
-    """Odoslanie notifikácie cez Riobota do Telegramu"""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
@@ -32,36 +29,27 @@ def send_telegram_message(message):
         req = urllib.request.Request(url, data=data)
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
-        print("Chyba pri odosielaní Telegram správy:", e)
+        print("Telegram error:", e)
 
 def is_allowed_trading_time():
-    """Kontrola obchodných hodín pre hlavné seansy (Londýn / New York)"""
-    now = datetime.utcnow()
+    now = datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()
     hour = now.hour
     if 8 <= hour < 20:
         return True
     return False
 
 async def manage_positions(connection):
-    """Manažment pozícií: Break-Even a detekcia zatvorených obchodov (TP / SL)"""
     global previous_positions
     try:
         positions = await connection.get_positions()
         current_pos_ids = {p['id'] for p in positions if p['symbol'] == SYMBOL}
         
-        # 1. Kontrola zatvorených pozícií (TP / SL / manuál)
         for pos_id, pos_info in list(previous_positions.items()):
             if pos_id not in current_pos_ids:
-                msg = (
-                    f"🔴 **XAUUSD Obchod uzavretý**\n"
-                    f"Smer: {pos_info['type']}\n"
-                    f"Vstupná cena: {pos_info['openPrice']}\n"
-                    f"ℹ️ Pozícia bola ukončená v trhu."
-                )
+                msg = f"🔴 XAUUSD Obchod uzavrety\nSmer: {pos_info['type']}\nCena: {pos_info['openPrice']}"
                 send_telegram_message(msg)
                 del previous_positions[pos_id]
 
-        # 2. Spracovanie aktívnych pozícií (Break-Even)
         for pos in positions:
             if pos['symbol'] == SYMBOL:
                 pos_id = pos['id']
@@ -75,43 +63,27 @@ async def manage_positions(connection):
                         'type': type_pos,
                         'openPrice': open_price
                     }
-                    msg = (
-                        f"⚡ **XAUUSD Nový Obchod Otvorený** ⚡\n"
-                        f"Smer: {type_pos}\n"
-                        f"Cena: {open_price}\n"
-                        f"🛡️ SL: {current_sl} | 🎯 TP: {pos.get('takeProfit', 'N/A')}"
-                    )
+                    msg = f"⚡ XAUUSD Novy obchod\nSmer: {type_pos}\nCena: {open_price}"
                     send_telegram_message(msg)
 
-                # Posun na Break-Even pri +10 bodoch zisku
                 if profit >= BE_TRIGGER:
                     if type_pos == 'POSITION_TYPE_BUY' and current_sl < open_price:
-                        await connection.modify_position(
-                            position_id=pos_id,
-                            stop_loss=open_price,
-                            take_profit=pos.get('takeProfit')
-                        )
-                        send_telegram_message(f"🛡️ **Break-Even aktivovaný**\nBUY SL posunutý na vstupnú cenu: {open_price}")
+                        await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
+                        send_telegram_message("🛡️ Break-Even aktivovany pre BUY")
                         
                     elif type_pos == 'POSITION_TYPE_SELL' and (current_sl > open_price or current_sl == 0):
-                        await connection.modify_position(
-                            position_id=pos_id,
-                            stop_loss=open_price,
-                            take_profit=pos.get('takeProfit')
-                        )
-                        send_telegram_message(f"🛡️ **Break-Even aktivovaný**\nSELL SL posunutý na vstupnú cenu: {open_price}")
+                        await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
+                        send_telegram_message("🛡️ Break-Even aktivovany pre SELL")
                         
     except Exception as e:
-        print("Chyba pri manažmente pozícií:", e)
+        print("Error managing positions:", e)
 
 async def check_strategy_and_trade(connection):
-    """Reálna obchodná logika: Sledovanie pohybu ceny a otvorenie obchodu"""
     global last_price, price_momentum
     try:
         if not is_allowed_trading_time():
             return
 
-        # Chceme iba 1 otvorenú pozíciu naraz
         positions = await connection.get_positions()
         if any(p['symbol'] == SYMBOL for p in positions):
             return
@@ -138,37 +110,25 @@ async def check_strategy_and_trade(connection):
 
         last_price = current_mid
 
-        # Signál na BUY (rastúci tlak)
         if price_momentum >= 3:
             price_momentum = 0
             sl = round(ask - 1.50, 2)
             tp = round(ask + 6.00, 2)
-            print(f"Momentum detekované! Otváram BUY pozíciu na {SYMBOL}")
-            await connection.create_market_buy_order(
-                symbol=SYMBOL,
-                volume=LOT_SIZE,
-                stop_loss=sl,
-                take_profit=tp
-            )
+            print("Otvaram BUY poziciu")
+            await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=sl, take_profit=tp)
 
-        # Signál na SELL (klesajúci tlak)
         elif price_momentum <= -3:
             price_momentum = 0
             sl = round(bid + 1.50, 2)
             tp = round(bid - 6.00, 2)
-            print(f"Momentum detekované! Otváram SELL pozíciu na {SYMBOL}")
-            await connection.create_market_sell_order(
-                symbol=SYMBOL,
-                volume=LOT_SIZE,
-                stop_loss=sl,
-                take_profit=tp
-            )
+            print("Otvaram SELL poziciu")
+            await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=sl, take_profit=tp)
 
     except Exception as e:
-        print("Chyba v obchodnej logike:", e)
+        print("Error in strategy:", e)
 
 async def main():
-    print("Čakám 5 sekúnd pred inicializáciou...")
+    print("Cakám 5 sekund...")
     await asyncio.sleep(5)
     
     metaapi = MetaApi(TOKEN)
@@ -181,18 +141,17 @@ async def main():
     except:
         pass
 
-    print("Pripájam sa k MetaApi serveru...")
+    print("Pripajam sa k MetaApi...")
     await connection.connect()
     await connection.wait_synchronized()
-    print("Úspešne pripojené a synchronizované. Bot beží v nekonečnej slučke.")
+    print("Bot bezi stabilne.")
     
-    # HLAVNÁ SLUČKA - tu bola chyba, chýbal tento while True blok
     while True:
         try:
             await manage_positions(connection)
             await check_strategy_and_trade(connection)
         except Exception as loop_err:
-            print("Chyba v hlavnej slučke:", loop_err)
+            print("Loop error:", loop_err)
             
         await asyncio.sleep(10)
 
