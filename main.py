@@ -10,7 +10,7 @@ SYMBOL = "XAUUSD"
 LOT_SIZE = 0.01          
 SL_USD = 15.0         
 TP_USD = 30.0         
-BE_TRIGGER = 10.0        
+BE_TRIGGER = 5.0         # Nastavené na 5.0 USD pre ideálny Break-Even
 
 previous_positions = {}
 last_price = None
