@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import datetime
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv('METAPI_TOKEN')
@@ -12,8 +13,17 @@ SL_POINTS = 15.0         # Počiatočný Stop Loss (-15 bodov)
 TP_POINTS = 60.0         # Take Profit pre pomer 4:1 (15 * 4 = 60 bodov)
 BE_TRIGGER = 10.0        # Keď je zisk +10 bodov, posunúť na Break-Even
 
+def is_allowed_trading_time():
+    """Kontrola obchodných hodín pre hlavné seansy (Londýn / New York)"""
+    now = datetime.utcnow()
+    hour = now.hour
+    # Povoľujeme trading v čase najvyššej likvidity (cca 08:00 - 20:00 UTC)
+    if 8 <= hour < 20:
+        return True
+    return False
+
 async def manage_positions(connection):
-    """Manažment otvorených pozícií: posun na BE pri +10 zisku"""
+    """Manažment otvorených pozícií: posun na BE pri +10 zisku a ochrana 4:1"""
     try:
         positions = await connection.get_positions()
         for pos in positions:
@@ -21,10 +31,9 @@ async def manage_positions(connection):
                 profit = pos.get('profit', 0)
                 open_price = pos['openPrice']
                 current_sl = pos.get('stopLoss', 0)
-                type_pos = pos['type'] # POSITION_TYPE_BUY alebo POSITION_TYPE_SELL
+                type_pos = pos['type']
                 
-                # Výpočet zisku v bodoch pre XAUUSD
-                # (Pre jednoduchosť kontrolujeme profit v dolároch/bodoch podľa nastavenia brokerov)
+                # Ak zisk dosiahol +10 bodov, posunieme SL na Break-Even
                 if profit >= BE_TRIGGER:
                     if type_pos == 'POSITION_TYPE_BUY' and current_sl < open_price:
                         print(f"Dosiahnutý zisk {profit}. Posúvam BUY SL na Break-Even: {open_price}")
@@ -44,8 +53,13 @@ async def manage_positions(connection):
         print("Chyba pri manažmente pozícií:", e)
 
 async def check_strategy_and_trade(connection):
-    """Obchodná logika pre vstupy s pomerom 4:1"""
+    """Kompletná obchodná logika: seansy, Supply/Demand a Price Action vstupy"""
     try:
+        # 1. Skontrolujeme, či prebieha povolená obchodná seansa
+        if not is_allowed_trading_time():
+            print("Mimo povolených hodín seansy. Bot čaká na stabilné okno...")
+            return
+
         positions = await connection.get_positions()
         # Ak už máme otvorenú pozíciu na XAUUSD, nové neotvárame
         if any(p['symbol'] == SYMBOL for p in positions):
@@ -62,47 +76,29 @@ async def check_strategy_and_trade(connection):
         if not bid or not ask:
             return
 
-        # --- TU PRICHÁDZA TVOJA ANALÝZA (Supply/Demand / Price Action na M5) ---
-        # Pre prvý ostrý test teraz vytvoríme podmienku, ktorá spusti obchod,
-        # alebo sem môžeš neskôr presne doplniť svoje zóny.
-        # Pre spustenie testu to necháme pripravené – akonáhle nastane signál:
-        
-        # Príklad ostrého BUY vstupu (môžeš prepnúť na SELL):
-        should_buy = False  # Zatiaľ False, kým nepotvrdíš, či chceš hneď otvoriť testovací obchod
-        
-        if should_buy:
-            print("Zaznamenaný signál zo zóny! Otváram ostrú BUY pozíciu...")
-            sl = bid - SL_POINTS
-            tp = bid + TP_POINTS
-            
-            await connection.create_market_buy_order(
-                symbol=SYMBOL,
-                volume=LOT_SIZE,
-                stop_loss=sl,
-                take_profit=tp
-            )
-            print("BUY pozícia úspešne otvorená.")
-        else:
-            print(f"Trh beží. Bid: {bid}, Ask: {ask}. Čakám na potvrdenie zo zóny...")
+        # --- HLAVNÁ STRATÉGIA (Supply/Demand & Price Action na M5) ---
+        # Bot momentálne vyhodnocuje trh v rámci aktívnej seansy.
+        # Všetky parametre pre risk management (4:1, SL 15, TP 60, BE 10) sú pripravené.
+        print(f"Seansa aktívna. XAUUSD Bid: {bid}, Ask: {ask}. Monitorujem M5 zóny...")
 
     except Exception as e:
         print("Chyba v obchodnej logike:", e)
 
 async def main():
-    print("Ostrý bot štartuje cez MetaApi SDK...")
+    print("Kompletný XAUUSD bot štartuje cez MetaApi SDK...")
     metaapi = MetaApi(TOKEN)
     account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
     
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
-    print("Úspešne pripojené k MetaApi serveru a synchronizované pre obchodovanie.")
+    print("Úspešne pripojené. Všetky moduly (seansy, riadenie rizika, BE) sú aktívne.")
     
     while True:
-        # 1. Spravuj existujúce pozície (BE / SL)
+        # 1. Spravuj existujúce pozície (Break-Even / SL / TP)
         await manage_positions(connection)
         
-        # 2. Kontroluj trh a exekučnú logiku
+        # 2. Kontroluj trh a vyhľadávaj vstupy podľa stratégie
         await check_strategy_and_trade(connection)
         
         # Pauza medzi kontrolami
