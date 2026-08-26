@@ -3,17 +3,21 @@ from metaapi_cloud_sdk import MetaApi
 
 TOKEN = "r8oq06EiQdSG2bZ7gLuaQLNRdhkwgaxRuUNrQi3pgw"
 ACCOUNT_ID = "39ace2a7-8a53-420d-800f-35a9d9feadf2"
-SYMBOL = "XAUUSD"
 
 async def main():
-    api = MetaApi(TOKEN)
-    print("Connecting to MetaApi account...")
+    metaapi = MetaApi(TOKEN)
+    print("Connecting to MetaApi...")
     
-    account = await api.metatrader_account_api.get_account(ACCOUNT_ID)
-    if account.state not in ['DEPLOYING', 'DEPLOYED']:
+    # Získanie účtu a jeho zapnutie, ak je vypnutý
+    account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
+    if account.state != 'DEPLOYED':
+        print("Deploying account...")
         await account.deploy()
         
+    print("Waiting for API connection...")
     await account.wait_connected()
+    
+    # Pripojenie cez RPC
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
@@ -32,10 +36,10 @@ async def main():
                     )
                     print(f"SUCCESS: Moved SL to Break-Even for position {pos['id']}")
             
-            if len(positions) > 0:
-                print("Active position running...")
+            if positions:
+                print(f"Active positions running: {len(positions)}")
             else:
-                print("Market check (Supply/Demand & Price Action)...")
+                print("Market check: No active positions.")
                 
         except Exception as e:
             print(f"Loop error: {e}")
