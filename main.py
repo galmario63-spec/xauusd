@@ -4,13 +4,15 @@ from datetime import datetime, timezone
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv('METAPI_TOKEN')
-ACCOUNT_ID = os.getenv('METAPI_ACCOUNT_ID')
+ACCOUNT_ID = os.getenv('METAPI_ACCOUNT_ID', "37400088")
 SYMBOL = "XAUUSD"
 
-LOT_SIZE = 0.01          
-SL_USD = 15.0         
-TP_USD = 30.0         
-BE_TRIGGER = 5.0         # Nastavené na 5.0 USD pre ideálny Break-Even
+LOT_PART = 0.10          
+SL_USD = 10.0         
+TP_1_USD = 20.0       
+TP_2_USD = 20.0       
+TP_3_USD = 30.0       
+BE_TRIGGER = 1.0      
 
 previous_positions = {}
 last_price = None
@@ -31,7 +33,7 @@ async def manage_positions(connection):
         
         for pos_id, pos_info in list(previous_positions.items()):
             if pos_id not in current_pos_ids:
-                print(f"Obchod uzavrety: {pos_info['type']} na cene {pos_info['openPrice']}")
+                print(f"[NOTIFIKÁCIA] 📴 Obchod uzavretý: {pos_info['type']} na cene {pos_info['openPrice']}")
                 del previous_positions[pos_id]
 
         for pos in positions:
@@ -47,19 +49,19 @@ async def manage_positions(connection):
                         'type': type_pos,
                         'openPrice': open_price
                     }
-                    print(f"Sledujem aktivnu poziciu: {type_pos} za {open_price}")
+                    print(f"[NOTIFIKÁCIA] 🔔 Sledujem novú pozíciu: {type_pos} za {open_price}")
 
                 if profit >= BE_TRIGGER:
                     if type_pos == 'POSITION_TYPE_BUY' and current_sl < open_price:
                         await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
-                        print("Break-Even aktivovany pre BUY")
+                        print("[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre BUY")
                         
                     elif type_pos == 'POSITION_TYPE_SELL' and (current_sl > open_price or current_sl == 0):
                         await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
-                        print("Break-Even aktivovany pre SELL")
+                        print("[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre SELL")
                         
     except Exception as e:
-        print("Chyba pri sprave pozicii (ignorujem, idem dalej):", e)
+        print("Chyba pri správe pozícií:", e)
 
 async def check_strategy_and_trade(connection):
     global last_price, price_momentum
@@ -95,23 +97,31 @@ async def check_strategy_and_trade(connection):
 
         if price_momentum >= 3:
             price_momentum = 0
+            print("[NOTIFIKÁCIA] 🚀 Signál BUY! Otváram 3 časti...")
+            for i in range(2):
+                sl = round(ask - SL_USD, 2)
+                tp = round(ask + TP_1_USD, 2)
+                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_PART, stop_loss=sl, take_profit=tp)
             sl = round(ask - SL_USD, 2)
-            tp = round(ask + TP_USD, 2)
-            print("Signal: Otvaram BUY poziciu")
-            await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=sl, take_profit=tp)
+            tp = round(ask + TP_3_USD, 2)
+            await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_PART, stop_loss=sl, take_profit=tp)
 
         elif price_momentum <= -3:
             price_momentum = 0
+            print("[NOTIFIKÁCIA] 🩸 Signál SELL! Otváram 3 časti...")
+            for i in range(2):
+                sl = round(bid + SL_USD, 2)
+                tp = round(bid - TP_2_USD, 2)
+                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_PART, stop_loss=sl, take_profit=tp)
             sl = round(bid + SL_USD, 2)
-            tp = round(bid - TP_USD, 2)
-            print("Signal: Otvaram SELL poziciu")
-            await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=sl, take_profit=tp)
+            tp = round(bid - TP_3_USD, 2)
+            await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_PART, stop_loss=sl, take_profit=tp)
 
     except Exception as e:
-        print("Chyba v strategii (ignorujem, idem dalej):", e)
+        print("Chyba v stratégii:", e)
 
 async def main():
-    print("Spustam bota...")
+    print("Spúšťam bota pre centový účet...")
     await asyncio.sleep(3)
     
     while True:
@@ -126,10 +136,10 @@ async def main():
             except:
                 pass
 
-            print("Pripajam sa k MetaApi...")
+            print("Pripájam sa k MetaApi...")
             await connection.connect()
             await connection.wait_synchronized()
-            print("Pripojene. Bot teraz bezi nepretrzite.")
+            print("[NOTIFIKÁCIA] ✅ Pripojené na centový účet. Bot beží naostro!")
             
             while True:
                 await manage_positions(connection)
@@ -137,7 +147,7 @@ async def main():
                 await asyncio.sleep(10)
                 
         except Exception as main_err:
-            print("Chyba v pripojeni, pokusim sa rekonektnut o 10 sekund:", main_err)
+            print("Chyba v pripojení, reconnect o 10s:", main_err)
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
