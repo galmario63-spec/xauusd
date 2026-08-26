@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import urllib.request
 import urllib.parse
 from metaapi_cloud_sdk import MetaApi
@@ -115,8 +115,11 @@ async def check_strategy_and_trade(connection):
         if any(p['symbol'] == SYMBOL for p in positions):
             return
 
-        # Stiahneme posledné sviečky z M5 (zoberieme posledné 3, kde index -2 je posledná uzavretá sviečka)
-        candles = await connection.get_candles(SYMBOL, '5m', 0, 3)
+        # Stiahneme historické sviečky cez správne API rozhranie (posledné 3 sviečky na M5)
+        now = datetime.utcnow()
+        start_time = now - timedelta(minutes=30)
+        candles = await connection.get_historical_candles(SYMBOL, '5m', start_time, 5)
+        
         if not candles or len(candles) < 3:
             return
 
@@ -145,7 +148,6 @@ async def check_strategy_and_trade(connection):
         closed_is_bearish = closed_candle['close'] < closed_candle['open']
 
         # 1. BÝČÍ ENGULFING (Signál na BUY)
-        # Predchádzajúca bola červená, aktuálna uzavretá je zelená a úplne ju pohlcuje
         is_bullish_engulfing = (
             prev_is_bearish and 
             closed_is_bullish and 
@@ -154,7 +156,6 @@ async def check_strategy_and_trade(connection):
         )
 
         # 2. MEDVEDÍ ENGULFING (Signál na SELL)
-        # Predchádzajúca bola zelená, aktuálna uzavretá je červená a úplne ju pohlcuje
         is_bearish_engulfing = (
             prev_is_bullish and 
             closed_is_bearish and 
@@ -164,13 +165,10 @@ async def check_strategy_and_trade(connection):
 
         if is_bullish_engulfing:
             last_processed_candle_time = candle_time
-            sl = ask - (SL_POINTS * 0.1)  # Pre zlato upravíme bodovú štruktúru podľa potreby
-            tp = ask + (TP_POINTS * 0.1)
-            # Pre istotu zadáme presné SL/TP prirátané k ASK/BID
             sl = round(ask - 1.50, 2)
             tp = round(ask + 6.00, 2)
             
-            print(det := f"Zistený Býčí Engulfing! Otváram BUY pozíciu na {SYMBOL}")
+            print(f"Zistený Býčí Engulfing! Otváram BUY pozíciu na {SYMBOL}")
             await connection.create_market_buy_order(
                 symbol=SYMBOL,
                 volume=LOT_SIZE,
