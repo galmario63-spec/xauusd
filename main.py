@@ -184,8 +184,9 @@ async def main():
     print("Pripájam sa k MetaApi serveru...")
     await connection.connect()
     await connection.wait_synchronized()
-    print("Úspešne pripojené a synchronizované. Bot je plne aktívny.")
+    print("Úspešne pripojené a synchronizované. Bot beží v nekonečnej slučke.")
     
+    # HLAVNÁ SLUČKA - tu bola chyba, chýbal tento while True blok
     while True:
         try:
             await manage_positions(connection)
