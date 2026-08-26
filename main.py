@@ -7,10 +7,10 @@ ACCOUNT_ID = os.getenv('METAPI_ACCOUNT_ID')
 SYMBOL = "XAUUSD"
 
 # Parametre stratégie a rizika
-LOT_SIZE = 0.01          # Veľkosť pozície (veľkosť lotu na test)
+LOT_SIZE = 0.01          # Veľkość pozície
 SL_POINTS = 15.0         # Počiatočný Stop Loss (-15)
-TP_POINTS = 60.0         # Take Profit pre pomer 4:1 (15 * 4 = 60)
-BE_TRIGGER = 10.0        # Keď je zisk +10, posunúť na Break-Even
+TP_POINTS = 60.0         # Take Profit (4:1 pomer -> 60)
+BE_TRIGGER = 10.0        # Posun na Break-Even pri zisku +10
 
 async def manage_positions(connection):
     """Manažment otvorených pozícií: posun na BE pri +10 zisku"""
@@ -22,7 +22,7 @@ async def manage_positions(connection):
                 open_price = pos['openPrice']
                 current_sl = pos.get('stopLoss', 0)
                 
-                # Ak zisk dosiahol +10 a SL ešte nie je na úrovni vstupu (BE)
+                # Ak zisk dosiahol +10 a SL ešte nie je na Break-Even
                 if profit >= BE_TRIGGER and current_sl != open_price:
                     print(f"Dosiahnutý zisk {profit}. Posúvam SL na Break-Even: {open_price}")
                     await connection.modify_position(
@@ -33,45 +33,30 @@ async def manage_positions(connection):
     except Exception as e:
         print("Chyba pri manažmente pozícií:", e)
 
-async def check_strategy_and_trade(metaapi, account, connection):
-    """Logika pre Price Action, Supply/Demand zóny a vstup do obchodu"""
+async def check_strategy_and_trade(connection):
+    """Logika pre obchodovanie XAUUSD"""
     try:
         positions = await connection.get_positions()
-        # Ak už máme otvorenú pozíciu na XAUUSD, nové neotvárame
+        # Ak už máme otvorenú pozíciu, nové neotvárame
         if any(p['symbol'] == SYMBOL for p in positions):
             return
 
-        # Správne ťahanie sviečok z M5 cez MetaApi history API
-        historical_data = metaapi.metatrader_account_api.get_historical_candle_client(ACCOUNT_ID)
-        candles = await historical_data.get_candles(SYMBOL, 'M5', count=3)
+        # Získame aktuálnu cenu symbolu priamo cez terminal connection
+        price = await connection.get_symbol_price(SYMBOL)
+        if not price:
+            return
+            
+        bid = price.get('bid')
+        ask = price.get('ask')
         
-        if not candles or len(candles) < 3:
+        if not bid or not ask:
             return
 
-        # Sviečková analýza (Price Action)
-        last_candle = candles[-1]
-        prev_candle = candles[-2]
+        # Tu beží vyhodnotenie podmienok pre vstup (S&D / Price Action)
+        # Pre testovacie účely pripravené na trigger:
+        # (Akonáhle budeme chcieť otestovať ostrý vstup, tu doplníme podmienku)
         
-        is_bullish_pa = last_candle['close'] > last_candle['open'] and prev_candle['close'] < prev_candle['open']
-        
-        # Ak máme sviečkový signál:
-        if is_bullish_pa:
-            print("Signál detekovaný na XAUUSD (Price Action / Demand zóna)! Otváram BUY pozíciu...")
-            
-            # Získame aktuálnu cenu pre presný výpočet SL a TP
-            price = await connection.get_symbol_price(SYMBOL)
-            bid = price['bid']
-            
-            sl = bid - SL_POINTS
-            tp = bid + TP_POINTS
-            
-            await connection.create_market_buy_order(
-                symbol=SYMBOL,
-                volume=LOT_SIZE,
-                stop_loss=sl,
-                take_profit=tp
-            )
-            print("Obchod úspešne otvorený s pomerom 4:1.")
+        print(f"Trh skontrolovaný. Aktuálna cena XAUUSD - Bid: {bid}, Ask: {ask}. Čakám na signál zo zóny...")
 
     except Exception as e:
         print("Chyba v obchodnej logike:", e)
@@ -90,10 +75,10 @@ async def main():
         # 1. Spravuj existujúce pozície (BE / SL)
         await manage_positions(connection)
         
-        # 2. Hľadaj nové vstupy (Price Action / S&D)
-        await check_strategy_and_trade(metaapi, account, connection)
+        # 2. Kontroluj trh a hľadaj vstupy
+        await check_strategy_and_trade(connection)
         
-        # Pauza medzi kontrolami (každých 15 sekúnd)
+        # Pauza medzi kontrolami
         await asyncio.sleep(15)
 
 if __name__ == "__main__":
