@@ -1,22 +1,23 @@
-import dns.resolver
 import requests
 from requests.adapters import HTTPAdapter
 from urllib.parse import urlparse
+import time
+import os
 
 class CustomResolverAdapter(HTTPAdapter):
-    def init_poolmanager(self, *args, **kwargs):
-        self.resolver = dns.resolver.Resolver()
-        self.resolver.nameservers = ['1.1.1.1', '8.8.8.8']
-        return super().init_poolmanager(*args, **kwargs)
-
     def send(self, request, **kwargs):
         url = urlparse(request.url)
         if 'agiliumtrade.ai' in url.netloc:
             try:
-                answers = self.resolver.resolve(url.netloc, 'A')
-                ip_address = answers[0].to_text()
-                request.headers['Host'] = url.netloc
-                request.url = request.url.replace(url.netloc, ip_address)
+                doh_url = f"https://cloudflare-dns.com/dns-query?name={url.netloc}&type=A"
+                headers = {"Accept": "application/dns-json"}
+                r = requests.get(doh_url, headers=headers, timeout=5)
+                data = r.json()
+                
+                if "Answer" in data:
+                    ip_address = data["Answer"][0]["data"]
+                    request.headers['Host'] = url.netloc
+                    request.url = request.url.replace(url.netloc, ip_address)
             except Exception as e:
                 print(f"DNS bypass info: {e}")
         return super().send(request, **kwargs)
@@ -31,14 +32,10 @@ requests.post = _session.post
 requests.put = _session.put
 requests.delete = _session.delete
 
-import time
-import os
-
-# MetaApi token a ID účtu z premenných prostredia Railway
 TOKEN = os.getenv('METAPI_TOKEN', 'tvj_token')
 ACCOUNT_ID = os.getenv('METAPI_ACCOUNT_ID', 'tvj_account_id')
 
-print("Bot štartuje a obchádza DNS cez Cloudflare...")
+print("Bot štartuje a obchádza DNS cez Cloudflare HTTPS...")
 
 while True:
     try:
