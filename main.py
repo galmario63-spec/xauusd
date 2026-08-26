@@ -7,12 +7,12 @@ TOKEN = os.getenv('METAPI_TOKEN')
 ACCOUNT_ID = os.getenv('METAPI_ACCOUNT_ID', "37400088")
 SYMBOL = "XAUUSD"
 
-LOT_PART = 0.10          
-SL_USD = 10.0         
-TP_1_USD = 20.0       
-TP_2_USD = 20.0       
+LOT_PART = 0.01          
+SL_USD = 15.0         
+TP_1_USD = 30.0       
+TP_2_USD = 30.0       
 TP_3_USD = 30.0       
-BE_TRIGGER = 1.0      
+BE_TRIGGER = 5.0      
 
 previous_positions = {}
 last_price = None
@@ -52,13 +52,13 @@ async def manage_positions(connection):
                     print(f"[NOTIFIKÁCIA] 🔔 Sledujem novú pozíciu: {type_pos} za {open_price}")
 
                 if profit >= BE_TRIGGER:
-                    if type_pos == 'POSITION_TYPE_BUY' and current_sl < open_price:
+                    if type_pos == 'POSITION_TYPE_BUY' and current_sl != open_price:
                         await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
-                        print("[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre BUY")
+                        print(f"[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre BUY na cene {open_price}")
                         
-                    elif type_pos == 'POSITION_TYPE_SELL' and (current_sl > open_price or current_sl == 0):
+                    elif type_pos == 'POSITION_TYPE_SELL' and current_sl != open_price:
                         await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
-                        print("[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre SELL")
+                        print(f"[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre SELL na cene {open_price}")
                         
     except Exception as e:
         print("Chyba pri správe pozícií:", e)
@@ -121,7 +121,7 @@ async def check_strategy_and_trade(connection):
         print("Chyba v stratégii:", e)
 
 async def main():
-    print("Spúšťam bota pre centový účet...")
+    print("Spúšťam bota...")
     await asyncio.sleep(3)
     
     while True:
@@ -139,7 +139,7 @@ async def main():
             print("Pripájam sa k MetaApi...")
             await connection.connect()
             await connection.wait_synchronized()
-            print("[NOTIFIKÁCIA] ✅ Pripojené na centový účet. Bot beží naostro!")
+            print("[NOTIFIKÁCIA] ✅ Pripojené. Bot beží!")
             
             while True:
                 await manage_positions(connection)
