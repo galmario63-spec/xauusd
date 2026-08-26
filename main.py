@@ -17,9 +17,10 @@ SL_POINTS = 15.0
 TP_POINTS = 60.0         
 BE_TRIGGER = 10.0        
 
-# Sledovanie predtým otvorených pozícií
+# Sledovanie pozícií a cenového momentum
 previous_positions = {}
-last_processed_candle_time = None
+last_price = None
+price_momentum = 0
 
 def send_telegram_message(message):
     """Odoslanie notifikácie cez Riobota do Telegramu"""
@@ -104,8 +105,8 @@ async def manage_positions(connection):
         print("Chyba pri manažmente pozícií:", e)
 
 async def check_strategy_and_trade(connection):
-    """Obchodná logika: Vyhodnotenie M5 sviečok priamo cez stav trhu a pozícií"""
-    global last_processed_candle_time
+    """Reálna obchodná logika: Sledovanie pohybu ceny a otvorenie obchodu"""
+    global last_price, price_momentum
     try:
         if not is_allowed_trading_time():
             return
@@ -124,8 +125,44 @@ async def check_strategy_and_trade(connection):
         if not bid or not ask:
             return
 
-        # Na základe živého toku cien a podmienok trhu bot overí momentum a otvorí obchod.
-        # Ak chceš, skopíruj tento kód, ulož ho a máš istotu, že systém beží stabilne.
+        current_mid = (bid + ask) / 2
+
+        if last_price is not None:
+            diff = current_mid - last_price
+            if diff > 0.10:
+                price_momentum += 1
+            elif diff < -0.10:
+                price_momentum -= 1
+            else:
+                price_momentum = 0
+
+        last_price = current_mid
+
+        # Signál na BUY (rastúci tlak)
+        if price_momentum >= 3:
+            price_momentum = 0
+            sl = round(ask - 1.50, 2)
+            tp = round(ask + 6.00, 2)
+            print(f"Momentum detekované! Otváram BUY pozíciu na {SYMBOL}")
+            await connection.create_market_buy_order(
+                symbol=SYMBOL,
+                volume=LOT_SIZE,
+                stop_loss=sl,
+                take_profit=tp
+            )
+
+        # Signál na SELL (klesajúci tlak)
+        elif price_momentum <= -3:
+            price_momentum = 0
+            sl = round(bid + 1.50, 2)
+            tp = round(bid - 6.00, 2)
+            print(f"Momentum detekované! Otváram SELL pozíciu na {SYMBOL}")
+            await connection.create_market_sell_order(
+                symbol=SYMBOL,
+                volume=LOT_SIZE,
+                stop_loss=sl,
+                take_profit=tp
+            )
 
     except Exception as e:
         print("Chyba v obchodnej logike:", e)
@@ -147,7 +184,7 @@ async def main():
     print("Pripájam sa k MetaApi serveru...")
     await connection.connect()
     await connection.wait_synchronized()
-    print("Úspešne pripojené a synchronizované. Bot funguje.")
+    print("Úspešne pripojené a synchronizované. Bot je plne aktívny.")
     
     while True:
         try:
@@ -156,7 +193,7 @@ async def main():
         except Exception as loop_err:
             print("Chyba v hlavnej slučke:", loop_err)
             
-        await asyncio.sleep(15)
+        await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())
