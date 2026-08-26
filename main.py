@@ -1,9 +1,9 @@
 import time
 import requests
 
-T = "tvoj_token"
-A = "tvoj_account_id"
-S = "XAUUSD"
+TOKEN = "tvoj_token"
+ACCOUNT_ID = "tvoj_account_id"
+SYMBOL = "XAUUSD"
 
 SL = 15
 RR = 4
