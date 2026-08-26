@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv('METAPI_TOKEN')
-ACCOUNT_ID = os.getenv('METAPI_ACCOUNT_ID', "37400088")
+# Tu je natvrdo zafixovaný tvoj DEMO účet, takže hneď uvidíš, že beží na deme:
+ACCOUNT_ID = "67207507"
 SYMBOL = "XAUUSD"
 
 LOT_PART = 0.01          
@@ -121,7 +122,7 @@ async def check_strategy_and_trade(connection):
         print("Chyba v stratégii:", e)
 
 async def main():
-    print("Spúšťam bota...")
+    print("Spúšťam bota na DEMO účte (67207507)...")
     await asyncio.sleep(3)
     
     while True:
@@ -136,10 +137,10 @@ async def main():
             except:
                 pass
 
-            print("Pripájam sa k MetaApi...")
+            print("Pripájam sa k MetaApi na DEMO...")
             await connection.connect()
             await connection.wait_synchronized()
-            print("[NOTIFIKÁCIA] ✅ Pripojené. Bot beží!")
+            print("[NOTIFIKÁCIA] ✅ Úspešne pripojené na DEMO účet 67207507!")
             
             while True:
                 await manage_positions(connection)
