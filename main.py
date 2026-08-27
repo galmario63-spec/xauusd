@@ -68,8 +68,8 @@ async def main():
     if account.state != 'DEPLOYED':
         await account.deploy()
         
-    # Pôvodné funkčné získanie RPC API priamo z objektu account
-    trade_api = account.get_rpc_api()
+    # Správne získanie RPC API, ktoré nespôsobí pád
+    trade_api = await metaapi.metatrader_account_api.get_rpc_api(ACCOUNT_ID)
 
     logger.info("Skript pre riadenie XAUUSD basketu úspešne spustený a beží.")
 
