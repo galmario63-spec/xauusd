@@ -15,14 +15,12 @@ for i in range(1, 1000):
     
     if balance > 500:
         trade_pnl = 0.0
-        # Agresívny model: TP1 (3x 0.20 lotu) + TP2 (1x 0.10 lotu)
-        success = random.choice([True, False, True]) # Vyššia šanca na úspech
+        # Stratégia: TP1 (3x 0.20 lotu) + TP2 (1x 0.10 lotu)
+        success = random.choice([True, False, True])
         
         if success:
-            # Zásah cieľa (+0.90 USD / 90 centov)
             trade_pnl += (3 * 0.20 * 1.00 * 100) + (1 * 0.10 * 3.00 * 100)
         else:
-            # Zásah Stop Lossu (-1.50 USD pre 0.70 lotu)
             trade_pnl -= ((3 * 0.20 + 1 * 0.10) * 1.50 * 100)
             
         balance += trade_pnl
