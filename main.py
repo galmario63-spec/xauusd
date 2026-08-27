@@ -3,14 +3,14 @@ import logging
 import os
 from metaapi_cloud_sdk import MetaApi
 
-# Konfigurácia z premenných prostredia (Railway variables)
+# Konfigurácia z premenných prostredia (Railway)
 TOKEN = os.getenv("METAAPI_TOKEN")
 ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
 SYMBOL = "XAUUSD"
-LOT_PER_PART = 0.01  # Tvoj zvolený lot na centovom účte
+LOT_PER_PART = 0.01  # Tvoj zvolený lot na cenu
 
 # Nastavenia pre Break-Even (v dolároch)
-BE_LOCK_PROFIT_USD = 0.20  # Zaručený zisk pri posune SL
+BE_LOCK_PROFIT_USD = 0.20  # Zaručený zisk pri posune na BE
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,12 +22,12 @@ async def main():
 
     metaapi = MetaApi(TOKEN)
     account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
-    
+
     # Čakanie na pripojenie účtu
     if account.state != "DEPLOYED":
         logger.info("Nasadzujem účet do cloudu...")
         await account.deploy()
-        
+
     logger.info("Pripájam sa k MetaTrader terminalu...")
     connection = account.get_rpc_connection()
     await connection.connect()
@@ -36,39 +36,49 @@ async def main():
 
     while True:
         try:
-            # 1. Získanie sviečok pre analýzu (M5 graf)
-            candles = await connection.get_candles(SYMBOL, "M5", 5)
+            # 1. Získanie sviečok pre analýzu (M1/M5)
+            candles = await connection.get_candles(SYMBOL, timeframe='1m', limit=5)
             if len(candles) < 3:
                 await asyncio.sleep(10)
                 continue
 
-            prev = candles[-2]  # Predchádzajúca sviečka
+            prev = candles[-2]  # Predchádzajúca uzatvorená sviečka
             curr = candles[-1]  # Aktuálna sviečka
 
             # Kontrola otvorených pozícií
             positions = await connection.get_positions()
             has_open_position = len(positions) > 0
 
-            # 2. Správa existujúcich pozícií (Break-Even na +0.20 USD)
+            # 2. Správa existujúcich pozícií (Trailing / Break-Even)
             for pos in positions:
                 profit = pos.get("profit", 0.0)
                 pos_id = pos.get("id")
-                pos_type = pos.get("type")  # "POSITION_TYPE_BUY" alebo "POSITION_TYPE_SELL"
+                pos_type = pos.get("type")
                 open_price = pos.get("openPrice")
-                current_sl = pos.get("stopLoss", 0)
+                current_sl = pos.get("stopLoss", 0.0)
 
-                # Ak zisk dosiahne alebo prekročí bod na zabezpečenie +0.20 USD
+                # Ak zisk dosiahne alebo prekročí limit pre Break-Even
                 if profit >= BE_LOCK_PROFIT_USD:
                     if pos_type == "POSITION_TYPE_BUY":
-                        desired_sl = open_price + 0.20
+                        desired_sl = open_price + 0.02  # Malý lock nad vstup
                         if current_sl < open_price:
-                            logger.info(f"Dosahuje Break-Even pre BUY pozíciu {pos_id}. Posúvam SL na istých +0.20 USD.")
-                    
+                            logger.info(f"Posúvam BUY pozíciu #{pos_id} na Break-Even/Profit.")
+                            await connection.modify_position(
+                                position_id=pos_id,
+                                stop_loss=desired_sl,
+                                take_profit=pos.get("takeProfit")
+                            )
                     elif pos_type == "POSITION_TYPE_SELL":
+                        desired_sl = open_price - 0.02
                         if current_sl == 0 or current_sl > open_price:
-                            logger.info(f"Dosahuje Break-Even pre SELL pozíciu {pos_id}. Posúvam SL na istých +0.20 USD.")
+                            logger.info(f"Posúvam SELL pozíciu #{pos_id} na Break-Even/Profit.")
+                            await connection.modify_position(
+                                position_id=pos_id,
+                                stop_loss=desired_sl,
+                                take_profit=pos.get("takeProfit")
+                            )
 
-            # 3. Logika pre vstupy (ak nemáme otvorenú pozíciu)
+            # 3. Logika pre vstupy (ak nemáme žiadnu otvorenú pozíciu)
             if not has_open_position:
                 prev_body = abs(prev["close"] - prev["open"])
                 curr_body = abs(curr["close"] - curr["open"])
@@ -77,7 +87,7 @@ async def main():
                 is_prev_bearish = prev["close"] < prev["open"]
                 is_curr_bullish = curr["close"] > curr["open"]
                 bullish_engulfing = (
-                    is_prev_bearish and is_curr_bullish and 
+                    is_prev_bearish and is_curr_bullish and
                     curr["close"] >= prev["open"] and curr["open"] <= prev["close"]
                 )
 
@@ -85,28 +95,32 @@ async def main():
                 is_prev_bullish = prev["close"] > prev["open"]
                 is_curr_bearish = curr["close"] < curr["open"]
                 bearish_engulfing = (
-                    is_prev_bullish and is_curr_bearish and 
+                    is_prev_bullish and is_curr_bearish and
                     curr["close"] <= prev["open"] and curr["open"] >= prev["close"]
                 )
 
-                # Získanie aktuálnych cien pre výpočet SL / TP
-                tick = await connection.get_symbol_price(SYMBOL)
+                # Získanie aktuálnych cien pre SL / TP
+                tick = await connection.get_symbol_specification(SYMBOL) # prípadne get_symbol_price ak je k dispozícii
 
                 if bullish_engulfing:
-                    logger.info("Detekovaný BUY signál (Bullish Engulfing)! Otváram nákup...")
-                    sl = tick["bid"] - 3.0
-                    tp = tick["ask"] + 5.0
+                    logger.info("Detekovaný BUY signál (Bullish Engulfing)!")
+                    # Otvorenie BUY pozície
                     await connection.create_market_buy_order(
-                        SYMBOL, LOT_PER_PART, stop_loss=sl, take_profit=tp
+                        symbol=SYMBOL,
+                        volume=LOT_PER_PART,
+                        stop_loss_rate=round(curr["low"] - 1.5, 2),
+                        take_profit_rate=round(curr["close"] + 3.0, 2)
                     )
                     logger.info("BUY príkaz úspešne odoslaný.")
 
                 elif bearish_engulfing:
-                    logger.info("Detekovaný SELL signál (Bearish Engulfing)! Otváram predaj...")
-                    sl = tick["ask"] + 3.0
-                    tp = tick["bid"] - 5.0
+                    logger.info("Detekovaný SELL signál (Bearish Engulfing)!")
+                    # Otvorenie SELL pozície
                     await connection.create_market_sell_order(
-                        SYMBOL, LOT_PER_PART, stop_loss=sl, take_profit=tp
+                        symbol=SYMBOL,
+                        volume=LOT_PER_PART,
+                        stop_loss_rate=round(curr["high"] + 1.5, 2),
+                        take_profit_rate=round(curr["close"] - 3.0, 2)
                     )
                     logger.info("SELL príkaz úspešne odoslaný.")
 
