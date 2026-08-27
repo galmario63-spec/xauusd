@@ -10,7 +10,7 @@ from metaapi_cloud_sdk import MetaApi
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-ACCOUNT_ID = "6ec9b96d-841d-4c6c-8290-7d35114704b2"
+ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
 TOKEN = os.getenv("METAAPI_TOKEN")
 
 SYMBOL = "XAUUSD"
@@ -19,11 +19,11 @@ LOT_TP2 = 0.10
 SL_POINTS = 300
 
 async def main():
-    if not TOKEN:
-        logger.error("Chýba METAAPI_TOKEN v premenných Railway!")
+    if not TOKEN or not ACCOUNT_ID:
+        logger.error("Chýba METAAPI_TOKEN alebo METAAPI_ACCOUNT_ID v premenných Railway!")
         return
 
-    logger.info("Spúšťam reálneho MetaApi bota pre RoboForex ProCent...")
+    logger.info("Spúšťam reálneho MetaApi bota pre RoboForex...")
     
     metaapi = MetaApi(TOKEN)
     account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
@@ -35,7 +35,7 @@ async def main():
     await connection.connect()
     await connection.wait_synchronized()
     
-    logger.info("Úspešne pripojené k RoboForex ProCent cez MetaApi!")
+    logger.info("Úspešne pripojené k RoboForex cez MetaApi!")
 
     while True:
         try:
@@ -60,7 +60,7 @@ async def main():
             price_info = await connection.get_symbol_price(SYMBOL)
             
             if bullish:
-                logger.info("Bullish Engulfing - otváram BUY na ProCent účte!")
+                logger.info("Bullish Engulfing - otváram BUY na účte!")
                 ask = price_info['ask']
                 sl = ask - (SL_POINTS * 0.1)
                 
@@ -71,7 +71,7 @@ async def main():
                 logger.info("BUY príkazy úspešne odoslané.")
                 
             elif bearish:
-                logger.info("Bearish Engulfing - otváram SELL na ProCent účte!")
+                logger.info("Bearish Engulfing - otváram SELL na účte!")
                 bid = price_info['bid']
                 sl = bid + (SL_POINTS * 0.1)
                 
