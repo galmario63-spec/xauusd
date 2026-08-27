@@ -15,7 +15,7 @@ TOKEN = os.getenv("METAAPI_TOKEN")
 
 SYMBOL = "XAUUSD"
 
-# Konfigurácia lotov a počtu obchodov (žiadne duplicity)
+# Konfigurácia lotov a počtu obchodov
 LOT_TP1 = 0.30
 COUNT_TP1 = 5
 
@@ -48,7 +48,7 @@ async def manage_open_positions(trade_api, account_id):
             if pos_type == 'POSITION_TYPE_BUY':
                 # Ak zisk dosiahne 3 USD a SL ešte nie je posunutý na zaistenie zisku
                 if profit_usd >= BE_TRIGGER_USD and current_sl < open_price:
-                    logger.info(f"Pozícia {ticket} dosiahła zisk {profit_usd} USD, posúvam SL na zaistenie zisku.")
+                    logger.info(f"Pozícia {ticket} dosiahla zisk {profit_usd} USD, posúvam SL na zaistenie zisku.")
                     await trade_api.modify_position(
                         account_id=account_id,
                         position_id=ticket,
@@ -70,7 +70,7 @@ async def main():
     if account.state != 'DEPLOYED':
         await account.deploy()
         
-    synced_state = await account.get_synced_state()
+    # Chybný riadok s get_synced_state() bol kompletne odstránený
     trade_api = account.get_rpc_api()
 
     logger.info("Skript pre riadenie XAUUSD basketu úspešne spustený a beží.")
