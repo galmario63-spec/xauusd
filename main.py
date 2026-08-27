@@ -51,7 +51,6 @@ async def main():
 
             # 2. Správa existujúcich pozícií (Break-Even na +0.20 USD)
             for pos in positions:
-                # Výpočet aktuálneho zisku v USD pre pozíciu
                 profit = pos.get("profit", 0.0)
                 pos_id = pos.get("id")
                 pos_type = pos.get("type")  # "POSITION_TYPE_BUY" alebo "POSITION_TYPE_SELL"
@@ -59,30 +58,22 @@ async def main():
                 current_sl = pos.get("stopLoss", 0)
 
                 # Ak zisk dosiahne alebo prekročí bod na zabezpečenie +0.20 USD
-                # (Zjednodušený prepočet pre XAUUSD: 0.20 USD pri lote .01 predstavuje pohyb cca 2 pipsy v zisku)
                 if profit >= BE_LOCK_PROFIT_USD:
-                    # Skontrolujeme, či už SL nie je nastavený lepšie
                     if pos_type == "POSITION_TYPE_BUY":
-                        # Pre BUY posuneme SL nad nákupnú cenu, aby garantoval zisk
-                        desired_sl = open_price + 0.20  # orientačný posun, broker vyžaduje presné pipsové limity, upravíme bezpečne
-                        # Ošetríme, aby sme neposúvali SL do nekonečna ak už je na mieste
+                        desired_sl = open_price + 0.20
                         if current_sl < open_price:
-                            logger.info(dosahuje Break-Even pre BUY pozíciu {pos_id}. Posúvam SL na istých +0.20 USD.)
-                            # Tu aplikujeme posun SL cez MetaApi modifikáciu
-                            # (MetaApi modifikácia pozície)
+                            logger.info(f"Dosahuje Break-Even pre BUY pozíciu {pos_id}. Posúvam SL na istých +0.20 USD.")
                     
                     elif pos_type == "POSITION_TYPE_SELL":
-                        # Pre SELL posuneme SL pod predajnú cenu
                         if current_sl == 0 or current_sl > open_price:
                             logger.info(f"Dosahuje Break-Even pre SELL pozíciu {pos_id}. Posúvam SL na istých +0.20 USD.")
 
             # 3. Logika pre vstupy (ak nemáme otvorenú pozíciu)
             if not has_open_position:
-                # Definícia sviečok (Telo a smery)
                 prev_body = abs(prev["close"] - prev["open"])
                 curr_body = abs(curr["close"] - curr["open"])
 
-                # Signál BUY: Bullish engulfing (predchádzajúca červená, aktuálna silná zelená)
+                # Signál BUY: Bullish engulfing
                 is_prev_bearish = prev["close"] < prev["open"]
                 is_curr_bullish = curr["close"] > curr["open"]
                 bullish_engulfing = (
@@ -90,7 +81,7 @@ async def main():
                     curr["close"] >= prev["open"] and curr["open"] <= prev["close"]
                 )
 
-                # Signál SELL: Bearish engulfing (predchádzajúca zelená, aktuálna silná červená)
+                # Signál SELL: Bearish engulfing
                 is_prev_bullish = prev["close"] > prev["open"]
                 is_curr_bearish = curr["close"] < curr["open"]
                 bearish_engulfing = (
@@ -103,8 +94,8 @@ async def main():
 
                 if bullish_engulfing:
                     logger.info("Detekovaný BUY signál (Bullish Engulfing)! Otváram nákup...")
-                    sl = tick["bid"] - 3.0  # Pôvodná bezpečná vzdialenosť SL
-                    tp = tick["ask"] + 5.0  # Pôvodná vzdialenosť TP
+                    sl = tick["bid"] - 3.0
+                    tp = tick["ask"] + 5.0
                     await connection.create_market_buy_order(
                         SYMBOL, LOT_PER_PART, stop_loss=sl, take_profit=tp
                     )
@@ -112,14 +103,13 @@ async def main():
 
                 elif bearish_engulfing:
                     logger.info("Detekovaný SELL signál (Bearish Engulfing)! Otváram predaj...")
-                    sl = tick["ask"] + 3.0  # SL nad aktuálnu cenu predaja
-                    tp = tick["bid"] - 5.0  # TP pod aktuálnu cenu predaja
+                    sl = tick["ask"] + 3.0
+                    tp = tick["bid"] - 5.0
                     await connection.create_market_sell_order(
                         SYMBOL, LOT_PER_PART, stop_loss=sl, take_profit=tp
                     )
                     logger.info("SELL príkaz úspešne odoslaný.")
 
-            # Krátka pauza pred ďalšou kontrolou sviečok
             await asyncio.sleep(15)
 
         except Exception as err:
