@@ -37,8 +37,8 @@ async def main():
 
     while True:
         try:
-            # 1. Získanie sviečok pre analýzu (M1/M5) cez account objekt
-            candles = await account.get_historical_candles(SYMBOL, '1m', datetime.now() - timedelta(hours=1), 5)
+            # 1. Získanie sviečok pre 5-minútový časový rámec (zhodný s M5 grafom)
+            candles = await account.get_historical_candles(SYMBOL, '5m', datetime.now() - timedelta(hours=2), 5)
             if len(candles) < 3:
                 await asyncio.sleep(10)
                 continue
@@ -96,7 +96,7 @@ async def main():
                 )
 
                 if bullish_engulfing:
-                    logger.info("Detekovaný BUY signál (Bullish Engulfing)!")
+                    logger.info("Detekovaný BUY signál (Bullish Engulfing na M5)!")
                     await connection.create_market_buy_order(
                         symbol=SYMBOL,
                         volume=LOT_PER_PART,
@@ -106,7 +106,7 @@ async def main():
                     logger.info("BUY príkaz úspešne odoslaný.")
 
                 elif bearish_engulfing:
-                    logger.info("Detekovaný SELL signál (Bearish Engulfing)!")
+                    logger.info("Detekovaný SELL signál (Bearish Engulfing na M5)!")
                     await connection.create_market_sell_order(
                         symbol=SYMBOL,
                         volume=LOT_PER_PART,
