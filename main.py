@@ -1,29 +1,71 @@
-import random
-import math
+import asyncio
+import logging
+from datetime import datetime, timedelta
+from mt5_broker_api import MT5Connection  # Predpokladaná knižnica pre pripojenie
 
-print("XAUUSD bot štartuje...")
+# Nastavenie logovania
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
-# Počiatočný vklad v centoch
-balance = 4192.30  
-equity_curve = [balance]
+# Konfigurácia
+SYMBOL = "XAUUSD"
+LOT_PER_PART = 0.20  # Alebo podľa tvojho nastavenia
 
-# Simulácia obchodov bez externých knižníc
-price = 2000.0
-for i in range(1, 1000):
-    price += random.uniform(-2.0, 2.0)
-    bullish = random.choice([True, False])
+async def main():
+    logger.info("XAUUSD reálny obchodný bot štartuje...")
     
-    if balance > 500:
-        trade_pnl = 0.0
-        # Stratégia: TP1 (3x 0.20 lotu) + TP2 (1x 0.10 lotu)
-        success = random.choice([True, False, True])
-        
-        if success:
-            trade_pnl += (3 * 0.20 * 1.00 * 100) + (1 * 0.10 * 3.00 * 100)
-        else:
-            trade_pnl -= ((3 * 0.20 + 1 * 0.10) * 1.50 * 100)
+    # Pripojenie k brokerovi / MT5 bridge
+    connection = MT5Connection()
+    await connection.connect()
+    
+    while True:
+        try:
+            # 1. Získanie sviečok pre 5-minútový časový rámec (zhodný s M5 grafom)
+            candles = await connection.get_historical_candles(
+                SYMBOL, '5m',
+                datetime.now() - timedelta(hours=2), 5
+            )
             
-        balance += trade_pnl
-        equity_curve.append(balance)
+            if len(candles) < 3:
+                await asyncio.sleep(10)
+                continue
+                
+            # Logika pre detekciu sviečok (Engulfing)
+            prev_candle = candles[-2]
+            curr_candle = candles[-1]
+            
+            bullish_engulfing = (curr_candle['close'] > curr_candle['open'] and 
+                                 prev_candle['close'] < prev_candle['open'] and 
+                                 curr_candle['close'] >= prev_candle['open'] and 
+                                 curr_candle['open'] <= prev_candle['close'])
+                                 
+            bearish_engulfing = (curr_candle['close'] < curr_candle['open'] and 
+                                 prev_candle['close'] > prev_candle['open'] and 
+                                 curr_candle['close'] <= prev_candle['open'] and 
+                                 curr_candle['open'] >= prev_candle['close'])
 
-print(f"Konečný stav účtu: {balance:.2f} centov (t.j. {balance/100:.2f} USD)")
+            if bullish_engulfing:
+                logger.info("Detekovaný BUY signál (Bullish Engulfing na M5)!")
+                await connection.create_market_buy_order(
+                    symbol=SYMBOL,
+                    volume=LOT_PER_PART,
+                )
+                logger.info("BUY príkaz úspešne odoslaný.")
+                
+            elif bearish_engulfing:
+                logger.info("Detekovaný SELL signál (Bearish Engulfing na M5)!")
+                await connection.create_market_sell_order(
+                    symbol=SYMBOL,
+                    volume=LOT_PER_PART,
+                )
+                logger.info("SELL príkaz úspešne odoslaný.")
+            
+            # Kontrola každých 30 sekúnd
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logger.error(f"Chyba v hlavnej slučke bota: {e}")
+            await asyncio.sleep(10)
+
+if __name__ == "__main__":
+    asyncio.run(main())
