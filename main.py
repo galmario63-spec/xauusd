@@ -1,125 +1,64 @@
-import asyncio
-import logging
-import os
-from datetime import datetime, timedelta
-from metaapi_cloud_sdk import MetaApi
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 
-# Konfigurácia z premenných prostredia
-TOKEN = os.getenv("METAAPI_TOKEN")
-ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
-SYMBOL = "XAUUSD"
-LOT_PER_PART = 0.01  # Tvoj zvolený lot
+# XAUUSD - Hlavný skript pre centový účet
+np.random.seed(42)
+dates = pd.date_range(start="2023-01-01", end="2026-08-27", freq="1h")
+prices = 2000 + np.cumsum(np.random.randn(len(dates)) * 2.0)
 
-# Nastavenia pre Break-Even (v dolároch)
-BE_LOCK_PROFIT_USD = 0.20  # Zaručený zisk
+df = pd.DataFrame({
+    'Open': prices + np.random.randn(len(dates)) * 0.5,
+    'High': prices + abs(np.random.randn(len(dates)) * 1.5),
+    'Low': prices - abs(np.random.randn(len(dates)) * 1.5),
+    'Close': prices + np.random.randn(len(dates)) * 0.5
+}, index=dates)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Aktuálny počiatočný vklad v centoch
+balance = 4192.30  
+equity_curve = [balance]
 
-async def main():
-    if not TOKEN or not ACCOUNT_ID:
-        logger.error("Chýbajú premenné prostredia METAAPI_TOKEN alebo METAAPI_ACCOUNT_ID!")
-        return
+for i in range(1, len(df)):
+    prev = df.iloc[i-1]
+    curr = df.iloc[i]
+    
+    bullish = curr['Close'] > curr['Open'] and prev['Close'] < prev['Open']
+    bearish = curr['Close'] < curr['Open'] and prev['Close'] > prev['Open']
+    
+    if (bullish or bearish) and balance > 500:
+        entry_price = curr['Close']
+        trade_pnl = 0.0
+        
+        # Agresívny model: TP1 (3x 0.20 lotu) + TP2 (1x 0.10 lotu) v centoch
+        for j in range(i+1, min(i+10, len(df))):
+            fc = df.iloc[j]
+            if bullish:
+                diff = fc['High'] - entry_price
+                if diff >= 1.00:
+                    trade_pnl += (3 * 0.20 * 1.00 * 100) + (1 * 0.10 * 3.00 * 100)
+                    break
+                elif diff <= -1.50:
+                    trade_pnl -= ((3 * 0.20 + 1 * 0.10) * 1.50 * 100)
+                    break
+            else:
+                diff = entry_price - fc['Low']
+                if diff >= 1.00:
+                    trade_pnl += (3 * 0.20 * 1.00 * 100) + (1 * 0.10 * 3.00 * 100)
+                    break
+                elif diff <= -1.50:
+                    trade_pnl -= ((3 * 0.20 + 1 * 0.10) * 1.50 * 100)
+                    break
+                    
+        balance += trade_pnl
+        equity_curve.append(balance)
 
-    metaapi = MetaApi(TOKEN)
-    account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
+plt.figure(figsize=(10, 5))
+plt.plot(equity_curve, label="Aktuálny kapitál 4192.30 centov (3x 0.20 | 1x 0.10)", color='blue')
+plt.title("XAUUSD Main Script - Centový účet (2023 - 2026)")
+plt.xlabel("Počet obchodov")
+plt.ylabel("Zostatok v centoch")
+plt.legend()
+plt.grid(True)
+plt.show()
 
-    # Čakanie na pripojenie účtu
-    if account.state != "DEPLOYED":
-        logger.info("Nasadzujem účet do cloudu...")
-        await account.deploy()
-
-    logger.info("Pripájam sa k MetaTrader terminalu...")
-    connection = account.get_rpc_connection()
-    await connection.connect()
-    await connection.wait_synchronized()
-    logger.info("Úspešne pripojené a zsynchronizované!")
-
-    while True:
-        try:
-            # 1. Získanie sviečok pre 5-minútový časový rámec (zhodný s M5 grafom)
-            candles = await account.get_historical_candles(SYMBOL, '5m', datetime.now() - timedelta(hours=2), 5)
-            if len(candles) < 3:
-                await asyncio.sleep(10)
-                continue
-
-            prev = candles[-2]  # Predchádzajúca uzatvorená sviečka
-            curr = candles[-1]  # Aktuálna sviečka
-
-            # Kontrola otvorených pozícií
-            positions = await connection.get_positions()
-            has_open_position = len(positions) > 0
-
-            # 2. Správa existujúcich pozícií (Trailing / Break-Even)
-            for pos in positions:
-                profit = pos.get("profit", 0.0)
-                pos_id = pos.get("id")
-                pos_type = pos.get("type")
-                open_price = pos.get("openPrice")
-                current_sl = pos.get("stopLoss", 0.0)
-
-                # Ak zisk dosiahne alebo prekročí limit pre Break-Even
-                if profit >= BE_LOCK_PROFIT_USD:
-                    if pos_type == "POSITION_TYPE_BUY":
-                        desired_sl = open_price + 0.02  # Malý lock nad vstup
-                        if current_sl < open_price:
-                            logger.info(f"Posúvam BUY pozíciu #{pos_id} na Break-Even/Profit.")
-                            await connection.modify_position(
-                                position_id=pos_id,
-                                stop_loss=desired_sl,
-                                take_profit=pos.get("takeProfit")
-                            )
-                    elif pos_type == "POSITION_TYPE_SELL":
-                        desired_sl = open_price - 0.02
-                        if current_sl == 0 or current_sl > open_price:
-                            logger.info(f"Posúvam SELL pozíciu #{pos_id} na Break-Even/Profit.")
-                            await connection.modify_position(
-                                position_id=pos_id,
-                                stop_loss=desired_sl,
-                                take_profit=pos.get("takeProfit")
-                            )
-
-            # 3. Stratégia (vstup len ak nie je otvorená pozícia)
-            if not has_open_position:
-                bullish_engulfing = (
-                    prev["close"] < prev["open"] and 
-                    curr["close"] > curr["open"] and 
-                    curr["close"] >= prev["open"] and 
-                    curr["open"] <= prev["close"]
-                )
-
-                bearish_engulfing = (
-                    prev["close"] > prev["open"] and 
-                    curr["close"] < curr["open"] and 
-                    curr["close"] <= prev["open"] and 
-                    curr["open"] >= prev["close"]
-                )
-
-                if bullish_engulfing:
-                    logger.info("Detekovaný BUY signál (Bullish Engulfing na M5)!")
-                    await connection.create_market_buy_order(
-                        symbol=SYMBOL,
-                        volume=LOT_PER_PART,
-                        stop_loss_rate=round(curr["low"] - 1.5, 2),
-                        take_profit_rate=round(curr["close"] + 3.0, 2)
-                    )
-                    logger.info("BUY príkaz úspešne odoslaný.")
-
-                elif bearish_engulfing:
-                    logger.info("Detekovaný SELL signál (Bearish Engulfing na M5)!")
-                    await connection.create_market_sell_order(
-                        symbol=SYMBOL,
-                        volume=LOT_PER_PART,
-                        stop_loss_rate=round(curr["high"] + 1.5, 2),
-                        take_profit_rate=round(curr["close"] - 3.0, 2)
-                    )
-                    logger.info("SELL príkaz úspešne odoslaný.")
-
-            await asyncio.sleep(15)
-
-        except Exception as err:
-            logger.error(f"Chyba v hlavnej slučke bota: {err}")
-            await asyncio.sleep(10)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+print(f"Konečný stav účtu: {balance:.2f} centov (t.j. {balance/100:.2f} USD)")
