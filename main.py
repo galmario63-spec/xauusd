@@ -14,7 +14,7 @@ TOKEN = os.getenv("METAAPI_TOKEN")
 
 SYMBOL = "XAUUSD"
 
-# Konfigurácia lotov a počtu obchodov (presne podľa tvojho zadania)
+# Konfigurácia lotov a počtu obchodov
 LOT_TP1 = 0.30
 COUNT_TP1 = 5
 
@@ -29,9 +29,9 @@ TP2_POINTS = 800
 BE_TRIGGER_USD = 3.00  # Keď zisk na obchode dosiahne 3 USD
 BE_LOCK_USD = 1.00     # BE sa posunie na garantovaný zisk 1 USD
 
-async def manage_open_positions(trade_api, account_id):
+async def manage_open_positions(connection):
     try:
-        positions = await trade_api.get_positions(account_id)
+        positions = await connection.get_positions()
         
         for position in positions:
             if position['symbol'] != SYMBOL:
@@ -47,8 +47,7 @@ async def manage_open_positions(trade_api, account_id):
             if pos_type == 'POSITION_TYPE_BUY':
                 if profit_usd >= BE_TRIGGER_USD and current_sl < open_price:
                     logger.info(f"Pozícia {ticket} dosiahla zisk {profit_usd} USD, posúvam SL na zaistenie zisku.")
-                    await trade_api.modify_position(
-                        account_id=account_id,
+                    await connection.modify_position(
                         position_id=ticket,
                         stop_loss=open_price + 0.10,
                         take_profit=position.get('takeProfit', 0)
@@ -68,13 +67,14 @@ async def main():
     if account.state != 'DEPLOYED':
         await account.deploy()
         
-    # Jediný správny spôsob volania RPC API pre toto SDK, aby nenastal AttributeError
-    trade_api = await metaapi.metatrader_account_api.get_rpc_api(ACCOUNT_ID)
+    # Správne RPC pripojenie pre MetaApi Python SDK
+    connection = account.get_rpc_connection()
+    await connection.connect()
 
     logger.info("Skript pre riadenie XAUUSD basketu úspešne spustený a beží.")
 
     while True:
-        await manage_open_positions(trade_api, ACCOUNT_ID)
+        await manage_open_positions(connection)
         await asyncio.sleep(5)
 
 if __name__ == "__main__":
