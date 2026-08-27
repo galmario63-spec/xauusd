@@ -1,6 +1,7 @@
 import sys
 sys.stdout.reconfigure(line_buffering=True)
 
+import os
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -9,21 +10,22 @@ from metaapi_cloud_sdk import MetaApi
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# Tvoje ID RoboForex ProCent účtu z MetaApi
 ACCOUNT_ID = "6ec9b96d-841d-4c6c-8290-7d35114704b2"
+TOKEN = os.getenv("METAAPI_TOKEN")
+
 SYMBOL = "XAUUSD"
 LOT_TP1 = 0.20
 LOT_TP2 = 0.10
 SL_POINTS = 300
-BE_TRIGGER = 150
 
 async def main():
+    if not TOKEN:
+        logger.error("Chýba METAAPI_TOKEN v premenných Railway!")
+        return
+
     logger.info("Spúšťam reálneho MetaApi bota pre RoboForex ProCent...")
     
-    # Token si Railway potiahne z Variables, alebo ho doplň sem
-    token = "tvôj_metaapi_token" # prípadne použijeme premennú prostredia
-    
-    metaapi = MetaApi(token)
+    metaapi = MetaApi(TOKEN)
     account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
     
     if account.state != 'DEPLOYED':
