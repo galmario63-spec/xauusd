@@ -57,18 +57,14 @@ async def open_initial_positions(connection):
         for _ in range(COUNT_TP1):
             await connection.create_market_buy_order(
                 symbol=SYMBOL,
-                volume=LOT_TP1,
-                stop_loss_points=SL_POINTS,
-                take_profit_points=TP1_POINTS
+                volume=LOT_TP1
             )
         
         # Otvorenie TP2 sady (3x 0.20 lot)
         for _ in range(COUNT_TP2):
             await connection.create_market_buy_order(
                 symbol=SYMBOL,
-                volume=LOT_TP2,
-                stop_loss_points=SL_POINTS,
-                take_profit_points=TP2_POINTS
+                volume=LOT_TP2
             )
             
         logger.info("Basket úspešne otvorený.")
