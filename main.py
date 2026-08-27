@@ -39,9 +39,9 @@ async def main():
 
     while True:
         try:
-            # Správna metóda MetaApi pre sťahovanie sviečok cez RPC
-            from_date = datetime.utcnow() - timedelta(hours=2)
-            candles = await connection.get_historical_candles(SYMBOL, '5m', from_date, 3)
+            # Sviečky sa v MetaApi ťahajú priamo cez objekt account
+            start_time = datetime.utcnow() - timedelta(hours=2)
+            candles = await account.get_historical_candles(SYMBOL, '5m', start_time, 3)
             
             if not candles or len(candles) < 2:
                 await asyncio.sleep(10)
