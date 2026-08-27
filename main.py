@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import aiohttp
 from metaapi_cloud_sdk import MetaApi
 
 # Nastavenie logovania
@@ -16,6 +17,14 @@ accounts_raw = os.getenv(
 ACCOUNT_IDS = [acc.strip() for acc in accounts_raw.split(",") if acc.strip()]
 TOKEN = os.getenv("METAAPI_TOKEN", "")
 
+# Telegram nastavenia (ak sú vyplnené v Railway)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# Určíme, ktorý ID je centový účet (druhý v poradí alebo podľa potreby)
+# Predpokladáme, že centový je ten druhý, prípadne ho vieme ošetriť kontextom
+CENT_ACCOUNT_ID = ACCOUNT_IDS[1] if len(ACCOUNT_IDS) > 1 else ACCOUNT_IDS[0]
+
 # Obchodná stratégia & Parametre
 SYMBOL = "XAUUSD"
 LOT_PER_PART = 0.10  # 0.10 lot na časť
@@ -25,23 +34,30 @@ TP2_POINTS = 30.0  # TP pre 3. obchod (1:3)
 BE_TRIGGER_PRICE_DIFF = 3.0  # Pohyblivý Break-Even po +3.0 pohybe
 
 
-async def check_market_structure_and_pa(connection):
-  """Analyzuje posledné sviečky, hľadá S/D zóny a Price Action signál.
-
-  (V tejto verzii vyhodnocuje dynamický sviečkový vzorec na M15/M5).
-  """
+async def send_telegram_message(message):
+  """Odošle notifikáciu na Telegram iba ak sú nastavené premenné."""
+  if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    return
   try:
-    # Stiahneme posledné sviečky pre analýzu (napr. timeframe M15)
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+    async with aiohttp.ClientSession() as session:
+      async with session.post(url, json=payload) as response:
+        if response.status != 200:
+          logging.error(f"Chyba pri odosielaní Telegram správy: {response.status}")
+  except Exception as e:
+    logging.error(f"Výnimka pri Telegram notifikácii: {e}")
+
+
+async def check_market_structure_and_pa(connection):
+  """Analyzuje posledné sviečky a hľadá S/D zóny / Price Action."""
+  try:
     candles = await connection.get_historical_candles(SYMBOL, "15m", 20)
     if not candles or len(candles) < 5:
       return False
 
-    # Jednoduchá Price Action / S/D logika:
-    # Sledujeme poslednú zatvorenú sviečku a porovnávame ju so swingovými hladinami
     last_candle = candles[-1]
     prev_candle = candles[-2]
-
-    # Príklad bullish signálu (odraz od zóny / silná sviečka nahor)
     body_size = abs(last_candle["close"] - last_candle["open"])
     is_bullish_engulfing = (
         last_candle["close"] > last_candle["open"]
@@ -49,21 +65,21 @@ async def check_market_structure_and_pa(connection):
         and last_candle["close"] >= prev_candle["open"]
     )
 
-    # Ak nastane Price Action potvrdenie, vrácame True (signál na BUY)
     if is_bullish_engulfing or body_size > 2.0:
-      logging.info(
-          "Detekovaný Price Action signál / S/D odraz na XAUUSD (M15)."
-      )
       return True
 
     return False
   except Exception as e:
-    logging.error(f"Chyba pri analýze sviečok a zón: {e}")
+    logging.error(f"Chyba pri analýze sviečok: {e}")
     return False
 
 
 async def check_and_trade(metaapi, account_id):
-  """Skontroluje centový účet, analyzuje trh a otvorí pozície pri splnení podmienok."""
+  """Skontroluje trh a otvorí pozície VÝHRADNE na centovom účte."""
+  # Ak to nie je centový účet, túto funkciu preskočíme
+  if account_id != CENT_ACCOUNT_ID:
+    return
+
   try:
     account = await metaapi.metatrader_account_api.get_account(account_id)
     if account.state != "DEPLOYED":
@@ -76,12 +92,11 @@ async def check_and_trade(metaapi, account_id):
     positions = await connection.get_positions()
     symbol_positions = [p for p in positions if p["symbol"] == SYMBOL]
 
-    # Ak už na účte pozície sú, nové neotvárame (necháme demo aj cent pod kontrolou)
+    # Ak už na centovom účte pozície sú, nové neotvárame
     if len(symbol_positions) > 0:
       await connection.close()
       return
 
-    # Spustíme analýzu S/D zón a Price Action
     signal_confirmed = await check_market_structure_and_pa(connection)
 
     if signal_confirmed:
@@ -89,10 +104,11 @@ async def check_and_trade(metaapi, account_id):
       ask_price = price["ask"]
 
       logging.info(
-          f"[{account_id}] S/D zóna a PA potvrdená! Otváram 3 obchody po"
-          f" {LOT_PER_PART} lot..."
+          f"[CENT] S/D zóna a PA potvrdená! Otváram 3 obchody po {LOT_PER_PART}"
+          " lot..."
       )
 
+      msg = f"🟢 <b>[CENTOVÝ ÚČET] Nový vstup na {SYMBOL}</b>\n"
       for i in range(3):
         initial_sl = ask_price - SL_POINTS
         if i < 2:
@@ -105,17 +121,19 @@ async def check_and_trade(metaapi, account_id):
         result = await connection.create_market_buy_order(
             SYMBOL, LOT_PER_PART, stop_loss=initial_sl, take_profit=initial_tp
         )
-        logging.info(
-            f"[{account_id}] Obchod {i+1} ({target_label}) otvorený: {result}"
-        )
+        logging.info(f"[CENT] Obchod {i+1} ({target_label}) otvorený.")
+        msg += f"• Obchod {i+1}: 0.10 lot ({target_label})\n"
+
+      # Pošleme upozornenie na Telegram len pre centový účet
+      await send_telegram_message(msg)
 
     await connection.close()
   except Exception as e:
-    logging.error(f"Chyba pri obchodnej logike na účte {account_id}: {e}")
+    logging.error(f"Chyba pri obchodnej logike na centovom účte: {e}")
 
 
 async def manage_open_positions(metaapi, account_id):
-  """Spravuje pohyblivý Break-Even (3) pre otvorené pozície na danom účte."""
+  """Spravuje pohyblivý Break-Even (3) pre daný účte."""
   try:
     account = await metaapi.metatrader_account_api.get_account(account_id)
     if account.state != "DEPLOYED":
@@ -125,7 +143,9 @@ async def manage_open_positions(metaapi, account_id):
     await connection.connect()
     await connection.wait_synchronized()
 
+    is_cent = account_id == CENT_ACCOUNT_ID
     positions = await connection.get_positions()
+
     for pos in positions:
       if pos["symbol"] == SYMBOL:
         open_price = pos["openPrice"]
@@ -137,27 +157,37 @@ async def manage_open_positions(metaapi, account_id):
           if current_price - open_price >= BE_TRIGGER_PRICE_DIFF:
             if current_sl < open_price:
               logging.info(
-                  f"[{account_id}] BUY Break-Even (3) dosiahnutý. Posúvam SL"
-                  f" na vstup ({open_price})..."
+                  f"[{'CENT' if is_cent else 'DEMO'}] BUY Break-Even dosiahnutý."
+                  f" Posúvam SL na vstup ({open_price})..."
               )
               await connection.modify_position(
                   position_id=pos["id"],
                   stop_loss=open_price,
                   take_profit=pos.get("takeProfit", 0),
               )
+              if is_cent:
+                await send_telegram_message(
+                    f"🛡 <b>[CENTOVÝ ÚČET] Break-Even aktivovaný</b>\nSL posunutý"
+                    f" na vstup: <code>{open_price}</code>"
+                )
 
         elif pos_type == "POSITION_TYPE_SELL":
           if open_price - current_price >= BE_TRIGGER_PRICE_DIFF:
             if current_sl > open_price or current_sl == 0:
               logging.info(
-                  f"[{account_id}] SELL Break-Even (3) dosiahnutý. Posúvam SL"
-                  f" na vstup ({open_price})..."
+                  f"[{'CENT' if is_cent else 'DEMO'}] SELL Break-Even dosiahnutý."
+                  f" Posúvam SL na vstup ({open_price})..."
               )
               await connection.modify_position(
                   position_id=pos["id"],
                   stop_loss=open_price,
                   take_profit=pos.get("takeProfit", 0),
               )
+              if is_cent:
+                await send_telegram_message(
+                    f"🛡 <b>[CENTOVÝ ÚČET] Break-Even aktivovaný</b>\nSL posunutý"
+                    f" na vstup: <code>{open_price}</code>"
+                )
 
     await connection.close()
   except Exception as e:
@@ -166,18 +196,15 @@ async def manage_open_positions(metaapi, account_id):
 
 async def main():
   metaapi = MetaApi(TOKEN)
-  logging.info(
-      f"Inteligentný S/D & PA bot spustený. Sledujem účty: {ACCOUNT_IDS}"
-  )
+  logging.info("Inteligentný multi-account bot spustený.")
 
   while True:
     for account_id in ACCOUNT_IDS:
-      # 1. Hľadáme signály a spravujeme vstupy (hlavne pre prázdny centový účet)
+      # Otvára obchody IBA na centovom účte
       await check_and_trade(metaapi, account_id)
-      # 2. Strážime Break-Even na aktívnych pozíciách
+      # Stráži Break-Even na oboch (ale notifikuje len cent)
       await manage_open_positions(metaapi, account_id)
 
-    # Pauza medzi iteráciami, aby sme zbytočne nezaťažovali API (napr. 30 sekúnd)
     await asyncio.sleep(30)
 
 
