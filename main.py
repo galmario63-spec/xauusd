@@ -1,168 +1,115 @@
 import asyncio
-import os
-from datetime import datetime, timezone
+import logging
 from metaapi_cloud_sdk import MetaApi
 
-TOKEN = os.getenv('METAPI_TOKEN')
-ACCOUNT_ID = "39ace2a7-8a53-420d-800f-35a9d9feadf2"
+# Nastavenie logovania
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+# --- NASTAVENIA ---
+# Z tu zadefinovaných premenných alebo Railway environment premenných načítame ID účtov
+# Ak sú oddelené čiarkou, bot ich spracuje naraz obidva.
+import os
+
+accounts_raw = os.getenv(
+    "METAAPI_ACCOUNT_ID",
+    "39ace2a7-8a53-420d-800f-35a9d9feadf2,6ec9b96d-841d-4c69-83b2-681f61a4b626",
+)
+ACCOUNT_IDS = [acc.strip() for acc in accounts_raw.split(",") if acc.strip()]
+TOKEN = os.getenv("METAAPI_TOKEN", "TVOJ_API_TOKEN_SEM")  # alebo si ho ťahá z env
+
+# Obchodná stratégia & Parametre
 SYMBOL = "XAUUSD"
+LOT_PER_PART = 0.01  # Veľkosť jednej časti
+PARTS_COUNT = 3  # Otvoríme 3 pozície naraz na signál
+BE_TRIGGER_PRICE_DIFF = 5.0  # Break-even posun na vstup po +5.0 USD pohybe
 
-LOT_PART = 0.01          
-SL_USD = 15.0         
-TP_1_USD = 30.0       
-TP_2_USD = 30.0       
-TP_3_USD = 30.0       
-# Break-Even sa aktivuje, keď sa cena posunie v tvojom smere o 5.0 dolárov na grafe
-BE_TRIGGER_PRICE_DIFF = 5.0      
 
-previous_positions = {}
-last_price = None
-price_momentum = 0
-
-def is_allowed_trading_time():
-    now = datetime.now(timezone.utc)
-    hour = now.hour
-    if 8 <= hour < 20:
-        return True
-    return False
-
-async def manage_positions(connection):
-    global previous_positions
+async def execute_trade_on_account(metaapi, account_id):
     try:
-        positions = await connection.get_positions()
-        current_pos_ids = {p['id'] for p in positions if p['symbol'] == SYMBOL}
-        
-        for pos_id, pos_info in list(previous_positions.items()):
-            if pos_id not in current_pos_ids:
-                print(f"[NOTIFIKÁCIA] 📴 Obchod uzavretý: {pos_info['type']} na cene {pos_info['openPrice']}")
-                del previous_positions[pos_id]
+        logging.info(
+            f"Pripájam sa k účtu: {account_id} pre vykonanie obchodu..."
+        )
+        account = await metaapi.metatrader_account_api.get_account(account_id)
+        if account.state != "DEPLOYED":
+            logging.info(f"Účet {account_id} nie je nasadený, nasadzujem...")
+            await account.deploy()
 
-        for pos in positions:
-            if pos['symbol'] == SYMBOL:
-                pos_id = pos['id']
-                open_price = pos['openPrice']
-                current_sl = pos.get('stopLoss', 0)
-                type_pos = pos['type']
-                
-                # Získame aktuálnu trhovú cenu pre kontrolu posunu
-                price = await connection.get_symbol_price(SYMBOL)
-                if not price:
-                    continue
-                
-                bid = price.get('bid')
-                ask = price.get('ask')
-                if not bid or not ask:
-                    continue
+        connection = account.get_rpc_connection()
+        await connection.connect()
+        await connection.wait_synchronized()
 
-                if pos_id not in previous_positions:
-                    previous_positions[pos_id] = {
-                        'type': type_pos,
-                        'openPrice': open_price
-                    }
-                    print(f"[NOTIFIKÁCIA] 🔔 Sledujem novú pozíciu: {type_pos} za {open_price}")
-
-                # Kontrola Break-Even podľa cenového posunu (nie dolárového zisku)
-                if type_pos == 'POSITION_TYPE_BUY':
-                    current_profit_distance = bid - open_price
-                    if current_profit_distance >= BE_TRIGGER_PRICE_DIFF and current_sl != open_price:
-                        await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
-                        print(f"[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre BUY! Cena prešla +{current_profit_distance:.2f} USD, SL posunutý na vstup: {open_price}")
-                        
-                elif type_pos == 'POSITION_TYPE_SELL':
-                    current_profit_distance = open_price - ask
-                    if current_profit_distance >= BE_TRIGGER_PRICE_DIFF and current_sl != open_price:
-                        await connection.modify_position(position_id=pos_id, stop_loss=open_price, take_profit=pos.get('takeProfit'))
-                        print(f"[NOTIFIKÁCIA] 🛡️ Break-Even aktivovaný pre SELL! Cena prešla +{current_profit_distance:.2f} USD, SL posunutý na vstup: {open_price}")
-                        
-    except Exception as e:
-        print("Chyba pri správe pozícií:", e)
-
-async def check_strategy_and_trade(connection):
-    global last_price, price_momentum
-    try:
-        if not is_allowed_trading_time():
-            return
-
-        positions = await connection.get_positions()
-        if any(p['symbol'] == SYMBOL for p in positions):
-            return
-
+        # Získanie aktuálnej ceny
         price = await connection.get_symbol_price(SYMBOL)
-        if not price:
-            return
-            
-        bid = price.get('bid')
-        ask = price.get('ask')
-        if not bid or not ask:
-            return
+        ask_price = price["ask"]
+        logging.info(f"Aktuálna Ask cena pre {SYMBOL} na účte {account_id}: {ask_price}")
 
-        current_mid = (bid + ask) / 2
+        # Otvorenie 3 pozícií paralelne (split na 3 časti)
+        for i in range(PARTS_COUNT):
+            logging.info(
+                f"[{account_id}] Otváram pozíciu {i+1}/{PARTS_COUNT} (BUY {LOT_PER_PART} lot)..."
+            )
+            result = await connection.create_market_buy_order(
+                SYMBOL, LOT_PER_PART, stop_loss=0, take_profit=0
+            )
+            logging.info(f"[{account_id}] Pozícia {i+1} úspešne otvorená: {result}")
 
-        if last_price is not None:
-            diff = current_mid - last_price
-            if diff > 0.10:
-                price_momentum += 1
-            elif diff < -0.10:
-                price_momentum -= 1
-            else:
-                price_momentum = 0
-
-        last_price = current_mid
-
-        if price_momentum >= 3:
-            price_momentum = 0
-            print("[NOTIFIKÁCIA] 🚀 Signál BUY! Otváram 3 časti...")
-            for i in range(2):
-                sl = round(ask - SL_USD, 2)
-                tp = round(ask + TP_1_USD, 2)
-                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_PART, stop_loss=sl, take_profit=tp)
-            sl = round(ask - SL_USD, 2)
-            tp = round(ask + TP_3_USD, 2)
-            await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_PART, stop_loss=sl, take_profit=tp)
-
-        elif price_momentum <= -3:
-            price_momentum = 0
-            print("[NOTIFIKÁCIA] 🩸 Signál SELL! Otváram 3 časti...")
-            for i in range(2):
-                sl = round(bid + SL_USD, 2)
-                tp = round(bid - TP_2_USD, 2)
-                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_PART, stop_loss=sl, take_profit=tp)
-            sl = round(bid + SL_USD, 2)
-            tp = round(bid - TP_3_USD, 2)
-            await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_PART, stop_loss=sl, take_profit=tp)
+        await connection.close()
 
     except Exception as e:
-        print("Chyba v stratégii:", e)
+        logging.error(f"Chyba pri obchodovaní na účte {account_id}: {e}")
+
+
+async def manage_open_positions(metaapi, account_id):
+    try:
+        account = await metaapi.metatrader_account_api.get_account(account_id)
+        if account.state != "DEPLOYED":
+            return
+
+        connection = account.get_rpc_connection()
+        await connection.connect()
+        await connection.wait_synchronized()
+
+        positions = await connection.get_positions()
+        for pos in positions:
+            if pos["symbol"] == SYMBOL and pos["type"] == "POSITION_TYPE_BUY":
+                open_price = pos["openPrice"]
+                current_price = pos["price"]
+                current_sl = pos.get("stopLoss", 0)
+
+                # Kontrola Break-Even (+5 USD/bodov pohybu nahor)
+                if current_price - open_price >= BE_TRIGGER_PRICE_DIFF:
+                    if current_sl < open_price:  # ak ešte nie je posunutý na BE
+                        logging.info(
+                            f"[{account_id}] Dosiahnutý zisk >= {BE_TRIGGER_PRICE_DIFF}. Posúvam SL na vstup ({open_price})..."
+                        )
+                        await connection.modify_position(
+                            position_id=pos["id"],
+                            stop_loss=open_price,
+                            take_profit=pos.get("takeProfit", 0),
+                        )
+
+        await connection.close()
+
+    except Exception as e:
+        logging.error(f"Chyba pri správe pozícií na účte {account_id}: {e}")
+
 
 async def main():
-    print("Spúšťam bota na DEMO účte (s cenovým Break-Even)...")
-    await asyncio.sleep(3)
-    
-    while True:
-        try:
-            metaapi = MetaApi(TOKEN)
-            account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
-            connection = account.get_rpc_connection()
-            
-            try:
-                if connection.connected:
-                    await connection.close()
-            except:
-                pass
+    metaapi = MetaApi(TOKEN)
+    logging.info(
+        f"Bot spustený pre multi-account režim. Sledujem účty: {ACCOUNT_IDS}"
+    )
 
-            print("Pripájam sa k MetaApi na DEMO...")
-            await connection.connect()
-            await connection.wait_synchronized()
-            print("[NOTIFIKÁCIA] ✅ Úspešne pripojené na DEMO účte!")
-            
-            while True:
-                await manage_positions(connection)
-                await check_strategy_and_trade(connection)
-                await asyncio.sleep(10)
-                
-        except Exception as main_err:
-            print("Chyba v pripojení, reconnect o 10s:", main_err)
-            await asyncio.sleep(10)
+    while True:
+        # Tu beží hlavná slučka – prejde každý účet v zozname
+        for account_id in ACCOUNT_IDS:
+            # Tu by bola tvoja podmienka na vstup (signál)
+            # Pre ukážku teraz beží kontrola otvorených pozícií a správa BE
+            await manage_open_positions(metaapi, account_id)
+
+        # Pauza medzi kontrolami (napr. 10 sekúnd)
+        await asyncio.sleep(10)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
