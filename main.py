@@ -1,16 +1,17 @@
 import asyncio
 import logging
 import os
+from datetime import datetime, timedelta
 from metaapi_cloud_sdk import MetaApi
 
-# Konfigurácia z premenných prostredia (Railway)
+# Konfigurácia z premenných prostredia
 TOKEN = os.getenv("METAAPI_TOKEN")
 ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
 SYMBOL = "XAUUSD"
-LOT_PER_PART = 0.01  # Tvoj zvolený lot na cenu
+LOT_PER_PART = 0.01  # Tvoj zvolený lot
 
 # Nastavenia pre Break-Even (v dolároch)
-BE_LOCK_PROFIT_USD = 0.20  # Zaručený zisk pri posune na BE
+BE_LOCK_PROFIT_USD = 0.20  # Zaručený zisk
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,8 +37,8 @@ async def main():
 
     while True:
         try:
-            # 1. Získanie sviečok pre analýzu (M1/M5)
-            candles = await connection.get_candles(SYMBOL, timeframe='1m', limit=5)
+            # 1. Získanie sviečok pre analýzu (M1/M5) cez account objekt
+            candles = await account.get_historical_candles(SYMBOL, '1m', datetime.now() - timedelta(hours=1), 5)
             if len(candles) < 3:
                 await asyncio.sleep(10)
                 continue
@@ -78,33 +79,24 @@ async def main():
                                 take_profit=pos.get("takeProfit")
                             )
 
-            # 3. Logika pre vstupy (ak nemáme žiadnu otvorenú pozíciu)
+            # 3. Stratégia (vstup len ak nie je otvorená pozícia)
             if not has_open_position:
-                prev_body = abs(prev["close"] - prev["open"])
-                curr_body = abs(curr["close"] - curr["open"])
-
-                # Signál BUY: Bullish engulfing
-                is_prev_bearish = prev["close"] < prev["open"]
-                is_curr_bullish = curr["close"] > curr["open"]
                 bullish_engulfing = (
-                    is_prev_bearish and is_curr_bullish and
-                    curr["close"] >= prev["open"] and curr["open"] <= prev["close"]
+                    prev["close"] < prev["open"] and 
+                    curr["close"] > curr["open"] and 
+                    curr["close"] >= prev["open"] and 
+                    curr["open"] <= prev["close"]
                 )
 
-                # Signál SELL: Bearish engulfing
-                is_prev_bullish = prev["close"] > prev["open"]
-                is_curr_bearish = curr["close"] < curr["open"]
                 bearish_engulfing = (
-                    is_prev_bullish and is_curr_bearish and
-                    curr["close"] <= prev["open"] and curr["open"] >= prev["close"]
+                    prev["close"] > prev["open"] and 
+                    curr["close"] < curr["open"] and 
+                    curr["close"] <= prev["open"] and 
+                    curr["open"] >= prev["close"]
                 )
-
-                # Získanie aktuálnych cien pre SL / TP
-                tick = await connection.get_symbol_specification(SYMBOL) # prípadne get_symbol_price ak je k dispozícii
 
                 if bullish_engulfing:
                     logger.info("Detekovaný BUY signál (Bullish Engulfing)!")
-                    # Otvorenie BUY pozície
                     await connection.create_market_buy_order(
                         symbol=SYMBOL,
                         volume=LOT_PER_PART,
@@ -115,7 +107,6 @@ async def main():
 
                 elif bearish_engulfing:
                     logger.info("Detekovaný SELL signál (Bearish Engulfing)!")
-                    # Otvorenie SELL pozície
                     await connection.create_market_sell_order(
                         symbol=SYMBOL,
                         volume=LOT_PER_PART,
