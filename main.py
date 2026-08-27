@@ -35,12 +35,15 @@ async def main():
     await connection.connect()
     await connection.wait_synchronized()
     
-    logger.info("Úspešne pripojené k RoboForex cez MetaApi!")
+    logger.info("Úspešne pripojené k RoboForex cez MetaApi a pripravené na obchodovanie!")
 
     while True:
         try:
-            candles = await connection.get_historical_candles(SYMBOL, '5m', datetime.now() - timedelta(hours=1), 3)
-            if len(candles) < 2:
+            # Správna metóda pre MetaApi SDK na získanie sviečok
+            from_date = datetime.utcnow() - timedelta(hours=1)
+            candles = await connection.get_candles(SYMBOL, '5m', from_date, 3)
+            
+            if not candles or len(candles) < 2:
                 await asyncio.sleep(10)
                 continue
                 
@@ -68,7 +71,7 @@ async def main():
                     await connection.create_market_buy_order(SYMBOL, LOT_TP1, stop_loss=sl)
                     await asyncio.sleep(0.3)
                 await connection.create_market_buy_order(SYMBOL, LOT_TP2, stop_loss=sl)
-                logger.info("BUY príkazy úspešne odoslané.")
+                logger.info("BUY príkazy úspešne odoslané na RoboForex.")
                 
             elif bearish:
                 logger.info("Bearish Engulfing - otváram SELL na účte!")
@@ -79,12 +82,12 @@ async def main():
                     await connection.create_market_sell_order(SYMBOL, LOT_TP1, stop_loss=sl)
                     await asyncio.sleep(0.3)
                 await connection.create_market_sell_order(SYMBOL, LOT_TP2, stop_loss=sl)
-                logger.info("SELL príkazy úspešne odoslané.")
+                logger.info("SELL príkazy úspešne odoslané na RoboForex.")
 
             await asyncio.sleep(30)
             
         except Exception as e:
-            logger.error(f"Chyba: {e}")
+            logger.error(f"Chyba v cykle: {e}")
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
