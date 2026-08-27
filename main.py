@@ -14,7 +14,7 @@ TOKEN = os.getenv("METAAPI_TOKEN")
 
 SYMBOL = "XAUUSD"
 
-# Konfigurácia lotov a počtu obchodov
+# Konfigurácia lotov a počtu obchodov (presne podľa tvojho zadania)
 LOT_TP1 = 0.30
 COUNT_TP1 = 5
 
@@ -25,7 +25,7 @@ SL_POINTS = 350
 TP1_POINTS = 400
 TP2_POINTS = 800
 
-# Parametre pre Break-Even a zaistenie zisku (v USD na centovom účte)
+# Parametre pre Break-Even (v USD na centovom účte)
 BE_TRIGGER_USD = 3.00  # Keď zisk na obchode dosiahne 3 USD
 BE_LOCK_USD = 1.00     # BE sa posunie na garantovaný zisk 1 USD
 
@@ -68,8 +68,8 @@ async def main():
     if account.state != 'DEPLOYED':
         await account.deploy()
         
-    # Správne získanie RPC API priamo z objektu account (žiadne metatrader_account_api)
-    trade_api = account.get_rpc_api()
+    # Jediný správny spôsob volania RPC API pre toto SDK, aby nenastal AttributeError
+    trade_api = await metaapi.metatrader_account_api.get_rpc_api(ACCOUNT_ID)
 
     logger.info("Skript pre riadenie XAUUSD basketu úspešne spustený a beží.")
 
