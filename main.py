@@ -4,7 +4,6 @@ sys.stdout.reconfigure(line_buffering=True)
 import os
 import asyncio
 import logging
-from datetime import datetime, timedelta
 from metaapi_cloud_sdk import MetaApi
 
 logging.basicConfig(level=logging.INFO)
@@ -46,13 +45,12 @@ async def manage_open_positions(trade_api, account_id):
             
             # Kontrola pre BUY pozície
             if pos_type == 'POSITION_TYPE_BUY':
-                # Ak zisk dosiahne 3 USD a SL ešte nie je posunutý na zaistenie zisku
                 if profit_usd >= BE_TRIGGER_USD and current_sl < open_price:
                     logger.info(f"Pozícia {ticket} dosiahla zisk {profit_usd} USD, posúvam SL na zaistenie zisku.")
                     await trade_api.modify_position(
                         account_id=account_id,
                         position_id=ticket,
-                        stop_loss=open_price + 0.10, # Bezpečný lock nad vstupom pre istý zisk
+                        stop_loss=open_price + 0.10,
                         take_profit=position.get('takeProfit', 0)
                     )
                         
@@ -70,14 +68,14 @@ async def main():
     if account.state != 'DEPLOYED':
         await account.deploy()
         
-    # Chybný riadok s get_synced_state() bol kompletne odstránený
-    trade_api = account.get_rpc_api()
+    # Správne volanie RPC API cez metatrader_account_api
+    trade_api = await metaapi.metatrader_account_api.get_rpc_api(ACCOUNT_ID)
 
     logger.info("Skript pre riadenie XAUUSD basketu úspešne spustený a beží.")
 
     while True:
         await manage_open_positions(trade_api, ACCOUNT_ID)
-        await asyncio.sleep(5) # Kontrola každých 5 sekúnd
+        await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())
