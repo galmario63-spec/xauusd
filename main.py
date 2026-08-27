@@ -1,7 +1,6 @@
-import asyncio
+import time
 import logging
-from datetime import datetime, timedelta
-from mt5_broker_api import MT5Connection
+import MetaTrader5 as mt5
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -9,86 +8,144 @@ logger = logging.getLogger(__name__)
 SYMBOL = "XAUUSD"
 LOT_TP1 = 0.20
 LOT_TP2 = 0.10
+SL_POINTS = 300
+BE_TRIGGER = 150
 
-# Nastavenia pre Stop Loss a Break-Even s ohľadom na centový účet
-SL_POINTS = 300       # Stop Loss vzdialenosť
-BE_TRIGGER = 150      # Profit v bodoch, pri ktorom aktivujeme BE
-BE_LOCK_CENTS = 0.30  # Zafixovaný zisk v USD (30 centov) pri aktivácii BE
+def check_engulfing(candles):
+    if len(candles) < 2:
+        return None
+    prev_c = candles[-2]
+    curr_c = candles[-1]
+    
+    # Podmienky pre Engulfing na M5
+    bullish = (curr_c['close'] > curr_c['open'] and 
+               prev_c['close'] < prev_c['open'] and 
+               curr_c['close'] >= prev_c['open'] and 
+               curr_c['open'] <= prev_c['close'])
+               
+    bearish = (curr_c['close'] < curr_c['open'] and 
+               prev_c['close'] > prev_c['open'] and 
+               curr_c['close'] <= prev_c['open'] and 
+               curr_c['open'] >= prev_c['close'])
+               
+    if bullish:
+        return "BUY"
+    elif bearish:
+        return "SELL"
+    return None
 
-async def main():
-    logger.info("XAUUSD centový bot (SL + BE s 30 centovým ziskom) štartuje...")
+def main():
+    logger.info("XAUUSD MT5 centový bot štartuje...")
     
-    connection = MT5Connection()
-    await connection.connect()
-    
+    if not mt5.initialize():
+        logger.error(f"MT5 inicializácia zlyhala, chyba: {mt5.last_error()}")
+        return
+
+    if not mt5.symbol_select(SYMBOL, True):
+        logger.error(f"Nepodarilo sa vybrať symbol {SYMBOL}")
+        mt5.shutdown()
+        return
+
     while True:
         try:
-            candles = await connection.get_historical_candles(
-                SYMBOL, '5m',
-                datetime.now() - timedelta(hours=2), 5
-            )
-            
-            if len(candles) < 3:
-                await asyncio.sleep(10)
+            rates = mt5.copy_rates_from_pos(SYMBOL, mt5.TIMEFRAME_M5, 0, 3)
+            if rates is None or len(rates) < 3:
+                time.sleep(10)
                 continue
                 
-            prev_candle = candles[-2]
-            curr_candle = candles[-1]
+            candles = [{'open': r['open'], 'close': r['close'], 'high': r['high'], 'low': r['low']} for r in rates]
+            signal = check_engulfing(candles)
             
-            bullish_engulfing = (curr_candle['close'] > curr_candle['open'] and 
-                                 prev_candle['close'] < prev_candle['open'] and 
-                                 curr_candle['close'] >= prev_candle['open'] and 
-                                 curr_candle['open'] <= prev_candle['close'])
-                                 
-            bearish_engulfing = (curr_candle['close'] < curr_candle['open'] and 
-                                 prev_candle['close'] > prev_candle['open'] and 
-                                 curr_candle['close'] <= prev_candle['open'] and 
-                                 curr_candle['open'] >= prev_candle['close'])
+            tick = mt5.symbol_info_tick(SYMBOL)
+            if not tick:
+                time.sleep(5)
+                continue
 
-            current_price = curr_candle['close']
-
-            if bullish_engulfing:
-                logger.info("Detekovaný BUY signál (Bullish Engulfing) na centovom účte - otváram pozície!")
-                
-                sl_price = current_price - (SL_POINTS * 0.1)
+            if signal == "BUY":
+                logger.info("Detekovaný BUY signál (Bullish Engulfing) na M5 – otváram pozície na centovom účte!")
+                price = tick.ask
+                sl_price = price - (SL_POINTS * 0.1)
                 
                 # 3x TP1 (0.20 lotu)
-                for i in range(3):
-                    await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_TP1, stop_loss=sl_price)
-                    await asyncio.sleep(0.5)
+                for _ in range(3):
+                    request = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "symbol": SYMBOL,
+                        "volume": LOT_TP1,
+                        "type": mt5.ORDER_TYPE_BUY,
+                        "price": price,
+                        "sl": sl_price,
+                        "deviation": 20,
+                        "magic": 234000,
+                        "comment": "XAUUSD TP1",
+                        "type_time": mt5.ORDER_TIME_GTC,
+                        "type_filling": mt5.ORDER_FILLING_IOC,
+                    }
+                    mt5.order_send(request)
+                    time.sleep(0.3)
                 
                 # 1x TP2 (0.10 lotu)
-                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_TP2, stop_loss=sl_price)
-                
+                request_tp2 = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": SYMBOL,
+                    "volume": LOT_TP2,
+                    "type": mt5.ORDER_TYPE_BUY,
+                    "price": price,
+                    "sl": sl_price,
+                    "deviation": 20,
+                    "magic": 234000,
+                    "comment": "XAUUSD TP2",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                }
+                mt5.order_send(request_tp2)
                 logger.info("Všetky BUY príkazy úspešne odoslané.")
-                
-            elif bearish_engulfing:
-                logger.info("Detekovaný SELL signál (Bearish Engulfing) na centovom účte - otváram pozície!")
-                
-                sl_price = current_price + (SL_POINTS * 0.1)
+
+            elif signal == "SELL":
+                logger.info("Detekovaný SELL signál (Bearish Engulfing) na M5 – otváram pozície na centovom účte!")
+                price = tick.bid
+                sl_price = price + (SL_POINTS * 0.1)
                 
                 # 3x TP1 (0.20 lotu)
-                for i in range(3):
-                    await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_TP1, stop_loss=sl_price)
-                    await asyncio.sleep(0.5)
+                for _ in range(3):
+                    request = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "symbol": SYMBOL,
+                        "volume": LOT_TP1,
+                        "type": mt5.ORDER_TYPE_SELL,
+                        "price": price,
+                        "sl": sl_price,
+                        "deviation": 20,
+                        "magic": 234000,
+                        "comment": "XAUUSD TP1",
+                        "type_time": mt5.ORDER_TIME_GTC,
+                        "type_filling": mt5.ORDER_FILLING_IOC,
+                    }
+                    mt5.order_send(request)
+                    time.sleep(0.3)
                 
                 # 1x TP2 (0.10 lotu)
-                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_TP2, stop_loss=sl_price)
-                
+                request_tp2 = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": SYMBOL,
+                    "volume": LOT_TP2,
+                    "type": mt5.ORDER_TYPE_SELL,
+                    "price": price,
+                    "sl": sl_price,
+                    "deviation": 20,
+                    "magic": 234000,
+                    "comment": "XAUUSD TP2",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                }
+                mt5.order_send(request_tp2)
                 logger.info("Všetky SELL príkazy úspešne odoslané.")
-            
-            # Aplikovanie Break-Even s garanciou minimálneho zisku 30 centov
-            await connection.check_and_apply_break_even(
-                symbol=SYMBOL, 
-                trigger_points=BE_TRIGGER, 
-                lock_profit_cents=BE_LOCK_CENTS
-            )
-            
-            await asyncio.sleep(30)
-            
+
+            time.sleep(30)
+
         except Exception as e:
-            logger.error(f"Chyba v hlavnej slučke bota: {e}")
-            await asyncio.sleep(10)
+            logger.error(f"Chyba v cykle: {e}")
+            time.sleep(10)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
