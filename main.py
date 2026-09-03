@@ -10,16 +10,16 @@ from metaapi_cloud_sdk import MetaApi
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Konfigurácia z Railway premenných (bezpečné pre GitHub)
 ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
 TOKEN = os.getenv("METAAPI_TOKEN")
 
-# Reálny Telegram token z BotFather
-TELEGRAM_BOT_TOKEN = "8767773639:AAGsEx4kUVC-1fY-iitT5giIPbsU64shSHY"
-TELEGRAM_CHAT_ID = "5357928157"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SYMBOL = "XAUUSD"
 
-# Bezpečné minimálne loty
+# Bezpečné minimálne loty pre živé testowanie (0.01)
 LOT_TP1 = 0.01
 COUNT_TP1 = 3
 LOT_TP2 = 0.01
@@ -27,6 +27,7 @@ COUNT_TP2 = 3
 LOT_TP3 = 0.01
 COUNT_TP3 = 2
 
+# Risk manažment pre testovanie
 SL_DISTANCE = 35.0
 TP1_DISTANCE = 25.0
 TP2_DISTANCE = 50.0
@@ -36,6 +37,8 @@ BE_TRIGGER_USD = 5.0
 
 async def send_telegram_message(message: str):
     """Odošle notifikáciu do Telegram chatu."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -44,17 +47,66 @@ async def send_telegram_message(message: str):
     }
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, timeout=10.0)
-            if response.status_code == 200:
-                logger.info("✅ Telegram správa úspešne odoslaná!")
-            else:
-                logger.error(f"❌ Telegram API chybová odpoveď ({response.status_code}): {response.text}")
+            await client.post(url, json=payload, timeout=10.0)
     except Exception as e:
-        logger.error(f"❌ Výnimka pri odosielaní Telegram správy: {e}")
+        logger.error(f"Chyba pri odosielaní Telegram správy: {e}")
+
+
+async def open_basket_positions(connection, direction="BUY"):
+    """Otvorí testovací 3-TP košík pre ostré testovanie."""
+    logger.info(f"Otváram testovací košík pre {SYMBOL} v smere {direction}...")
+    
+    price = await connection.get_symbol_price(SYMBOL)
+    current_price = price['ask'] if direction == "BUY" else price['bid']
+    
+    if direction == "BUY":
+        stop_loss = current_price - SL_DISTANCE
+        tp1 = current_price + TP1_DISTANCE
+        tp2 = current_price + TP2_DISTANCE
+        tp3 = current_price + TP3_DISTANCE
+    else:
+        stop_loss = current_price + SL_DISTANCE
+        tp1 = current_price - TP1_DISTANCE
+        tp2 = current_price - TP2_DISTANCE
+        tp3 = current_price - TP3_DISTANCE
+
+    try:
+        # 1. Sada pre TP1
+        for _ in range(COUNT_TP1):
+            if direction == "BUY":
+                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_TP1, stop_loss=stop_loss, take_profit=tp1)
+            else:
+                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_TP1, stop_loss=stop_loss, take_profit=tp1)
+
+        # 2. Sada pre TP2
+        for _ in range(COUNT_TP2):
+            if direction == "BUY":
+                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_TP2, stop_loss=stop_loss, take_profit=tp2)
+            else:
+                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_TP2, stop_loss=stop_loss, take_profit=tp2)
+
+        # 3. Sada pre TP3
+        for _ in range(COUNT_TP3):
+            if direction == "BUY":
+                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_TP3, stop_loss=stop_loss, take_profit=tp3)
+            else:
+                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_TP3, stop_loss=stop_loss, take_profit=tp3)
+
+        logger.info(f"Košík s 3 TP úrovňami ({direction}) úspešne otvorený.")
+        await send_telegram_message(
+            f"🟢 <b>{SYMBOL} Testovací 3-TP Basket otvorený ({direction})!</b>\n"
+            f"🛡️ SL: {stop_loss:.2f}\n"
+            f"🎯 TP1 ({COUNT_TP1}x): {tp1:.2f}\n"
+            f"🎯 TP2 ({COUNT_TP2}x): {tp2:.2f}\n"
+            f"🎯 TP3 ({COUNT_TP3}x): {tp3:.2f}"
+        )
+    except Exception as e:
+        logger.error(f"Chyba pri otváraní košíka: {e}")
+        await send_telegram_message(f"❌ <b>Chyba pri obchode:</b> {e}")
 
 
 async def manage_open_positions(connection):
-    """Sleduje existujúce pozície a posúva Stop Loss na Break-Even."""
+    """Sleduje pozície a posúva Stop Loss na Break-Even."""
     try:
         positions = await connection.get_positions()
         
@@ -68,6 +120,7 @@ async def manage_open_positions(connection):
             current_sl = position.get('stopLoss', 0)
             pos_type = position['type']
             
+            # Break-Even pre BUY
             if pos_type == 'POSITION_TYPE_BUY' and profit_usd >= BE_TRIGGER_USD and current_sl < open_price:
                 await connection.modify_position(
                     position_id=ticket,
@@ -79,6 +132,7 @@ async def manage_open_positions(connection):
                     f"Ticket: <code>{ticket}</code> | Zisk: <b>{profit_usd:.2f} USD</b>"
                 )
 
+            # Break-Even pre SELL
             elif pos_type == 'POSITION_TYPE_SELL' and profit_usd >= BE_TRIGGER_USD and (current_sl > open_price or current_sl == 0):
                 await connection.modify_position(
                     position_id=ticket,
@@ -108,10 +162,17 @@ async def main():
     connection = account.get_rpc_connection()
     await connection.connect()
 
-    logger.info("Riobot bezpečný režim spustený.")
-    
-    # Okamžitá testovacia správa do Telegramu
-    await send_telegram_message("🚀 <b>Riobot hlási štart:</b> Prepojenie s Telegramom je aktívne!")
+    logger.info("Riobot obchodný režim spustený.")
+    await send_telegram_message("🚀 <b>Riobot je online a začína ostrý test obchodovania!</b>")
+
+    # Skontrolujeme pozície pri štarte – ak nič nebeží, bot okamžite otvorí testovací košík (BUY)
+    positions = await connection.get_positions()
+    xauusd_positions = [p for p in positions if p['symbol'] == SYMBOL]
+
+    if not xauusd_positions:
+        await open_basket_positions(connection, direction="BUY")
+    else:
+        logger.info("Na účte už bežia pozície, spúšťam manažment.")
 
     while True:
         try:
