@@ -10,7 +10,6 @@ from metaapi_cloud_sdk import MetaApi
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Konfigurácia účtu a Telegramu z premenných prostredia v Railway
 ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
 TOKEN = os.getenv("METAAPI_TOKEN")
 
@@ -19,7 +18,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SYMBOL = "XAUUSD"
 
-# Bezpečné minimálne loty pre testovanie (0.01)
+# Bezpečné minimálne loty
 LOT_TP1 = 0.01
 COUNT_TP1 = 3
 LOT_TP2 = 0.01
@@ -27,7 +26,6 @@ COUNT_TP2 = 3
 LOT_TP3 = 0.01
 COUNT_TP3 = 2
 
-# Risk manažment pre bezpečné testovanie
 SL_DISTANCE = 35.0
 TP1_DISTANCE = 25.0
 TP2_DISTANCE = 50.0
@@ -36,9 +34,11 @@ BE_TRIGGER_USD = 5.0
 
 
 async def send_telegram_message(message: str):
-    """Odošle notifikáciu do Telegram chatu."""
+    """Odošle notifikáciu do Telegram chatu a vypíše výsledok do logov."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.error(f"CHYBA: Chýba Telegram token ({bool(TELEGRAM_BOT_TOKEN)}) alebo Chat ID ({bool(TELEGRAM_CHAT_ID)})!")
         return
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -47,9 +47,13 @@ async def send_telegram_message(message: str):
     }
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(url, json=payload, timeout=10.0)
+            response = await client.post(url, json=payload, timeout=10.0)
+            if response.status_code == 200:
+                logger.info("Telegram správa úspešne odoslaná.")
+            else:
+                logger.error(f"Telegram API chybová odpoveď ({response.status_code}): {response.text}")
     except Exception as e:
-        logger.error(f"Chyba pri odosielaní Telegram správy: {e}")
+        logger.error(f"Výnimka pri odosielaní Telegram správy: {e}")
 
 
 async def manage_open_positions(connection):
@@ -67,7 +71,6 @@ async def manage_open_positions(connection):
             current_sl = position.get('stopLoss', 0)
             pos_type = position['type']
             
-            # Break-Even pre BUY
             if pos_type == 'POSITION_TYPE_BUY' and profit_usd >= BE_TRIGGER_USD and current_sl < open_price:
                 await connection.modify_position(
                     position_id=ticket,
@@ -79,7 +82,6 @@ async def manage_open_positions(connection):
                     f"Ticket: <code>{ticket}</code> | Zisk: <b>{profit_usd:.2f} USD</b>"
                 )
 
-            # Break-Even pre SELL
             elif pos_type == 'POSITION_TYPE_SELL' and profit_usd >= BE_TRIGGER_USD and (current_sl > open_price or current_sl == 0):
                 await connection.modify_position(
                     position_id=ticket,
@@ -97,7 +99,7 @@ async def manage_open_positions(connection):
 
 async def main():
     if not ACCOUNT_ID or not TOKEN:
-        logger.error("Chýbajú premenné prostredia.")
+        logger.error("Chýbajú premenné prostredia pre MetaApi.")
         return
 
     metaapi = MetaApi(TOKEN)
@@ -110,11 +112,12 @@ async def main():
     await connection.connect()
 
     logger.info("Riobot bezpečný režim spustený.")
-    await send_telegram_message("🚀 <b>Riobot je online v bezpečnom režime (0.01 lotu)!</b> Sleduje účet.")
+    
+    # Okamžitý test Telegramu pri štarte
+    await send_telegram_message("🚀 <b>Riobot testovacia správa:</b> Prepojenie s Telegramom funguje!")
 
     while True:
         try:
-            # Bot teraz len manažuje pozície, nič neotvára naslepo
             await manage_open_positions(connection)
         except Exception as e:
             logger.error(f"Chyba v hlavnej slučke: {e}")
