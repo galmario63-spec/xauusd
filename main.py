@@ -13,12 +13,13 @@ logger = logging.getLogger(__name__)
 ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
 TOKEN = os.getenv("METAAPI_TOKEN")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# Telegram údaje zadané priamo pre istotu, aby notifikácie hneď naskočili
+TELEGRAM_BOT_TOKEN = "8767773639:AAFU_yeGuEDn_yeGuEDn_yeGuEDn"
+TELEGRAM_CHAT_ID = "5357928157"
 
 SYMBOL = "XAUUSD"
 
-# Bezpečné minimálne loty
+# Bezpečné minimálne loty pre testovanie
 LOT_TP1 = 0.01
 COUNT_TP1 = 3
 LOT_TP2 = 0.01
@@ -34,11 +35,7 @@ BE_TRIGGER_USD = 5.0
 
 
 async def send_telegram_message(message: str):
-    """Odošle notifikáciu do Telegram chatu a vypíše výsledok do logov."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.error(f"CHYBA: Chýba Telegram token ({bool(TELEGRAM_BOT_TOKEN)}) alebo Chat ID ({bool(TELEGRAM_CHAT_ID)})!")
-        return
-    
+    """Odošle notifikáciu do Telegram chatu."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -49,11 +46,11 @@ async def send_telegram_message(message: str):
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=payload, timeout=10.0)
             if response.status_code == 200:
-                logger.info("Telegram správa úspešne odoslaná.")
+                logger.info("✅ Telegram správa úspešne odoslaná!")
             else:
-                logger.error(f"Telegram API chybová odpoveď ({response.status_code}): {response.text}")
+                logger.error(f"❌ Telegram API chybová odpoveď ({response.status_code}): {response.text}")
     except Exception as e:
-        logger.error(f"Výnimka pri odosielaní Telegram správy: {e}")
+        logger.error(f"❌ Výnimka pri odosielaní Telegram správy: {e}")
 
 
 async def manage_open_positions(connection):
@@ -114,7 +111,7 @@ async def main():
     logger.info("Riobot bezpečný režim spustený.")
     
     # Okamžitý test Telegramu pri štarte
-    await send_telegram_message("🚀 <b>Riobot testovacia správa:</b> Prepojenie s Telegramom funguje!")
+    await send_telegram_message("🚀 <b>Riobot hlási štart:</b> Prepojenie s Telegramom je úspešne nadviazané!")
 
     while True:
         try:
