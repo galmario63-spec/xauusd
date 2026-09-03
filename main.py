@@ -10,7 +10,6 @@ from metaapi_cloud_sdk import MetaApi
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Konfigurácia z Railway premenných (bezpečné pre GitHub)
 ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
 TOKEN = os.getenv("METAAPI_TOKEN")
 
@@ -19,20 +18,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SYMBOL = "XAUUSD"
 
-# Bezpečné minimálne loty pre živé testowanie (0.01)
-LOT_TP1 = 0.01
-COUNT_TP1 = 3
-LOT_TP2 = 0.01
-COUNT_TP2 = 3
-LOT_TP3 = 0.01
-COUNT_TP3 = 2
+# Štruktúra pre centový účet / test: 3 úrovne TP, na každú úroveň 2 obchody (spolu 6)
+LOT_SIZE = 0.01
+COUNT_PER_TP = 2 
 
-# Risk manažment pre testovanie
-SL_DISTANCE = 35.0
-TP1_DISTANCE = 25.0
-TP2_DISTANCE = 50.0
-TP3_DISTANCE = 80.0
-BE_TRIGGER_USD = 5.0
+# Kompaktné vzdialenosti pre XAUUSD (rýchly impulz a skorý zisk)
+SL_DISTANCE = 15.0   # 15 dolárov SL
+TP1_DISTANCE = 3.0   # TP1 blízko, aby hneď chytil prvý profit
+TP2_DISTANCE = 6.0   # TP2 stredný zisk
+TP3_DISTANCE = 10.0  # TP3 finálny cieľ
+BE_TRIGGER_USD = 2.0 # Break-Even už pri malom zisku
 
 
 async def send_telegram_message(message: str):
@@ -53,8 +48,8 @@ async def send_telegram_message(message: str):
 
 
 async def open_basket_positions(connection, direction="BUY"):
-    """Otvorí testovací 3-TP košík pre ostré testovanie."""
-    logger.info(f"Otváram testovací košík pre {SYMBOL} v smere {direction}...")
+    """Otvorí košík: 3 úrovne TP, na každú úroveň 2 obchody."""
+    logger.info(f"Otváram kompaktný 3-TP košík pre {SYMBOL} ({direction})...")
     
     price = await connection.get_symbol_price(SYMBOL)
     current_price = price['ask'] if direction == "BUY" else price['bid']
@@ -71,34 +66,38 @@ async def open_basket_positions(connection, direction="BUY"):
         tp3 = current_price - TP3_DISTANCE
 
     try:
-        # 1. Sada pre TP1
-        for _ in range(COUNT_TP1):
+        # 1. TP1 (2 obchody)
+        for _ in range(COUNT_PER_TP):
             if direction == "BUY":
-                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_TP1, stop_loss=stop_loss, take_profit=tp1)
+                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp1)
             else:
-                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_TP1, stop_loss=stop_loss, take_profit=tp1)
+                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp1)
 
-        # 2. Sada pre TP2
-        for _ in range(COUNT_TP2):
+        # 2. TP2 (2 obchody)
+        for _ in range(COUNT_PER_TP):
             if direction == "BUY":
-                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_TP2, stop_loss=stop_loss, take_profit=tp2)
+                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp2)
             else:
-                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_TP2, stop_loss=stop_loss, take_profit=tp2)
+                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp2)
 
-        # 3. Sada pre TP3
-        for _ in range(COUNT_TP3):
+        # 3. TP3 (2 obchody)
+        for _ in range(COUNT_PER_TP):
             if direction == "BUY":
-                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_TP3, stop_loss=stop_loss, take_profit=tp3)
+                await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp3)
             else:
-                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_TP3, stop_loss=stop_loss, take_profit=tp3)
+                await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp3)
 
-        logger.info(f"Košík s 3 TP úrovňami ({direction}) úspešne otvorený.")
+        logger.info(f"Košík úspešne otvorený v smere {direction}.")
+        
+        # Notifikácia v čistom štýle
         await send_telegram_message(
-            f"🟢 <b>{SYMBOL} Testovací 3-TP Basket otvorený ({direction})!</b>\n"
-            f"🛡️ SL: {stop_loss:.2f}\n"
-            f"🎯 TP1 ({COUNT_TP1}x): {tp1:.2f}\n"
-            f"🎯 TP2 ({COUNT_TP2}x): {tp2:.2f}\n"
-            f"🎯 TP3 ({COUNT_TP3}x): {tp3:.2f}"
+            f"🚨 <b>{SYMBOL} {direction} — RIO_ENGINE</b>\n\n"
+            f"Entry: <code>{current_price:.2f}</code>\n"
+            f"TP1 (2x): <code>{tp1:.2f}</code>\n"
+            f"TP2 (2x): <code>{tp2:.2f}</code>\n"
+            f"TP3 (2x): <code>{tp3:.2f}</code>\n"
+            f"SL: <code>{stop_loss:.2f}</code>\n"
+            f"Engine: <b>2.1.0</b>"
         )
     except Exception as e:
         logger.error(f"Chyba pri otváraní košíka: {e}")
@@ -120,7 +119,6 @@ async def manage_open_positions(connection):
             current_sl = position.get('stopLoss', 0)
             pos_type = position['type']
             
-            # Break-Even pre BUY
             if pos_type == 'POSITION_TYPE_BUY' and profit_usd >= BE_TRIGGER_USD and current_sl < open_price:
                 await connection.modify_position(
                     position_id=ticket,
@@ -128,11 +126,9 @@ async def manage_open_positions(connection):
                     take_profit=position.get('takeProfit', 0)
                 )
                 await send_telegram_message(
-                    f"🛡️ <b>{SYMBOL} Break-Even aktivovaný!</b>\n"
-                    f"Ticket: <code>{ticket}</code> | Zisk: <b>{profit_usd:.2f} USD</b>"
+                    f"🛡️ <b>{SYMBOL} Break-Even aktivovaný!</b>\nTicket: <code>{ticket}</code> | Zisk: <b>{profit_usd:.2f} USD</b>"
                 )
 
-            # Break-Even pre SELL
             elif pos_type == 'POSITION_TYPE_SELL' and profit_usd >= BE_TRIGGER_USD and (current_sl > open_price or current_sl == 0):
                 await connection.modify_position(
                     position_id=ticket,
@@ -140,12 +136,11 @@ async def manage_open_positions(connection):
                     take_profit=position.get('takeProfit', 0)
                 )
                 await send_telegram_message(
-                    f"🛡️ <b>{SYMBOL} Break-Even aktivovaný (SELL)!</b>\n"
-                    f"Ticket: <code>{ticket}</code> | Zisk: <b>{profit_usd:.2f} USD</b>"
+                    f"🛡️ <b>{SYMBOL} Break-Even aktivovaný (SELL)!</b>\nTicket: <code>{ticket}</code> | Zisk: <b>{profit_usd:.2f} USD</b>"
                 )
                     
     except Exception as e:
-        logger.error(f"Chyba pri manažmente BE: {e}")
+        logger.error(f"Chyba pri manažmente pozícií: {e}")
 
 
 async def main():
@@ -162,17 +157,15 @@ async def main():
     connection = account.get_rpc_connection()
     await connection.connect()
 
-    logger.info("Riobot obchodný režim spustený.")
-    await send_telegram_message("🚀 <b>Riobot je online a začína ostrý test obchodovania!</b>")
+    logger.info("Riobot 2.1 spustený.")
+    await send_telegram_message("🚀 <b>Riobot Engine 2.1 spustený!</b> Pripravený na ostrý test s kompaktnými TP.")
 
-    # Skontrolujeme pozície pri štarte – ak nič nebeží, bot okamžite otvorí testovací košík (BUY)
+    # Ak nie je otvorené nič, otvoríme nový kompaktný košík
     positions = await connection.get_positions()
     xauusd_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
     if not xauusd_positions:
         await open_basket_positions(connection, direction="BUY")
-    else:
-        logger.info("Na účte už bežia pozície, spúšťam manažment.")
 
     while True:
         try:
