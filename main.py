@@ -170,7 +170,6 @@ async def main():
     xauusd_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
     if not xauusd_positions:
-        # Ak nič nebeží, otvoríme stabilný košík (predvolene BUY)
         await open_basket_positions(connection, direction="BUY")
     else:
         logger.info("Na účte už existujú otvorené pozície XAUUSD, preskakujem vstup a spúšťam manažment.")
@@ -185,4 +184,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main))
+    asyncio.run(main())
