@@ -5,6 +5,8 @@ import os
 import asyncio
 import logging
 import httpx
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from metaapi_cloud_sdk import MetaApi
 
 logging.basicConfig(level=logging.INFO)
@@ -22,12 +24,17 @@ SYMBOL = "XAUUSD"
 LOT_SIZE = 0.01
 COUNT_PER_TP = 2 
 
-# Kompaktné vzdialenosti pre XAUUSD (rýchly impulz a skorý zisk)
-SL_DISTANCE = 15.0   # 15 dolárov SL
-TP1_DISTANCE = 3.0   # TP1 blízko, aby hneď chytil prvý profit
-TP2_DISTANCE = 6.0   # TP2 stredný zisk
-TP3_DISTANCE = 10.0  # TP3 finálny cieľ
-BE_TRIGGER_USD = 2.0 # Break-Even už pri malom zisku
+# Kompaktné vzdialenosti pre XAUUSD
+SL_DISTANCE = 15.0
+TP1_DISTANCE = 3.0
+TP2_DISTANCE = 6.0
+TP3_DISTANCE = 10.0
+BE_TRIGGER_USD = 2.0
+
+
+def get_current_time_str():
+    """Vráti aktuálny čas v našej zóne (Bratislava / SELČ) vo formáte HH:MM."""
+    return datetime.now(ZoneInfo("Europe/Bratislava")).strftime("%H:%M")
 
 
 async def send_telegram_message(message: str):
@@ -48,11 +55,12 @@ async def send_telegram_message(message: str):
 
 
 async def open_basket_positions(connection, direction="BUY"):
-    """Otvorí košík: 3 úrovne TP, na každú úroveň 2 obchody."""
+    """Otvorí košík a pošle notifikáciu s časom v štýle screenshotov."""
     logger.info(f"Otváram kompaktný 3-TP košík pre {SYMBOL} ({direction})...")
     
     price = await connection.get_symbol_price(SYMBOL)
     current_price = price['ask'] if direction == "BUY" else price['bid']
+    open_time = get_current_time_str()
     
     if direction == "BUY":
         stop_loss = current_price - SL_DISTANCE
@@ -89,7 +97,7 @@ async def open_basket_positions(connection, direction="BUY"):
 
         logger.info(f"Košík úspešne otvorený v smere {direction}.")
         
-        # Notifikácia v čistom štýle
+        # Notifikácia presne podľa tvojho vzoru s časom
         await send_telegram_message(
             f"🚨 <b>{SYMBOL} {direction} — RIO_ENGINE</b>\n\n"
             f"Entry: <code>{current_price:.2f}</code>\n"
@@ -97,7 +105,8 @@ async def open_basket_positions(connection, direction="BUY"):
             f"TP2 (2x): <code>{tp2:.2f}</code>\n"
             f"TP3 (2x): <code>{tp3:.2f}</code>\n"
             f"SL: <code>{stop_loss:.2f}</code>\n"
-            f"Engine: <b>2.1.0</b>"
+            f"Time: <b>{open_time}</b>\n"
+            f"Engine: <b>2.2.0</b>"
         )
     except Exception as e:
         logger.error(f"Chyba pri otváraní košíka: {e}")
@@ -105,9 +114,10 @@ async def open_basket_positions(connection, direction="BUY"):
 
 
 async def manage_open_positions(connection):
-    """Sleduje pozície a posúva Stop Loss na Break-Even."""
+    """Sleduje pozície a posúva Stop Loss na Break-Even aj s časom."""
     try:
         positions = await connection.get_positions()
+        current_time = get_current_time_str()
         
         for position in positions:
             if position['symbol'] != SYMBOL:
@@ -126,7 +136,9 @@ async def manage_open_positions(connection):
                     take_profit=position.get('takeProfit', 0)
                 )
                 await send_telegram_message(
-                    f"🛡️ <b>{SYMBOL} Break-Even aktivovaný!</b>\nTicket: <code>{ticket}</code> | Zisk: <b>{profit_usd:.2f} USD</b>"
+                    f"🛡️ <b>{SYMBOL} Break-Even aktivovaný!</b>\n"
+                    f"Ticket: <code>{ticket}</code> | Zisk: <b>{profit_usd:.2f} USD</b>\n"
+                    f"Time: <b>{current_time}</b>"
                 )
 
             elif pos_type == 'POSITION_TYPE_SELL' and profit_usd >= BE_TRIGGER_USD and (current_sl > open_price or current_sl == 0):
@@ -136,7 +148,9 @@ async def manage_open_positions(connection):
                     take_profit=position.get('takeProfit', 0)
                 )
                 await send_telegram_message(
-                    f"🛡️ <b>{SYMBOL} Break-Even aktivovaný (SELL)!</b>\nTicket: <code>{ticket}</code> | Zisk: <b>{profit_usd:.2f} USD</b>"
+                    f"🛡️ <b>{SYMBOL} Break-Even aktivovaný (SELL)!</b>\n"
+                    f"Ticket: <code>{ticket}</code> | Zisk: <b>{profit_usd:.2f} USD</b>\n"
+                    f"Time: <b>{current_time}</b>"
                 )
                     
     except Exception as e:
@@ -157,10 +171,11 @@ async def main():
     connection = account.get_rpc_connection()
     await connection.connect()
 
-    logger.info("Riobot 2.1 spustený.")
-    await send_telegram_message("🚀 <b>Riobot Engine 2.1 spustený!</b> Pripravený na ostrý test s kompaktnými TP.")
+    logger.info("Riobot 2.2 spustený.")
+    startup_time = get_current_time_str()
+    await send_telegram_message(f"🚀 <b>Riobot Engine 2.2 spustený!</b> (Čas: {startup_time})")
 
-    # Ak nie je otvorené nič, otvoríme nový kompaktný košík
+    # Ak nie je otvorené nič, otvoríme nový košík
     positions = await connection.get_positions()
     xauusd_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
