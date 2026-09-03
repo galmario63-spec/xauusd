@@ -26,13 +26,12 @@ LOT_TP2 = 0.30
 COUNT_TP2 = 3
 LOT_TP3 = 0.20
 COUNT_TP3 = 2
-# Spolu 8 pozícií (3 + 3 + 2)
 
-# Risk manažment pre štandardný Demo účet (v dolároch/pips od vstupu)
+# Risk manažment pre štandardný Demo účet
 SL_DISTANCE = 35.0      # Pevný Stop Loss
-TP1_DISTANCE = 20.0     # Take Profit pre 1. sadu (blízky cieľ)
-TP2_DISTANCE = 40.0     # Take Profit pre 2. sadu (stredný cieľ)
-TP3_DISTANCE = 70.0     # Take Profit pre 3. sadu (veľký cieľ)
+TP1_DISTANCE = 25.0     # Take Profit pre 1. sadu
+TP2_DISTANCE = 50.0     # Take Profit pre 2. sadu
+TP3_DISTANCE = 80.0     # Take Profit pre 3. sadu
 BE_TRIGGER_USD = 8.0    # Break-Even pri zisku 8 USD
 
 
@@ -53,28 +52,7 @@ async def send_telegram_message(message: str):
         logger.error(f"Chyba pri odosielaní Telegram správy: {e}")
 
 
-async def get_market_trend(connection):
-    """Autonómna stratégia: Sleduje sviečky na M5 a vyhodnocuje trend pre vstup."""
-    try:
-        candles = await connection.get_candles(symbol=SYMBOL, timeframe='5m', limit=15)
-        if not candles or len(candles) < 10:
-            return None
-
-        closes = [c['close'] for c in candles]
-        short_ma = sum(closes[-3:]) / 3
-        long_ma = sum(closes[-10:]) / 10
-
-        if short_ma > long_ma:
-            return "BUY"
-        elif short_ma < long_ma:
-            return "SELL"
-    except Exception as e:
-        logger.error(f"Chyba pri analýze trhu: {e}")
-    
-    return None
-
-
-async def open_basket_positions(connection, direction):
+async def open_basket_positions(connection, direction="BUY"):
     """Otvorí košík pozícií rozdelený na 3 rôzne TP úrovne."""
     logger.info(f"Otváram 3-úrovňový košík pre {SYMBOL} v smere {direction}...")
     
@@ -184,27 +162,27 @@ async def main():
     connection = account.get_rpc_connection()
     await connection.connect()
 
-    logger.info("Autonómny bot s 3 TP úrovňami pre XAUUSD spustený.")
-    await send_telegram_message("🚀 <b>Riobot s 3-TP stratégią je online!</b> Sleduje trh.")
+    logger.info("Riobot s 3-TP stratégiou úspešne spustený.")
+    await send_telegram_message("🚀 <b>Riobot s 3-TP stratégią úspešne spustený a online!</b>")
+
+    # Skontrolujeme, či už nejaké pozície bežia
+    positions = await connection.get_positions()
+    xauusd_positions = [p for p in positions if p['symbol'] == SYMBOL]
+
+    if not xauusd_positions:
+        # Ak nič nebeží, otvoríme stabilný košík (predvolene BUY)
+        await open_basket_positions(connection, direction="BUY")
+    else:
+        logger.info("Na účte už existujú otvorené pozície XAUUSD, preskakujem vstup a spúšťam manažment.")
 
     while True:
         try:
-            positions = await connection.get_positions()
-            xauusd_positions = [p for p in positions if p['symbol'] == SYMBOL]
-
-            if not xauusd_positions:
-                trend = await get_market_trend(connection)
-                if trend:
-                    logger.info(f"Detekovaný trend: {trend}")
-                    await open_basket_positions(connection, direction=trend)
-            else:
-                await manage_open_positions(connection)
-
+            await manage_open_positions(connection)
         except Exception as e:
             logger.error(f"Chyba v hlavnej slučke: {e}")
 
-        await asyncio.sleep(15)
+        await asyncio.sleep(10)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main))
