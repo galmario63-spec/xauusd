@@ -13,13 +13,13 @@ logger = logging.getLogger(__name__)
 ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
 TOKEN = os.getenv("METAAPI_TOKEN")
 
-# Telegram údaje zadané priamo pre istotu, aby notifikácie hneď naskočili
-TELEGRAM_BOT_TOKEN = "8767773639:AAFU_yeGuEDn_yeGuEDn_yeGuEDn"
+# Reálny Telegram token z BotFather
+TELEGRAM_BOT_TOKEN = "8767773639:AAGsEx4kUVC-1fY-iitT5giIPbsU64shSHY"
 TELEGRAM_CHAT_ID = "5357928157"
 
 SYMBOL = "XAUUSD"
 
-# Bezpečné minimálne loty pre testovanie
+# Bezpečné minimálne loty
 LOT_TP1 = 0.01
 COUNT_TP1 = 3
 LOT_TP2 = 0.01
@@ -110,8 +110,8 @@ async def main():
 
     logger.info("Riobot bezpečný režim spustený.")
     
-    # Okamžitý test Telegramu pri štarte
-    await send_telegram_message("🚀 <b>Riobot hlási štart:</b> Prepojenie s Telegramom je úspešne nadviazané!")
+    # Okamžitá testovacia správa do Telegramu
+    await send_telegram_message("🚀 <b>Riobot hlási štart:</b> Prepojenie s Telegramom je aktívne!")
 
     while True:
         try:
