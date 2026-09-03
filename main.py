@@ -20,7 +20,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SYMBOL = "XAUUSD"
 
-# Štruktúra pre centový účet / test: 3 úrovne TP, na každú úroveň 2 obchody (spolu 6)
+# Nastavenia pre centový účet / test: 3 úrovne TP, na každú 2 obchody (spolu 6)
 LOT_SIZE = 0.01
 COUNT_PER_TP = 2 
 
@@ -31,10 +31,23 @@ TP2_DISTANCE = 6.0
 TP3_DISTANCE = 10.0
 BE_TRIGGER_USD = 2.0
 
+# Časový manažment (Bratislava / SELČ)
+START_HOUR = 8
+END_HOUR = 21
+
 
 def get_current_time_str():
-    """Vráti aktuálny čas v našej zóne (Bratislava / SELČ) vo formáte HH:MM."""
+    """Vráti aktuálny čas v našej zóne vo formáte HH:MM."""
     return datetime.now(ZoneInfo("Europe/Bratislava")).strftime("%H:%M")
+
+
+def is_allowed_trading_time():
+    """Skontroluje, či je aktuálny čas v povolenom obchodnom okne a či nie je víkend."""
+    now = datetime.now(ZoneInfo("Europe/Bratislava"))
+    current_hour = now.hour
+    if now.weekday() >= 5: # Sobota, Nedelľa
+        return False
+    return START_HOUR <= current_hour < END_HOUR
 
 
 async def send_telegram_message(message: str):
@@ -55,7 +68,11 @@ async def send_telegram_message(message: str):
 
 
 async def open_basket_positions(connection, direction="BUY"):
-    """Otvorí košík a pošle notifikáciu s časom v štýle screenshotov."""
+    """Otvorí košík pre BUY alebo SELL s kompaktnými TP."""
+    if not is_allowed_trading_time():
+        logger.info("Mimo povoleného obchodného času – nový košík sa neotvára.")
+        return
+
     logger.info(f"Otváram kompaktný 3-TP košík pre {SYMBOL} ({direction})...")
     
     price = await connection.get_symbol_price(SYMBOL)
@@ -97,7 +114,7 @@ async def open_basket_positions(connection, direction="BUY"):
 
         logger.info(f"Košík úspešne otvorený v smere {direction}.")
         
-        # Notifikácia presne podľa tvojho vzoru s časom
+        # Telegram notifikácia
         await send_telegram_message(
             f"🚨 <b>{SYMBOL} {direction} — RIO_ENGINE</b>\n\n"
             f"Entry: <code>{current_price:.2f}</code>\n"
@@ -106,7 +123,7 @@ async def open_basket_positions(connection, direction="BUY"):
             f"TP3 (2x): <code>{tp3:.2f}</code>\n"
             f"SL: <code>{stop_loss:.2f}</code>\n"
             f"Time: <b>{open_time}</b>\n"
-            f"Engine: <b>2.2.0</b>"
+            f"Engine: <b>2.4.0 (Full-Support)</b>"
         )
     except Exception as e:
         logger.error(f"Chyba pri otváraní košíka: {e}")
@@ -114,7 +131,7 @@ async def open_basket_positions(connection, direction="BUY"):
 
 
 async def manage_open_positions(connection):
-    """Sleduje pozície a posúva Stop Loss na Break-Even aj s časom."""
+    """Sleduje pozície a posúva Stop Loss na Break-Even s časom pre BUY aj SELL."""
     try:
         positions = await connection.get_positions()
         current_time = get_current_time_str()
@@ -171,20 +188,21 @@ async def main():
     connection = account.get_rpc_connection()
     await connection.connect()
 
-    logger.info("Riobot 2.2 spustený.")
+    logger.info("Riobot 2.4 spustený.")
     startup_time = get_current_time_str()
-    await send_telegram_message(f"🚀 <b>Riobot Engine 2.2 spustený!</b> (Čas: {startup_time})")
-
-    # Ak nie je otvorené nič, otvoríme nový košík
-    positions = await connection.get_positions()
-    xauusd_positions = [p for p in positions if p['symbol'] == SYMBOL]
-
-    if not xauusd_positions:
-        await open_basket_positions(connection, direction="BUY")
+    await send_telegram_message(f"🚀 <b>Riobot Engine 2.4 spustený!</b> (Čas: {startup_time})")
 
     while True:
         try:
+            positions = await connection.get_positions()
+            xauusd_positions = [p for p in positions if p['symbol'] == SYMBOL]
+
+            # Ak nič nebeží, môžeme otvoriť košík (tu vieš v prípade potreby zmeniť na "SELL")
+            if not xauusd_positions and is_allowed_trading_time():
+                await open_basket_positions(connection, direction="BUY")
+
             await manage_open_positions(connection)
+
         except Exception as e:
             logger.error(f"Chyba v hlavnej slučke: {e}")
 
