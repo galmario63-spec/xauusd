@@ -5,10 +5,9 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("xauusd_bot")
 
-# Definuj svoje premenné (prípadne ich načítavaj cez os.environ)
 SYMBOL = "XAUUSD"
-BE_TRIGGER_USD = 10.0      # Príklad tvojho limitu pre Break-Even
-LOCKED_PROFIT_OFFSET = 2.0 # Príklad offsetu
+BE_TRIGGER_USD = 10.0      
+LOCKED_PROFIT_OFFSET = 2.0 
 
 async def manage_open_positions(connection):
     try:
@@ -40,18 +39,16 @@ async def manage_open_positions(connection):
 async def main():
     logger.info("Spúšťam XAUUSD trading bot na Railway...")
     
-    # Sem si môžeš doplniť inicializáciu pripojenia (napr. connection.connect())
-    
+    # Nekonečná slučka, ktorá udrží bota nepretržite v chode
     while True:
         try:
-            # Tu sa budú pravidelne točiť tvoje funkcie
-            # await check_market_conditions(connection)
+            # Sem môžeš doplniť volanie funkcií, napr.:
             # await manage_open_positions(connection)
             pass
         except Exception as e:
             logger.error(f"Chyba v hlavnej slučke: {e}")
         
-        # Pauza 5 sekúnd medzi cyklami, aby bot zbytočne nepreťažoval CPU
+        # Pauza 5 sekúnd pred ďalšou kontrolou
         await asyncio.sleep(5)
 
 if __name__ == "__main__":
