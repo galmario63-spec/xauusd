@@ -13,7 +13,7 @@ LOCKED_PROFIT_OFFSET = float(os.getenv("LOCKED_PROFIT_OFFSET", "2.0"))
 
 async def manage_open_positions():
     try:
-        # Miesto pre správu otvorených pozícií cez MetaApi
+        # Miesto pre správu otvorených pozícií
         logger.info(f"Prebieha kontrola symbolu {SYMBOL}...")
     except Exception as e:
         logger.error(f"Chyba pri správe pozícií: {e}")
@@ -24,6 +24,7 @@ async def main():
     # Nekonečná slučka zaisťujúca, že proces neukončí beh
     while True:
         try:
+            logger.info("Bot beží a čaká na dáta...")
             await manage_open_positions()
         except Exception as e:
             logger.error(f"Chyba v hlavnej slučke: {e}")
