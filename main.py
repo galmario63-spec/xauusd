@@ -5,13 +5,14 @@ import traceback
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+import aiohttp
 from metaapi_cloud_sdk import MetaApi
 
 # Nastavenie logovania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("btc_bot")
 
-# Načítanie premenných prostredia z Railway
+# Načítanie premenných prostredia
 METAAPI_TOKEN = os.getenv('METAAPI_TOKEN')
 METAAPI_ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -41,9 +42,60 @@ def run_http_server():
 def get_current_time_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+async def send_telegram_message(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as response:
+                if response.status != 200:
+                    logger.error(f"Chyba pri posielaní Telegram správy: {await response.text()}")
+    except Exception as e:
+        logger.error(f"Telegram exception: {e}")
+
+async def open_basket_positions(connection, direction="BUY"):
+    logger.info(f"Otváram 2-obchodný košík pre {SYMBOL} ({direction})...")
+    try:
+        price = await connection.get_symbol_price(SYMBOL)
+        current_price = price['ask'] if direction == "BUY" else price['bid']
+        open_time = get_current_time_str()
+
+        if direction == "BUY":
+            stop_loss = current_price - SL_DISTANCE
+            tp1 = current_price + TP1_DISTANCE
+            tp2 = current_price + TP2_DISTANCE
+            await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp1)
+            await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp2)
+        else:
+            stop_loss = current_price + SL_DISTANCE
+            tp1 = current_price - TP1_DISTANCE
+            tp2 = current_price - TP2_DISTANCE
+            await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp1)
+            await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp2)
+
+        msg = (f"🔴 *{SYMBOL} {direction} — RIO_ENGINE*\n\n"
+               f"Entry: `{current_price}`\n"
+               f"TP1: `{tp1}`\n"
+               f"TP2: `{tp2}`\n"
+               f"SL: `{stop_loss}`\n"
+               f"Time: `{open_time}`")
+        await send_telegram_message(msg)
+        logger.info(f"Košík úspešne otvorený a odoslaný na Telegram pre {SYMBOL}")
+    except Exception as e:
+        logger.error(f"Chyba pri otváraní pozícií: {e}")
+
 async def manage_open_positions(connection):
     try:
         positions = await connection.get_positions()
+        
+        # Ak nie sú žiadne otvorené pozície, môžeme otvoriť nový košík (alebo sem doplníš svoju vlastnú logiku vstupu)
+        if not any(p['symbol'] == SYMBOL for p in positions):
+            logger.info(žádne otvorené pozície pre {SYMBOL}, prebieha vyhodnotenie vstupu...)
+            # Príklad: Ak chceš, aby bot automaticky otvoril obchod, ak žiadny nemá:
+            # await open_basket_positions(connection, "BUY")
+
         for position in positions:
             if position['symbol'] != SYMBOL:
                 continue
@@ -72,14 +124,12 @@ async def main():
     logger.info(f"Spustam MetaApi prepojenie pre {SYMBOL}...")
     
     if not METAAPI_TOKEN or not METAAPI_ACCOUNT_ID:
-        logger.critical("Chýbajú MetaApi premenné (METAAPI_TOKEN alebo METAAPI_ACCOUNT_ID)!")
+        logger.critical("Chýbajú MetaApi premenné!")
         return
 
     metaapi = MetaApi(METAAPI_TOKEN)
     account = await metaapi.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
     
-    # Pripojenie k účtu (počkáme, kým bude online)
-    original_state = account.state
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
@@ -96,7 +146,6 @@ async def main():
         await asyncio.sleep(15)
 
 if __name__ == "__main__":
-    # Spustenie HTTP servera na pozadí pre Railway
     server_thread = threading.Thread(target=run_http_server, daemon=True)
     server_thread.start()
 
