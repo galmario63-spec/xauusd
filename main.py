@@ -90,11 +90,8 @@ async def manage_open_positions(connection):
     try:
         positions = await connection.get_positions()
         
-        # Ak nie sú žiadne otvorené pozície, môžeme otvoriť nový košík (alebo sem doplníš svoju vlastnú logiku vstupu)
         if not any(p['symbol'] == SYMBOL for p in positions):
-            logger.info(žádne otvorené pozície pre {SYMBOL}, prebieha vyhodnotenie vstupu...)
-            # Príklad: Ak chceš, aby bot automaticky otvoril obchod, ak žiadny nemá:
-            # await open_basket_positions(connection, "BUY")
+            logger.info(f"Žiadne otvorené pozície pre {SYMBOL}, prebieha kontrola...")
 
         for position in positions:
             if position['symbol'] != SYMBOL:
