@@ -4,6 +4,7 @@ import os
 import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("btc_bot")
@@ -31,17 +32,24 @@ async def manage_open_positions():
         logger.error(f"Chyba pri sprave pozicii: {e}")
 
 async def main():
-    logger.info("Spustam BTC trading bot na Railway...")
+    logger.info("Spustam BTC trading bot na Railway (obchodovanie do 21:00)...")
     
     while True:
         try:
-            logger.info("Bot bezi a caka na data...")
-            await manage_open_positions()
+            current_hour = datetime.now().hour
+            
+            # Obchodujeme len do 21:00 (hodina < 21)
+            if current_hour < 21:
+                logger.info("Bot bezi a obchoduje...")
+                await manage_open_positions()
+            else:
+                logger.info(f"Je po 21:00 (aktualne {datetime.now().strftime('%H:%M')}), obchodovanie je pozastavene do zajtra.")
+                
         except Exception as e:
             logger.error(f"Chyba v hlavnej slucke: {e}")
             traceback.print_exc()
         
-        await asyncio.sleep(10)
+        await asyncio.sleep(30)
 
 if __name__ == "__main__":
     server_thread = threading.Thread(target=run_http_server, daemon=True)
