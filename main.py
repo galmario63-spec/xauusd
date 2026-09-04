@@ -6,11 +6,11 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("xauusd_bot")
+logger = logging.getLogger("btc_bot")
 
-SYMBOL = os.getenv("SYMBOL", "XAUUSD")
-BE_TRIGGER_USD = float(os.getenv("BE_TRIGGER_USD", "10.0"))
-LOCKED_PROFIT_OFFSET = float(os.getenv("LOCKED_PROFIT_OFFSET", "2.0"))
+SYMBOL = os.getenv("SYMBOL", "BTCUSD")
+BE_TRIGGER_USD = float(os.getenv("BE_TRIGGER_USD", "50.0"))
+LOCKED_PROFIT_OFFSET = float(os.getenv("LOCKED_PROFIT_OFFSET", "10.0"))
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -31,7 +31,7 @@ async def manage_open_positions():
         logger.error(f"Chyba pri sprave pozicii: {e}")
 
 async def main():
-    logger.info("Spustam XAUUSD trading bot na Railway...")
+    logger.info("Spustam BTC trading bot na Railway...")
     
     while True:
         try:
