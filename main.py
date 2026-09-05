@@ -20,9 +20,9 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 SYMBOL = os.getenv("SYMBOL", "BTCUSD")
 LOT_SIZE = float(os.getenv("LOT_SIZE", "0.01"))
-SL_DISTANCE = float(os.getenv("SL_DISTANCE", "300"))
-TP1_DISTANCE = float(os.getenv("TP1_DISTANCE", "300"))
-TP2_DISTANCE = float(os.getenv("TP2_DISTANCE", "600"))
+SL_DISTANCE = float(os.getenv("SL_DISTANCE", "500"))
+TP1_DISTANCE = float(os.getenv("TP1_DISTANCE", "600"))
+TP2_DISTANCE = float(os.getenv("TP2_DISTANCE", "1200"))
 BE_TRIGGER_USD = float(os.getenv("BE_TRIGGER_USD", "2.0"))
 LOCKED_PROFIT_OFFSET = float(os.getenv("LOCKED_PROFIT_OFFSET", "50"))
 
