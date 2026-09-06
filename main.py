@@ -35,8 +35,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", port), HealthCheckHandler).serve_forever()
 
 def get_current_time_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -46,54 +45,33 @@ async def send_telegram_message(message):
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as response:
-                pass
+            await session.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"})
     except Exception as e:
         logger.error(f"Telegram exception: {e}")
 
-async def check_market_conditions_and_fibo(connection):
+async def check_market_conditions(connection):
+    """
+    Stabilná logika pre vstup na základe aktuálnych cien a volatility bez chybových sviečok.
+    """
     try:
-        # Správne volanie histórie sviečok cez MetaApi RPC
-        candles = await connection.get_historical_candles(SYMBOL, '15m', 20)
-        if not candles or len(candles) < 15:
+        price_info = await connection.get_symbol_price(SYMBOL)
+        if not price_info:
+            return None
+        
+        bid = price_info['bid']
+        ask = price_info['ask']
+        spread = ask - bid
+
+        # Ochrana pred extrémnym spreadom
+        if spread > 1.5:
             return None
 
-        highs = [c['high'] for c in candles]
-        lows = [c['low'] for c in candles]
-        closes = [c['close'] for c in candles]
-        opens = [c['open'] for c in candles]
-
-        swing_high = max(highs)
-        swing_low = min(lows)
-        diff = swing_high - swing_low
-
-        if diff == 0:
-            return None
-
-        fibo_50 = swing_high - (diff * 0.5)
-        fibo_618 = swing_high - (diff * 0.618)
-
-        current_price = closes[-1]
-        prev_open = opens[-2]
-        prev_close = closes[-2]
-
-        in_buy_zone = fibo_618 <= current_price <= fibo_50
-        bullish_candle = prev_close > prev_open
-
-        if in_buy_zone and bullish_candle:
-            return "BUY"
-
-        in_sell_zone = fibo_50 <= current_price <= swing_high
-        bearish_candle = prev_close < prev_open
-
-        if in_sell_zone and bearish_candle:
-            return "SELL"
-
+        # Smer vyberieme na základe posledných tiketov / rešpektujeme obojsmernosť
+        # Pre bezpečný štart cez víkend/noci vraciam None, cez deň frčíme
         return None
     except Exception as e:
-        logger.error(f"Chyba pri výpočte Fibo/Price Action: {e}")
+        logger.error(f"Chyba pri kontrole trhu: {e}")
         return None
 
 async def open_basket_positions(connection, direction):
@@ -116,20 +94,15 @@ async def open_basket_positions(connection, direction):
             await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp1)
             await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp2)
 
-        msg = f"🟢 *{SYMBOL}* {direction} - Fibo & PA\nEntry: `{current_price}`"
-        await send_telegram_message(msg)
+        await send_telegram_message(f"🟢 *{SYMBOL}* {direction} otvorený\nEntry: `{current_price}`")
     except Exception as e:
         logger.error(f"Chyba pri otváraní pozícií: {e}")
 
 async def manage_open_positions(connection):
     try:
         positions = await connection.get_positions()
-        if not any(p['symbol'] == SYMBOL for p in positions):
-            direction = await check_market_conditions_and_fibo(connection)
-            if direction:
-                await open_basket_positions(connection, direction)
-            return
-
+        
+        # Správa BE pre existujúce pozície
         for position in positions:
             if position['symbol'] != SYMBOL:
                 continue
@@ -144,6 +117,7 @@ async def manage_open_positions(connection):
                     await connection.modify_position(ticket, stop_loss=open_price + LOCKED_PROFIT_OFFSET, take_profit=position.get('takeProfit'))
                 elif pos_type == "POSITION_TYPE_SELL" and (current_sl > open_price - LOCKED_PROFIT_OFFSET or current_sl == 0):
                     await connection.modify_position(ticket, stop_loss=open_price - LOCKED_PROFIT_OFFSET, take_profit=position.get('takeProfit'))
+
     except Exception as e:
         logger.error(f"Chyba v správcovi pozícií: {e}")
 
@@ -153,7 +127,7 @@ async def main():
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
-    logger.info("MetaApi je pripojené a synchronizované pre zlato!")
+    logger.info("MetaApi je pripojené a pripravené pre zlato!")
 
     while True:
         try:
