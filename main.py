@@ -17,7 +17,7 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
-# --- HLAVNÝ TRADING BOT ---
+# --- PARAMETRE BOTA ---
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
@@ -44,20 +44,30 @@ async def send_telegram(message):
         print(f"Telegram chyba: {e}")
 
 async def main():
-    metaapi = MetaApi(TOKEN)
-    account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
+    print("Riobot štartuje...")
     
-    if account.state != 'DEPLOYED':
-        await account.deploy()
-        await asyncio.sleep(10)
-    
-    connection = account.get_rpc_connection()
-    await connection.connect()
-    await connection.wait_synchronized()
-    
-    print("Riobot stabilne online. SL: 12 | TP1: 6 | TP2: 9 | BE pri zisku 3 -> +1")
-    await send_telegram("🤖 Riobot online: SL 12, TP (6/9), BE +1 pri zisku 3.")
+    # Bezpečné pripojenie ošetrené proti pádu
+    while True:
+        try:
+            metaapi = MetaApi(TOKEN)
+            account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
+            
+            if account.state != 'DEPLOYED':
+                await account.deploy()
+                await asyncio.sleep(10)
+            
+            connection = account.get_rpc_connection()
+            await connection.connect()
+            await connection.wait_synchronized()
+            
+            print("Riobot stabilne online. SL: 12 | TP1: 6 | TP2: 9 | BE pri zisku 3 -> +1")
+            await send_telegram("🤖 Riobot online: SL 12, TP (6/9), BE +1 pri zisku 3.")
+            break
+        except Exception as e:
+            print(f"Chyba pri pripájaní, skúšam znova o 10s: {e}")
+            await asyncio.sleep(10)
 
+    # Hlavná slučka s kompletným ošetrením chýb
     while True:
         try:
             await asyncio.sleep(30)
@@ -135,7 +145,7 @@ async def main():
                         price_history.clear()
 
         except Exception as e:
-            print(f"Chyba: {e}")
+            print(f"Chyba v hlavnej slučke: {e}")
             await asyncio.sleep(20)
 
 if __name__ == "__main__":
