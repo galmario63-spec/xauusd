@@ -2,7 +2,6 @@ import os
 import time
 import json
 import urllib.request
-import threading
 
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
@@ -43,8 +42,8 @@ def api_post(endpoint, payload):
     except Exception:
         return None
 
-def trading_bot_loop():
-    print("Riobot štartuje obchodnú rutinu (bez konfliktu portov)...")
+def main():
+    print("Riobot štartuje čistú obchodnú rutinu...")
     send_telegram("🤖 Riobot online: Lot 0.02, SL 12, TP 9.")
     
     price_history = []
@@ -140,5 +139,4 @@ def trading_bot_loop():
             time.sleep(15)
 
 if __name__ == "__main__":
-    # Spustenie hlavnej logiky priamo, bez blokovania portov
-    trading_bot_loop()
+    main()
