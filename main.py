@@ -1,7 +1,6 @@
 import os
 import time
 import asyncio
-from datetime import datetime, timedelta, timezone
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
@@ -21,9 +20,6 @@ async def main():
     if account.state != 'DEPLOYED':
         await account.deploy()
     
-    # Inicializácia klienta pre historické sviečky (správny spôsob v MetaApi SDK)
-    historical_data = metaapi.metatrader_account_api.get_historical_data_client(ACCOUNT_ID)
-    
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
@@ -32,10 +28,8 @@ async def main():
 
     while True:
         try:
-            # Sťahovanie sviečok cez oficiálne historické API
-            end_time = datetime.now(timezone.utc)
-            start_time = end_time - timedelta(hours=6)
-            candles = await historical_data.get_candles(SYMBOL, TIMEFRAME, start_time, end_time)
+            # Bezpečné získanie sviečok cez RPC terminal stav
+            candles = await connection.get_terminal_candles(SYMBOL, TIMEFRAME, 50)
             
             if not candles or len(candles) < 20:
                 await asyncio.sleep(15)
