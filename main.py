@@ -2,35 +2,14 @@ import os
 import time
 import asyncio
 import aiohttp
-import http.server
-import socketserver
-import threading
-
-# --- OKAMŽITÝ HTTP SERVER PRE RAILWAY (spustí sa hneď v 1. sekunde) ---
-PORT = int(os.environ.get("PORT", 8080))
-
-class HealthHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Riobot is active")
-    def log_message(self, format, *args):
-        pass
-
-def run_server():
-    try:
-        with socketserver.TCPServer(("0.0.0.0", PORT), HealthHandler) as httpd:
-            print(f"HTTP server okamžite beží na porte {PORT}")
-            httpd.serve_forever()
-    except Exception as e:
-        print(f"Chyba HTTP servera: {e}")
-
-# Spustíme server hneď, aby Railway hneď videlo odpoveď
-threading.Thread(target=run_server, daemon=True).start()
-
-# --- HLAVNÝ TRADING BOT ---
+from aiohttp import web
 from metaapi_cloud_sdk import MetaApi
 
+# --- ASYNCHRÓNNY HTTP SERVER (jediný správny pre Railway) ---
+async def handle_ping(request):
+    return web.Response(text="Riobot is running!")
+
+# --- KONFIGURÁCIA BOTA ---
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
@@ -56,30 +35,8 @@ async def send_telegram(message):
     except Exception as e:
         print(f"Telegram chyba: {e}")
 
-async def main():
-    print("Riobot sa pripája k MetaApi...")
-    
-    connection = None
-    while True:
-        try:
-            metaapi = MetaApi(TOKEN)
-            account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
-            
-            if account.state != 'DEPLOYED':
-                await account.deploy()
-                await asyncio.sleep(10)
-            
-            connection = account.get_rpc_connection()
-            await connection.connect()
-            await connection.wait_synchronized()
-            
-            print("Riobot stabilne pripojený. SL: 12 | TP1: 6 | TP2: 9 | BE pri zisku 3 -> +1")
-            await send_telegram("🤖 Riobot je online: SL 12, TP (6/9), BE +1 pri zisku 3.")
-            break
-        except Exception as e:
-            print(f"Chyba pripojenia, skúšam znova o 10s: {e}")
-            await asyncio.sleep(10)
-
+async def trading_loop(connection):
+    print("Trading slučka spustená.")
     while True:
         try:
             await asyncio.sleep(20)
@@ -181,6 +138,42 @@ async def main():
         except Exception as e:
             print(f"Chyba v hlavnej slučke: {e}")
             await asyncio.sleep(15)
+
+async def main():
+    # Spustenie HTTP servera pre Railway
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"HTTP server beží na porte {port}")
+
+    # Pripojenie k MetaApi
+    connection = None
+    while True:
+        try:
+            metaapi = MetaApi(TOKEN)
+            account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
+            
+            if account.state != 'DEPLOYED':
+                await account.deploy()
+                await asyncio.sleep(10)
+            
+            connection = account.get_rpc_connection()
+            await connection.connect()
+            await connection.wait_synchronized()
+            
+            print("Riobot stabilne pripojený. SL: 12 | TP1: 6 | TP2: 9 | BE pri zisku 3 -> +1")
+            await send_telegram("🤖 Riobot je online: SL 12, TP (6/9), BE +1 pri zisku 3.")
+            break
+        except Exception as e:
+            print(f"Chyba pripojenia, skúšam znova o 10s: {e}")
+            await asyncio.sleep(10)
+
+    # Spustenie obchodnej logiky bežiacej paralelným taskom
+    await trading_loop(connection)
 
 if __name__ == "__main__":
     asyncio.run(main())
