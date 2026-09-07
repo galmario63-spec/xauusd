@@ -43,7 +43,6 @@ async def start_web_server():
     await site.start()
 
 async def main():
-    # Spustíme HTTP server pre Railway, aby nezhadzoval kontajner
     asyncio.create_task(start_web_server())
 
     metaapi = MetaApi(TOKEN)
@@ -58,7 +57,7 @@ async def main():
     await connection.wait_synchronized()
     
     print("Riobot stabilne online. SL: 12 | TP1: 6 | TP2: 9 | BE pri zisku 3 -> +1")
-    await send_telegram("🤖 Riobot stabilne online: SL 12, TP (6/9), BE +1 pri zisku 3.")
+    await send_telegram("🤖 Riobot online: SL 12, TP (6/9), BE +1 pri zisku 3.")
 
     while True:
         try:
@@ -75,15 +74,15 @@ async def main():
             if len(price_history) > 30:
                 price_history.pop(0)
 
-            # 1. Break-Even kontrola (zisk 3 -> SL na +1)
+            # 1. Break-Even kontrola ošetrená proti chybám
             positions = await connection.get_positions()
             for p in positions:
-                if p['symbol'] == SYMBOL:
-                    open_price = p['openPrice']
-                    pos_type = p['type']
+                if p.get('symbol') == SYMBOL:
+                    open_price = p.get('openPrice', 0)
+                    pos_type = str(p.get('type', ''))
                     current_sl = p.get('stopLoss', 0)
                     
-                    if pos_type == 'POSITION_TYPE_BUY':
+                    if 'BUY' in pos_type:
                         profit = current_bid - open_price
                         if profit >= 3.0 and current_sl < (open_price + 1.0):
                             new_sl = open_price + 1.0
@@ -91,7 +90,7 @@ async def main():
                             print(f"BE aktivovaný pre BUY! SL na {new_sl}")
                             await send_telegram(f"🛡️ Break-Even na XAUUSD BUY: SL posunutý na +1$ ({new_sl})")
                             
-                    elif pos_type == 'POSITION_TYPE_SELL':
+                    elif 'SELL' in pos_type:
                         profit = open_price - current_ask
                         if profit >= 3.0 and (current_sl > (open_price - 1.0) or current_sl == 0):
                             new_sl = open_price - 1.0
@@ -100,7 +99,7 @@ async def main():
                             await send_telegram(f"🛡️ Break-Even na XAUUSD SELL: SL posunutý na +1$ ({new_sl})")
 
             # 2. Vstupy na základe Fibonacciho zóny
-            has_position = any(p['symbol'] == SYMBOL for p in positions)
+            has_position = any(p.get('symbol') == SYMBOL for p in positions)
             if not has_position and len(price_history) >= 20:
                 max_price = max(price_history)
                 min_price = min(price_history)
