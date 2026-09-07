@@ -1,19 +1,34 @@
 import os
 import time
 import asyncio
+import aiohttp
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
 
+# Telegram údaje
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'Tvoj_Telegram_Bot_Token')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', 'Tvoj_Chat_ID')
+
 FIB_MIN = 0.50
 FIB_MAX = 0.618
-RISK_REWARD_RATIO = 3.0
 LOT_SIZE = 0.01
 
-# Pamäť na zbieranie živých cien pre výpočet zóny
 price_history = []
+
+async def send_telegram(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as response:
+                await response.text()
+    except Exception as e:
+        print(f"Telegram chyba: {e}")
 
 async def main():
     metaapi = MetaApi(TOKEN)
@@ -21,34 +36,58 @@ async def main():
     
     if account.state != 'DEPLOYED':
         await account.deploy()
+        await asyncio.sleep(10)
     
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
     
-    print(f"Riobot je ostrý, zbiera dáta a začína obchodovať {SYMBOL}...")
+    print("Riobot pripravený. SL: 13 | TP1: 6 | TP2: 9 | BE: pri zisku 4$ posun na +1$")
+    await send_telegram("🤖 Riobot beží s pevným SL 13, TP (6/9) a Break-Even ochranou!")
 
     while True:
         try:
+            await asyncio.sleep(15)
+
             price_data = await connection.get_symbol_price(SYMBOL)
-            if not price_data:
-                await asyncio.sleep(15)
-                continue
+            if not price_data: continue
 
-            current_price = price_data.get('bid')
-            if not current_price:
-                await asyncio.sleep(15)
-                continue
+            current_bid = price_data.get('bid')
+            current_ask = price_data.get('ask')
+            if not current_bid or not current_ask: continue
 
-            # Ukladáme aktuálnu cenu do pamäte
-            price_history.append(current_price)
+            price_history.append(current_bid)
             if len(price_history) > 30:
                 price_history.pop(0)
 
-            print(f"Cena {SYMBOL}: {current_price} | Body v pamäti: {len(price_history)}")
+            # 1. Kontrola otvorených pozícií pre Break-Even (+4$ zisk -> SL na +1$)
+            positions = await connection.get_positions()
+            for p in positions:
+                if p['symbol'] == SYMBOL:
+                    open_price = p['openPrice']
+                    pos_type = p['type'] # 'POSITION_TYPE_BUY' alebo 'POSITION_TYPE_SELL'
+                    current_sl = p.get('stopLoss', 0)
+                    
+                    if pos_type == 'POSITION_TYPE_BUY':
+                        profit_points = current_bid - open_price
+                        # Ak je zisk 4 doláre (body) a SL ešte nie je na +1
+                        if profit_points >= 4.0 and current_sl < (open_price + 1.0):
+                            new_sl = open_price + 1.0
+                            await connection.modify_position(p['id'], stop_loss=new_sl, take_profit=p.get('takeProfit'))
+                            print(f"Break-Even aktivovaný pre BUY! SL posunutý na {new_sl}")
+                            await send_telegram(f"🛡️ Break-Even aktivovaný na XAUUSD BUY! SL posunutý na +1$ ({new_sl})")
+                            
+                    elif pos_type == 'POSITION_TYPE_SELL':
+                        profit_points = open_price - current_ask
+                        if profit_points >= 4.0 and (current_sl > (open_price - 1.0) or current_sl == 0):
+                            new_sl = open_price - 1.0
+                            await connection.modify_position(p['id'], stop_loss=new_sl, take_profit=p.get('takeProfit'))
+                            print(f"Break-Even aktivovaný pre SELL! SL posunutý na {new_sl}")
+                            await send_telegram(f"🛡️ Break-Even aktivovaný na XAUUSD SELL! SL posunutý na +1$ ({new_sl})")
 
-            # Keď máme dostatok bodov, vyhodnotíme Fibonacciho zónu a obchodujeme
-            if len(price_history) >= 20:
+            # 2. Vyhodnotenie zóny a vstup do nových obchodov
+            has_position = any(p['symbol'] == SYMBOL for p in positions)
+            if not has_position and len(price_history) >= 20:
                 max_price = max(price_history)
                 min_price = min(price_history)
                 diff = max_price - min_price
@@ -57,31 +96,35 @@ async def main():
                     fib_50 = max_price - (diff * FIB_MIN)
                     fib_618 = max_price - (diff * FIB_MAX)
 
-                    positions = await connection.get_positions()
-                    has_position = any(p['symbol'] == SYMBOL for p in positions)
+                    # BUY logika
+                    if min_price < current_bid and (min(fib_50, fib_618) <= current_bid <= max(fib_50, fib_618)):
+                        sl = current_bid - 13.0
+                        tp1 = current_bid + 6.0
+                        tp2 = current_bid + 9.0
+                        
+                        await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp1)
+                        await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp2)
+                        
+                        msg = f"🔴 XAUUSD BUY – RIO_ENGINE\n\nEntry: {current_bid}\nTP1 (6$): {tp1}\nTP2 (9$): {tp2}\nSL: {sl}"
+                        await send_telegram(msg)
+                        price_history.clear()
 
-                    if not has_position:
-                        # BUY logika
-                        if min_price < current_price and (min(fib_50, fib_618) <= current_price <= max(fib_50, fib_618)):
-                            print(f"Cena {current_price} je v BUY Fib zóne! Vstupujem do obchodu...")
-                            sl = current_price - (diff * 0.3)
-                            tp = current_price + ((current_price - sl) * RISK_REWARD_RATIO)
-                            await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp)
-                            price_history.clear()
-
-                        # SELL logika
-                        elif max_price > current_price and (min(fib_50, fib_618) <= current_price <= max(fib_50, fib_618)):
-                            print(f"Cena {current_price} je v SELL Fib zóne! Vstupujem do obchodu...")
-                            sl = current_price + (diff * 0.3)
-                            tp = current_price - ((sl - current_price) * RISK_REWARD_RATIO)
-                            await connection.create_market_sell_order(SYMBOL, LOT_SIZE, sl, tp)
-                            price_history.clear()
-
-            await asyncio.sleep(20)
+                    # SELL logika
+                    elif max_price > current_bid and (min(fib_50, fib_618) <= current_bid <= max(fib_50, fib_618)):
+                        sl = current_bid + 13.0
+                        tp1 = current_bid - 6.0
+                        tp2 = current_bid - 9.0
+                        
+                        await connection.create_market_sell_order(SYMBOL, LOT_SIZE, sl, tp1)
+                        await connection.create_market_sell_order(SYMBOL, LOT_SIZE, sl, tp2)
+                        
+                        msg = f"🔴 XAUUSD SELL – RIO_ENGINE\n\nEntry: {current_bid}\nTP1 (6$): {tp1}\nTP2 (9$): {tp2}\nSL: {sl}"
+                        await send_telegram(msg)
+                        price_history.clear()
 
         except Exception as e:
-            print(f"Chyba v cykle bota: {e}")
-            await asyncio.sleep(10)
+            print(f"Chyba: {e}")
+            await asyncio.sleep(15)
 
 if __name__ == "__main__":
     asyncio.run(main())
