@@ -7,7 +7,7 @@ import socketserver
 import threading
 from metaapi_cloud_sdk import MetaApi
 
-# --- ŠTANDARDNÝ HTTP SERVER PRE RAILWAY (bez externých závislostí) ---
+# --- SPOĽAHLIVÝ HTTP SERVER PRE RAILWAY ---
 PORT = int(os.environ.get("PORT", 8080))
 
 class HealthHandler(http.server.SimpleHTTPRequestHandler):
@@ -16,16 +16,17 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Riobot is active")
     def log_message(self, format, *args):
-        pass # Vypisovanie logov servera je vypnuté, aby nešpammovali
+        pass
 
 def run_server():
     try:
         with socketserver.TCPServer(("0.0.0.0", PORT), HealthHandler) as httpd:
+            print(f"HTTP server úspešne beží na porte {PORT}")
             httpd.serve_forever()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Chyba HTTP servera: {e}")
 
-# Spustenie servera na pozadí, aby Railway nezhadzovalo kontajner
+# Spustenie servera hneď na začiatku
 threading.Thread(target=run_server, daemon=True).start()
 
 # --- KONFIGURÁCIA BOTA ---
@@ -57,7 +58,6 @@ async def send_telegram(message):
 async def main():
     print("Riobot štartuje...")
     
-    # Bezpečné pripojenie s opakovaním pri výpadku
     connection = None
     while True:
         try:
@@ -79,7 +79,6 @@ async def main():
             print(f"Chyba pripojenia, skúšam znova o 10s: {e}")
             await asyncio.sleep(10)
 
-    # Hlavná slučka bota
     while True:
         try:
             await asyncio.sleep(20)
