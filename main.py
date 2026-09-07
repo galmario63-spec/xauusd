@@ -2,27 +2,20 @@ import os
 import time
 import asyncio
 import aiohttp
-import http.server
-import socketserver
-import threading
+from fastapi import FastAPI
+import uvicorn
 from metaapi_cloud_sdk import MetaApi
 
-# --- RAILWAY WEB SERVER (v pozadí, aby nezhadzovalo kontajner) ---
-PORT = int(os.environ.get("PORT", 8080))
+# --- WEB SERVER PRE RAILWAY ---
+app = FastAPI()
 
-class HealthCheckHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Riobot is running!")
-    def log_message(self, format, *args):
-        pass # Vypne spamovanie logov z http servera
+@app.get("/")
+def health_check():
+    return {"status": "running"}
 
-def start_server():
-    with socketserver.TCPServer(("0.0.0.0", PORT), HealthCheckHandler) as httpd:
-        httpd.serve_forever()
-
-threading.Thread(target=start_server, daemon=True).start()
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
 # --- HLAVNÝ TRADING BOT ---
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
@@ -80,7 +73,7 @@ async def main():
             if len(price_history) > 30:
                 price_history.pop(0)
 
-            # 1. Break-Even kontrola ošetrená proti chybám
+            # 1. Break-Even kontrola (zisk 3 -> SL na +1)
             positions = await connection.get_positions()
             for p in positions:
                 if p.get('symbol') == SYMBOL:
@@ -146,4 +139,6 @@ async def main():
             await asyncio.sleep(20)
 
 if __name__ == "__main__":
+    import threading
+    threading.Thread(target=run_web, daemon=True).start()
     asyncio.run(main())
