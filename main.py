@@ -7,7 +7,6 @@ import socketserver
 import threading
 from metaapi_cloud_sdk import MetaApi
 
-# --- 1. OVERENÝ HTTP SERVER V POZADÍ ---
 PORT = int(os.environ.get("PORT", 8080))
 
 class HealthHandler(http.server.SimpleHTTPRequestHandler):
@@ -27,7 +26,6 @@ def run_server():
 
 threading.Thread(target=run_server, daemon=True).start()
 
-# --- 2. KONFIGURÁCIA BOTA ---
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
@@ -37,7 +35,7 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', 'Tvoj_Chat_ID')
 
 FIB_MIN = 0.50
 FIB_MAX = 0.618
-LOT_SIZE = 0.01
+LOT_SIZE = 0.02
 
 price_history = []
 
@@ -53,8 +51,17 @@ async def send_telegram(message):
     except Exception as e:
         print(f"Telegram chyba: {e}")
 
+def calculate_ema(data, period):
+    if len(data) < period:
+        return sum(data) / len(data) if data else 0
+    multiplier = 2 / (period + 1)
+    ema = sum(data[:period]) / period
+    for price in data[period:]:
+        ema = (price - ema) * multiplier + ema
+    return ema
+
 async def main():
-    print("Riobot štartuje...")
+    print("Riobot štartuje s trendovým filtrom...")
     
     connection = None
     while True:
@@ -70,8 +77,8 @@ async def main():
             await connection.connect()
             await connection.wait_synchronized()
             
-            print("Riobot stabilne pripojený. SL: 12 | TP: 9 | BE pri zisku 3 -> +1")
-            await send_telegram("🤖 Riobot je online: SL 12, TP 9, BE +1 pri zisku 3.")
+            print("Riobot stabilne pripojený. Lot: 0.02 | SL: 12 | TP: 9 | BE pri 3 -> +1")
+            await send_telegram("🤖 Riobot online: Lot 0.02, EMA filter aktívny.")
             break
         except Exception as e:
             print(f"Chyba pripojenia, skúšam znova o 10s: {e}")
@@ -91,7 +98,7 @@ async def main():
                 continue
 
             price_history.append(current_bid)
-            if len(price_history) > 30:
+            if len(price_history) > 200:
                 price_history.pop(0)
 
             # 1. Kontrola Break-Even (zisk 3 -> posun SL na +1)
@@ -115,9 +122,9 @@ async def main():
                             try:
                                 await connection.modify_position(pos_id, stop_loss=target_sl, take_profit=p.get('takeProfit'))
                                 print(f"BE aktivovaný pre BUY! SL na {target_sl}")
-                                await send_telegram(f"🛡️ Break-Even na XAUUSD BUY: SL posunutý na +1$ ({target_sl})")
+                                await send_telegram(f"🛡️ Break-Even BUY: SL na +1$ ({target_sl})")
                             except Exception as e:
-                                print(f"Chyba pri úpravie SL pre BUY: {e}")
+                                print(f"Chyba úpravy SL BUY: {e}")
                                 
                     elif 'SELL' in pos_type:
                         profit = open_price - current_ask
@@ -126,16 +133,19 @@ async def main():
                             try:
                                 await connection.modify_position(pos_id, stop_loss=target_sl, take_profit=p.get('takeProfit'))
                                 print(f"BE aktivovaný pre SELL! SL na {target_sl}")
-                                await send_telegram(f"🛡️ Break-Even na XAUUSD SELL: SL posunutý na +1$ ({target_sl})")
+                                await send_telegram(f"🛡️ Break-Even SELL: SL na +1$ ({target_sl})")
                             except Exception as e:
-                                print(f"Chyba pri úpravie SL pre SELL: {e}")
+                                print(f"Chyba úpravy SL SELL: {e}")
 
-            # 2. Vstupy na základe Fibonacciho zóny (0.5 - 0.618) s jedným TP = 9
+            # 2. Vstupy s filtrom trendu (EMA 50 a EMA 200)
             has_position = any(p.get('symbol') == SYMBOL for p in positions)
-            if not has_position and len(price_history) >= 20:
-                max_price = max(price_history)
-                min_price = min(price_history)
+            if not has_position and len(price_history) >= 50:
+                max_price = max(price_history[-30:])
+                min_price = min(price_history[-30:])
                 diff = max_price - min_price
+
+                ema_50 = calculate_ema(price_history, 50)
+                ema_200 = calculate_ema(price_history, min(len(price_history), 200))
 
                 if diff > 0:
                     fib_50 = max_price - (diff * FIB_MIN)
@@ -143,36 +153,30 @@ async def main():
                     zone_min = min(fib_50, fib_618)
                     zone_max = max(fib_50, fib_618)
 
-                    # BUY logika
-                    if min_price < current_bid and (zone_min <= current_bid <= zone_max):
+                    # BUY filter: Cena v zóne + Trend je rastúci (EMA 50 > EMA 200)
+                    if current_bid >= ema_200 and ema_50 > ema_200 and (zone_min <= current_bid <= zone_max):
                         sl = current_bid - 12.0
                         tp = current_bid + 9.0
-                        
                         try:
                             await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp)
-                            
-                            msg = f"🔴 XAUUSD BUY – RIO_ENGINE\n\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}"
-                            await send_telegram(msg)
+                            await send_telegram(f"🟢 XAUUSD BUY (Lot 0.02) – Trend Filter OK\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
                             price_history.clear()
                         except Exception as e:
-                            print(f"Chyba pri otváraní BUY obchodu: {e}")
+                            print(f"Chyba BUY: {e}")
 
-                    # SELL logika
-                    elif max_price > current_bid and (zone_min <= current_bid <= zone_max):
+                    # SELL filter: Cena v zóne + Trend je klesajúci (EMA 50 < EMA 200)
+                    elif current_bid <= ema_200 and ema_50 < ema_200 and (zone_min <= current_bid <= zone_max):
                         sl = current_bid + 12.0
                         tp = current_bid - 9.0
-                        
                         try:
                             await connection.create_market_sell_order(SYMBOL, LOT_SIZE, sl, tp)
-                            
-                            msg = f"🔴 XAUUSD SELL – RIO_ENGINE\n\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}"
-                            await send_telegram(msg)
+                            await send_telegram(f"🔴 XAUUSD SELL (Lot 0.02) – Trend Filter OK\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
                             price_history.clear()
                         except Exception as e:
-                            print(f"Chyba pri otváraní SELL obchodu: {e}")
+                            print(f"Chyba SELL: {e}")
 
         except Exception as e:
-            print(f"Chyba v hlavnej slučke: {e}")
+            print(f"Chyba v slučke: {e}")
             await asyncio.sleep(15)
 
 if __name__ == "__main__":
