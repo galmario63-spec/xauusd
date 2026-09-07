@@ -1,29 +1,8 @@
 import os
 import time
 import json
-import http.server
-import socketserver
-import threading
 import urllib.request
-
-PORT = int(os.environ.get("PORT", 8080))
-
-class HealthHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Riobot is active")
-    def log_message(self, format, *args):
-        pass
-
-def run_server():
-    try:
-        with socketserver.TCPServer(("0.0.0.0", PORT), HealthHandler) as httpd:
-            httpd.serve_forever()
-    except Exception:
-        pass
-
-threading.Thread(target=run_server, daemon=True).start()
+import threading
 
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
@@ -65,7 +44,7 @@ def api_post(endpoint, payload):
         return None
 
 def trading_bot_loop():
-    print("Riobot štartuje (stabilný režim bez závislostí)...")
+    print("Riobot štartuje obchodnú rutinu (bez konfliktu portov)...")
     send_telegram("🤖 Riobot online: Lot 0.02, SL 12, TP 9.")
     
     price_history = []
@@ -161,10 +140,5 @@ def trading_bot_loop():
             time.sleep(15)
 
 if __name__ == "__main__":
-    threading.Thread(target=trading_bot_loop, daemon=True).start()
-    print(f"Spúšťam HTTP server na porte {PORT}...")
-    try:
-        with socketserver.TCPServer(("0.0.0.0", PORT), HealthHandler) as httpd:
-            httpd.serve_forever()
-    except Exception as e:
-        print(f"HTTP server chyba: {e}")
+    # Spustenie hlavnej logiky priamo, bez blokovania portov
+    trading_bot_loop()
