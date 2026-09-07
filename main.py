@@ -2,22 +2,35 @@ import os
 import time
 import asyncio
 import aiohttp
-from aiohttp import web
+import http.server
+import socketserver
+import threading
+
+# --- OKAMŽITÝ HTTP SERVER PRE RAILWAY (spustí sa hneď v 1. sekunde) ---
+PORT = int(os.environ.get("PORT", 8080))
+
+class HealthHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Riobot is active")
+    def log_message(self, format, *args):
+        pass
+
+def run_server():
+    try:
+        with socketserver.TCPServer(("0.0.0.0", PORT), HealthHandler) as httpd:
+            print(f"HTTP server okamžite beží na porte {PORT}")
+            httpd.serve_forever()
+    except Exception as e:
+        print(f"Chyba HTTP servera: {e}")
+
+# Spustíme server hneď, aby Railway hneď videlo odpoveď
+threading.Thread(target=run_server, daemon=True).start()
+
+# --- HLAVNÝ TRADING BOT ---
 from metaapi_cloud_sdk import MetaApi
 
-# --- HLAVNÝ ASYNCHRÓNNY HTTP SERVER PRE RAILWAY ---
-async def handle_ping(request):
-    return web.Response(text="Riobot is running!")
-
-async def start_web_server(app):
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"HTTP server beží na porte {port}")
-
-# --- KONFIGURÁCIA BOTA ---
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
@@ -44,14 +57,8 @@ async def send_telegram(message):
         print(f"Telegram chyba: {e}")
 
 async def main():
-    # 1. Spustíme HTTP server pre Railway priamo v event loope
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    await start_web_server(app)
-
-    print("Riobot štartuje pripojenie k MetaApi...")
+    print("Riobot sa pripája k MetaApi...")
     
-    # 2. Pripojenie k MetaApi
     connection = None
     while True:
         try:
@@ -73,7 +80,6 @@ async def main():
             print(f"Chyba pripojenia, skúšam znova o 10s: {e}")
             await asyncio.sleep(10)
 
-    # 3. Hlavná slučka bota
     while True:
         try:
             await asyncio.sleep(20)
@@ -91,7 +97,7 @@ async def main():
             if len(price_history) > 30:
                 price_history.pop(0)
 
-            # Kontrola Break-Even (zisk 3 -> posun SL na +1)
+            # 1. Kontrola Break-Even (zisk 3 -> posun SL na +1)
             positions = []
             try:
                 positions = await connection.get_positions()
@@ -127,7 +133,7 @@ async def main():
                             except Exception as e:
                                 print(f"Chyba pri úpravie SL pre SELL: {e}")
 
-            # Vstupy na základe Fibonacciho zóny (0.5 - 0.618)
+            # 2. Vstupy na základe Fibonacciho zóny (0.5 - 0.618)
             has_position = any(p.get('symbol') == SYMBOL for p in positions)
             if not has_position and len(price_history) >= 20:
                 max_price = max(price_history)
