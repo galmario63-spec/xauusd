@@ -2,9 +2,29 @@ import os
 import time
 import asyncio
 import aiohttp
-from aiohttp import web
+import http.server
+import socketserver
+import threading
 from metaapi_cloud_sdk import MetaApi
 
+# --- RAILWAY WEB SERVER (v pozadí, aby nezhadzovalo kontajner) ---
+PORT = int(os.environ.get("PORT", 8080))
+
+class HealthCheckHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Riobot is running!")
+    def log_message(self, format, *args):
+        pass # Vypne spamovanie logov z http servera
+
+def start_server():
+    with socketserver.TCPServer(("0.0.0.0", PORT), HealthCheckHandler) as httpd:
+        httpd.serve_forever()
+
+threading.Thread(target=start_server, daemon=True).start()
+
+# --- HLAVNÝ TRADING BOT ---
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
@@ -30,21 +50,7 @@ async def send_telegram(message):
     except Exception as e:
         print(f"Telegram chyba: {e}")
 
-async def handle_ping(request):
-    return web.Response(text="Riobot is running!")
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
 async def main():
-    asyncio.create_task(start_web_server())
-
     metaapi = MetaApi(TOKEN)
     account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
     
