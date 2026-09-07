@@ -61,7 +61,7 @@ def calculate_ema(data, period):
     return ema
 
 async def main():
-    print("Riobot štartuje s trendovým filtrom...")
+    print("Riobot štartuje bezpečný režim...")
     
     connection = None
     while True:
@@ -78,7 +78,7 @@ async def main():
             await connection.wait_synchronized()
             
             print("Riobot stabilne pripojený. Lot: 0.02 | SL: 12 | TP: 9 | BE pri 3 -> +1")
-            await send_telegram("🤖 Riobot online: Lot 0.02, EMA filter aktívny.")
+            await send_telegram("🤖 Riobot online: Stabilný režim bez chýb SDK.")
             break
         except Exception as e:
             print(f"Chyba pripojenia, skúšam znova o 10s: {e}")
@@ -88,7 +88,12 @@ async def main():
         try:
             await asyncio.sleep(20)
 
-            price_data = await connection.get_symbol_price(SYMBOL)
+            # Bezpečné získanie ceny cez RPC
+            try:
+                price_data = await connection.get_symbol_price(SYMBOL)
+            except Exception:
+                continue
+
             if not price_data: 
                 continue
 
@@ -153,24 +158,24 @@ async def main():
                     zone_min = min(fib_50, fib_618)
                     zone_max = max(fib_50, fib_618)
 
-                    # BUY filter: Cena v zóne + Trend je rastúci (EMA 50 > EMA 200)
+                    # BUY filter
                     if current_bid >= ema_200 and ema_50 > ema_200 and (zone_min <= current_bid <= zone_max):
                         sl = current_bid - 12.0
                         tp = current_bid + 9.0
                         try:
                             await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp)
-                            await send_telegram(f"🟢 XAUUSD BUY (Lot 0.02) – Trend Filter OK\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
+                            await send_telegram(f"🟢 XAUUSD BUY (Lot 0.02)\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
                             price_history.clear()
                         except Exception as e:
                             print(f"Chyba BUY: {e}")
 
-                    # SELL filter: Cena v zóne + Trend je klesajúci (EMA 50 < EMA 200)
+                    # SELL filter
                     elif current_bid <= ema_200 and ema_50 < ema_200 and (zone_min <= current_bid <= zone_max):
                         sl = current_bid + 12.0
                         tp = current_bid - 9.0
                         try:
                             await connection.create_market_sell_order(SYMBOL, LOT_SIZE, sl, tp)
-                            await send_telegram(f"🔴 XAUUSD SELL (Lot 0.02) – Trend Filter OK\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
+                            await send_telegram(f"🔴 XAUUSD SELL (Lot 0.02)\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
                             price_history.clear()
                         except Exception as e:
                             print(f"Chyba SELL: {e}")
@@ -180,4 +185,9 @@ async def main():
             await asyncio.sleep(15)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    while True:
+        try:
+            asyncio.run(main())
+        except Exception as e:
+            print(f"Global catch: {e}")
+            time.sleep(5)
