@@ -8,7 +8,6 @@ TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
 
-# Telegram údaje
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'Tvoj_Telegram_Bot_Token')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', 'Tvoj_Chat_ID')
 
@@ -42,12 +41,12 @@ async def main():
     await connection.connect()
     await connection.wait_synchronized()
     
-    print("Riobot pripravený. SL: 13 | TP1: 6 | TP2: 9 | BE: pri zisku 4$ posun na +1$")
-    await send_telegram("🤖 Riobot beží s pevným SL 13, TP (6/9) a Break-Even ochranou!")
+    print("Riobot štartuje. SL: 12 | TP1: 6 | TP2: 9 | BE pri zisku 3 -> +1")
+    await send_telegram("🤖 Riobot online: SL 12, TP (6/9), BE +1 pri zisku 3.")
 
     while True:
         try:
-            await asyncio.sleep(15)
+            await asyncio.sleep(30)
 
             price_data = await connection.get_symbol_price(SYMBOL)
             if not price_data: continue
@@ -60,32 +59,31 @@ async def main():
             if len(price_history) > 30:
                 price_history.pop(0)
 
-            # 1. Kontrola otvorených pozícií pre Break-Even (+4$ zisk -> SL na +1$)
+            # 1. Break-Even kontrola (zisk 3 -> SL na +1)
             positions = await connection.get_positions()
             for p in positions:
                 if p['symbol'] == SYMBOL:
                     open_price = p['openPrice']
-                    pos_type = p['type'] # 'POSITION_TYPE_BUY' alebo 'POSITION_TYPE_SELL'
+                    pos_type = p['type']
                     current_sl = p.get('stopLoss', 0)
                     
                     if pos_type == 'POSITION_TYPE_BUY':
-                        profit_points = current_bid - open_price
-                        # Ak je zisk 4 doláre (body) a SL ešte nie je na +1
-                        if profit_points >= 4.0 and current_sl < (open_price + 1.0):
+                        profit = current_bid - open_price
+                        if profit >= 3.0 and current_sl < (open_price + 1.0):
                             new_sl = open_price + 1.0
                             await connection.modify_position(p['id'], stop_loss=new_sl, take_profit=p.get('takeProfit'))
-                            print(f"Break-Even aktivovaný pre BUY! SL posunutý na {new_sl}")
-                            await send_telegram(f"🛡️ Break-Even aktivovaný na XAUUSD BUY! SL posunutý na +1$ ({new_sl})")
+                            print(f"BE aktivovaný pre BUY! SL na {new_sl}")
+                            await send_telegram(f"🛡️ Break-Even na XAUUSD BUY: SL posunutý na +1$ ({new_sl})")
                             
                     elif pos_type == 'POSITION_TYPE_SELL':
-                        profit_points = open_price - current_ask
-                        if profit_points >= 4.0 and (current_sl > (open_price - 1.0) or current_sl == 0):
+                        profit = open_price - current_ask
+                        if profit >= 3.0 and (current_sl > (open_price - 1.0) or current_sl == 0):
                             new_sl = open_price - 1.0
                             await connection.modify_position(p['id'], stop_loss=new_sl, take_profit=p.get('takeProfit'))
-                            print(f"Break-Even aktivovaný pre SELL! SL posunutý na {new_sl}")
-                            await send_telegram(f"🛡️ Break-Even aktivovaný na XAUUSD SELL! SL posunutý na +1$ ({new_sl})")
+                            print(f"BE aktivovaný pre SELL! SL na {new_sl}")
+                            await send_telegram(f"🛡️ Break-Even na XAUUSD SELL: SL posunutý na +1$ ({new_sl})")
 
-            # 2. Vyhodnotenie zóny a vstup do nových obchodov
+            # 2. Vstupy na základe Fibonacciho zóny
             has_position = any(p['symbol'] == SYMBOL for p in positions)
             if not has_position and len(price_history) >= 20:
                 max_price = max(price_history)
@@ -96,9 +94,9 @@ async def main():
                     fib_50 = max_price - (diff * FIB_MIN)
                     fib_618 = max_price - (diff * FIB_MAX)
 
-                    # BUY logika
+                    # BUY
                     if min_price < current_bid and (min(fib_50, fib_618) <= current_bid <= max(fib_50, fib_618)):
-                        sl = current_bid - 13.0
+                        sl = current_bid - 12.0
                         tp1 = current_bid + 6.0
                         tp2 = current_bid + 9.0
                         
@@ -109,9 +107,9 @@ async def main():
                         await send_telegram(msg)
                         price_history.clear()
 
-                    # SELL logika
+                    # SELL
                     elif max_price > current_bid and (min(fib_50, fib_618) <= current_bid <= max(fib_50, fib_618)):
-                        sl = current_bid + 13.0
+                        sl = current_bid + 12.0
                         tp1 = current_bid - 6.0
                         tp2 = current_bid - 9.0
                         
@@ -124,7 +122,7 @@ async def main():
 
         except Exception as e:
             print(f"Chyba: {e}")
-            await asyncio.sleep(15)
+            await asyncio.sleep(20)
 
 if __name__ == "__main__":
     asyncio.run(main())
