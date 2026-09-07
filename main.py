@@ -1,141 +1,85 @@
-import asyncio
-import logging
 import os
-import traceback
-from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
-import aiohttp
+import time
+import asyncio
 from metaapi_cloud_sdk import MetaApi
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("gold_bot")
-
-METAAPI_TOKEN = os.getenv('METAAPI_TOKEN')
-METAAPI_ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID')
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-
+# Konfigurácia z premenných prostredia alebo priamo
+TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
+ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
-LOT_SIZE = float(os.getenv("LOT_SIZE", "0.01"))
-SL_USD = float(os.getenv("SL_USD", "12.0"))
-TP1_USD = float(os.getenv("TP1_USD", "6.0"))
-TP2_USD = float(os.getenv("TP2_USD", "9.0"))
-BE_TRIGGER_USD = float(os.getenv("BE_TRIGGER_USD", "2.0"))
-LOCKED_PROFIT_OFFSET = float(os.getenv("LOCKED_PROFIT_OFFSET", "1.0"))
+TIMEFRAME = "5m"
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Gold Bot is alive!")
-    def log_message(self, format, *args):
-        return
-
-def run_http_server():
-    port = int(os.environ.get("PORT", 8080))
-    HTTPServer(("0.0.0.0", port), HealthCheckHandler).serve_forever()
-
-def get_current_time_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-async def send_telegram_message(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        async with aiohttp.ClientSession() as session:
-            await session.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"})
-    except Exception as e:
-        logger.error(f"Telegram exception: {e}")
-
-async def check_market_conditions(connection):
-    """
-    Stabilná logika pre vstup na základe aktuálnych cien a volatility bez chybových sviečok.
-    """
-    try:
-        price_info = await connection.get_symbol_price(SYMBOL)
-        if not price_info:
-            return None
-        
-        bid = price_info['bid']
-        ask = price_info['ask']
-        spread = ask - bid
-
-        # Ochrana pred extrémnym spreadom
-        if spread > 1.5:
-            return None
-
-        # Smer vyberieme na základe posledných tiketov / rešpektujeme obojsmernosť
-        # Pre bezpečný štart cez víkend/noci vraciam None, cez deň frčíme
-        return None
-    except Exception as e:
-        logger.error(f"Chyba pri kontrole trhu: {e}")
-        return None
-
-async def open_basket_positions(connection, direction):
-    logger.info(f"Otváram košík pre {SYMBOL} ({direction})...")
-    try:
-        price = await connection.get_symbol_price(SYMBOL)
-        current_price = price['ask'] if direction == "BUY" else price['bid']
-        open_time = get_current_time_str()
-
-        if direction == "BUY":
-            stop_loss = current_price - SL_USD
-            tp1 = current_price + TP1_USD
-            tp2 = current_price + TP2_USD
-            await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp1)
-            await connection.create_market_buy_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp2)
-        else:
-            stop_loss = current_price + SL_USD
-            tp1 = current_price - TP1_USD
-            tp2 = current_price - TP2_USD
-            await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp1)
-            await connection.create_market_sell_order(symbol=SYMBOL, volume=LOT_SIZE, stop_loss=stop_loss, take_profit=tp2)
-
-        await send_telegram_message(f"🟢 *{SYMBOL}* {direction} otvorený\nEntry: `{current_price}`")
-    except Exception as e:
-        logger.error(f"Chyba pri otváraní pozícií: {e}")
-
-async def manage_open_positions(connection):
-    try:
-        positions = await connection.get_positions()
-        
-        # Správa BE pre existujúce pozície
-        for position in positions:
-            if position['symbol'] != SYMBOL:
-                continue
-            ticket = position['id']
-            open_price = position['openPrice']
-            profit_usd = position.get('profit', 0.0)
-            current_sl = position.get('stopLoss', 0.0)
-            pos_type = position.get('type', '')
-
-            if profit_usd >= BE_TRIGGER_USD:
-                if pos_type == "POSITION_TYPE_BUY" and current_sl < open_price + LOCKED_PROFIT_OFFSET:
-                    await connection.modify_position(ticket, stop_loss=open_price + LOCKED_PROFIT_OFFSET, take_profit=position.get('takeProfit'))
-                elif pos_type == "POSITION_TYPE_SELL" and (current_sl > open_price - LOCKED_PROFIT_OFFSET or current_sl == 0):
-                    await connection.modify_position(ticket, stop_loss=open_price - LOCKED_PROFIT_OFFSET, take_profit=position.get('takeProfit'))
-
-    except Exception as e:
-        logger.error(f"Chyba v správcovi pozícií: {e}")
+# Parametre stratégie a vylepšený väčší Take Profit (väčší Risk/Reward)
+FIB_MIN = 0.50
+FIB_MAX = 0.618
+RISK_REWARD_RATIO = 3.0  # Zväčšený cieľ pre TP (predtým napr. 1.5 alebo 2.0)
+LOT_SIZE = 0.01
 
 async def main():
-    metaapi = MetaApi(METAAPI_TOKEN)
-    account = await metaapi.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
+    metaapi = MetaApi(TOKEN)
+    account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
+    
+    # Pripojenie k účtu a čakanie na deployment
+    if account.state != 'DEPLOYED':
+        await account.deploy()
+    
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
-    logger.info("MetaApi je pripojené a pripravené pre zlato!")
+    
+    print(f"Riobot je úspešne spustený a monitoruje {SYMBOL} na {TIMEFRAME}...")
 
     while True:
         try:
-            await manage_open_positions(connection)
+            # Sťahovanie posledných sviečok pre výpočet Fibonacciho úrovní
+            candles = await connection.get_candles(SYMBOL, TIMEFRAME, 50)
+            if not candles or len(candles) < 20:
+                await asyncio.sleep(10)
+                continue
+
+            highs = [c['high'] for c in candles]
+            lows = [c['low'] for c in candles]
+            
+            max_price = max(highs[-20:])
+            min_price = min(lows[-20:])
+            diff = max_price - min_price
+            
+            if diff == 0:
+                await asyncio.sleep(10)
+                continue
+
+            # Výpočet Fibonacciho zóny pre korekciu
+            fib_50 = max_price - (diff * FIB_MIN)
+            fib_618 = max_price - (diff * FIB_MAX)
+            
+            current_price = candles[-1]['close']
+            
+            # Kontrola otvorených pozícií
+            positions = await connection.get_positions()
+            has_position = any(p['symbol'] == SYMBOL for p in positions)
+
+            if not has_position:
+                # Logika pre BUY (ak cena korigovala do Fib zóny zdola nahor alebo v nej tancuje)
+                if min_price < current_price and (min(fib_50, fib_618) <= current_price <= max(fib_50, fib_618)):
+                    print(f"Cena {current_price} je v nákupnej Fib zóne. Otváram BUY pozíciu...")
+                    sl = current_price - (diff * 0.3)
+                    tp = current_price + ((current_price - sl) * RISK_REWARD_RATIO)
+                    
+                    await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp)
+
+                # Logika pre SELL (ak cena korigovala do Fib zóny zhora nadol)
+                elif max_price > current_price and (min(fib_50, fib_618) <= current_price <= max(fib_50, fib_618)):
+                    print(f"Cena {current_price} je v predajnej Fib zóne. Otváram SELL pozíciu...")
+                    sl = current_price + (diff * 0.3)
+                    tp = current_price - ((sl - current_price) * RISK_REWARD_RATIO)
+                    
+                    await connection.create_market_sell_order(SYMBOL, LOT_SIZE, sl, tp)
+
+            await asyncio.sleep(15)  # Kontrola každých 15 sekúnd
+
         except Exception as e:
-            logger.error(f"Chyba v slučke: {e}")
-        await asyncio.sleep(15)
+            print(f"Chyba v cykle bota: {e}")
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_http_server, daemon=True).start()
     asyncio.run(main())
