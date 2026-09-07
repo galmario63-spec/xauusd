@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import aiohttp
+from aiohttp import web
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
@@ -29,7 +30,22 @@ async def send_telegram(message):
     except Exception as e:
         print(f"Telegram chyba: {e}")
 
+async def handle_ping(request):
+    return web.Response(text="Riobot is running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
 async def main():
+    # Spustíme HTTP server pre Railway, aby nezhadzoval kontajner
+    asyncio.create_task(start_web_server())
+
     metaapi = MetaApi(TOKEN)
     account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
     
@@ -41,8 +57,8 @@ async def main():
     await connection.connect()
     await connection.wait_synchronized()
     
-    print("Riobot štartuje. SL: 12 | TP1: 6 | TP2: 9 | BE pri zisku 3 -> +1")
-    await send_telegram("🤖 Riobot online: SL 12, TP (6/9), BE +1 pri zisku 3.")
+    print("Riobot stabilne online. SL: 12 | TP1: 6 | TP2: 9 | BE pri zisku 3 -> +1")
+    await send_telegram("🤖 Riobot stabilne online: SL 12, TP (6/9), BE +1 pri zisku 3.")
 
     while True:
         try:
