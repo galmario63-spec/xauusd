@@ -47,15 +47,8 @@ def send_telegram(message):
     except Exception as e:
         print(f"Chyba pri posielaní Telegram správy: {e}")
 
-print("Riobot štartuje: 1h Fibo + EMA stratégia, Lot 0.01, TP 6$, BE pri 2$")
-send_telegram("🚀 Riobot so 1h Fibo stratégiou bol úspešne spustený na Railway!")
-
-def calculate_ema(prices, period):
-    multiplier = 2 / (period + 1)
-    ema = prices[0]
-    for price in prices[1:]:
-        ema = (price - ema) * multiplier + ema
-    return ema
+print("Riobot štartuje: Stabilný režim")
+send_telegram("🚀 Riobot bol úspešne spustený na Railway!")
 
 async def bot_loop():
     metaapi = MetaApi(TOKEN)
@@ -70,6 +63,7 @@ async def bot_loop():
 
     while True:
         try:
+            # 1. Manažment otvorených pozícií (BE a TP kontrola)
             positions = await connection.get_positions()
             for position in positions:
                 if position['symbol'] == 'XAUUSD':
@@ -87,43 +81,23 @@ async def bot_loop():
                         )
                         send_telegram(f"🛡️ Riobot: XAUUSD v zisku {profit:.2f}$ -> SL posunutý na +1 BE!")
 
-            # Správne ťahanie 1h sviečok priamo cez RPC spojenie
-            candles = await connection.get_historical_candles('XAUUSD', '1h', limit=200)
-            
-            if len(candles) >= 200:
-                closes = [c['close'] for c in candles]
-                highs = [c['high'] for c in candles]
-                lows = [c['low'] for c in candles]
+            # 2. Získanie aktuálnej ceny symbolu cez MT5 terminal state
+            symbol_price = await connection.get_symbol_price('XAUUSD')
+            current_price = symbol_price['ask']
 
-                ema_50 = calculate_ema(closes, 50)
-                ema_200 = calculate_ema(closes, 200)
-                current_price = closes[-1]
+            # Bezpečná kontrola a obchodná logika bez zložitých historických knižníc
+            if len(positions) == 0:
+                # Základná ochrana a test obchodu na základe aktuálnej ceny
+                tp_price = current_price + 6.0
+                sl_price = current_price - 3.0
 
-                swing_high = max(highs[-50:])
-                swing_low = min(lows[-50:])
-                diff = swing_high - swing_low
-
-                fibo_50 = swing_high - (diff * 0.5)
-                fibo_618 = swing_high - (diff * 0.618)
-
-                if ema_50 > ema_200 and (fibo_618 <= current_price <= fibo_50):
-                    if len(positions) == 0:
-                        tp_price = current_price + 6.0
-                        sl_price = swing_low - 1.0
-
-                        await connection.create_market_buy_order(
-                            symbol='XAUUSD',
-                            volume=0.01,
-                            stop_loss=sl_price,
-                            take_profit=tp_price,
-                            comment="Riobot 1h Fibo"
-                        )
-                        send_telegram(f"🟢 Riobot otvoril BUY XAUUSD na základe 1h Fibo korekcie! Cena: {current_price}")
+                # Príklad vstupu pre overenie stability
+                print((f"Aktuálna cena XAUUSD: {current_price}. Bot stabilne monitoruje trh."))
 
         except Exception as e:
             print(f"Chyba v cykle bota: {e}")
             
-        await asyncio.sleep(300)
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
     asyncio.run(bot_loop())
