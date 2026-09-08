@@ -2,14 +2,28 @@ import os
 import time
 import json
 import urllib.request
+import http.server
+import socketserver
 import threading
-from flask import Flask
 
-app = Flask(__name__)
+PORT = int(os.environ.get("PORT", 8080))
 
-@app.route("/")
-def health_check():
-    return "Riobot is active", 200
+class HealthHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Riobot is active")
+    def log_message(self, format, *args):
+        pass
+
+def run_server():
+    try:
+        with socketserver.TCPServer(("0.0.0.0", PORT), HealthHandler) as httpd:
+            httpd.serve_forever()
+    except Exception:
+        pass
+
+threading.Thread(target=run_server, daemon=True).start()
 
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
@@ -51,7 +65,7 @@ def api_post(endpoint, payload):
         return None
 
 def trading_bot_loop():
-    print("Riobot obchodná slučka beží...")
+    print("Riobot štartuje: Lot 0.01, SL 7$, TP 6$, BE pri 2$ -> +1$.")
     send_telegram("🤖 Riobot online: Lot 0.01, SL 7$, TP 6$, BE pri 2$ -> +1$.")
     
     price_history = []
@@ -148,5 +162,5 @@ def trading_bot_loop():
 
 if __name__ == "__main__":
     threading.Thread(target=trading_bot_loop, daemon=True).start()
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    while True:
+        time.sleep(3600)
