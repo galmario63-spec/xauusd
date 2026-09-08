@@ -1,3 +1,12 @@
+import subprocess
+import sys
+
+# Automatická inštalácia knižnice pri štarte, ak chýba
+try:
+    import metaapi_cloud_sdk
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "metaapi-cloud-sdk"])
+
 import os
 import time
 import json
@@ -85,7 +94,6 @@ async def bot_loop():
                         send_telegram(f"🛡️ Riobot: XAUUSD v zisku {profit:.2f}$ -> SL posunutý na +1 BE!")
 
             # 2. Kontrola trhu a vstupná logika (1h sviečky, Fibo, EMA)
-            # Získame posledné 1h sviečky pre XAUUSD
             candles = await connection.get_candles(symbol='XAUUSD', timeframe='1h', count=200)
             if len(candles) >= 200:
                 closes = [c['close'] for c in candles]
@@ -108,7 +116,6 @@ async def bot_loop():
                 # Podmienka pre BUY: Trend je rastúci (EMA 50 > EMA 200) a cena koriguje do Fibo zóny
                 if ema_50 > ema_200 and (fibo_618 <= current_price <= fibo_50):
                     if len(positions) == 0:  # Otvoríme len ak nemáme inú otvorenú pozíciu
-                        # Výpočet TP (+6 USD pre 0.01 lotu -> cca 6 dolárov na cene)
                         tp_price = current_price + 6.0
                         sl_price = swing_low - 1.0  # Pod swing low
 
