@@ -68,6 +68,9 @@ async def bot_loop():
     await connection.connect()
     await connection.wait_synchronized()
 
+    # Inicializácia klienta pre historické sviečky
+    history_client = metaapi.metatrader_account_api.get_history_storage_client(ACCOUNT_ID)
+
     while True:
         try:
             positions = await connection.get_positions()
@@ -87,8 +90,8 @@ async def bot_loop():
                         )
                         send_telegram(f"🛡️ Riobot: XAUUSD v zisku {profit:.2f}$ -> SL posunutý na +1 BE!")
 
-            # Sťahovanie sviečok priamo cez RPC pripojenie
-            candles = await connection.get_historical_candles(symbol='XAUUSD', timeframe='1h', limit=200)
+            # Správne sťahovanie 1h sviečok
+            candles = await history_client.get_candles(symbol='XAUUSD', timeframe='1h', limit=200)
             
             if len(candles) >= 200:
                 closes = [c['close'] for c in candles]
