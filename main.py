@@ -2,30 +2,14 @@ import os
 import time
 import json
 import urllib.request
-import http.server
-import socketserver
 import threading
+from flask import Flask
 
-PORT = int(os.environ.get("PORT", 8080))
+app = Flask(__name__)
 
-# Vstavaný HTTP server pre Railway (beží na hlavnom vlákne, drží port otvorený)
-class HealthHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Riobot is active")
-    def log_message(self, format, *args):
-        pass
-
-def run_server():
-    try:
-        with socketserver.TCPServer(("0.0.0.0", PORT), HealthHandler) as httpd:
-            httpd.serve_forever()
-    except Exception:
-        pass
-
-# Spustíme HTTP server na pozadí, aby blokoval port a uspokojil Railway
-threading.Thread(target=run_server, daemon=True).start()
+@app.route("/")
+def health_check():
+    return "Riobot is active", 200
 
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
@@ -67,7 +51,7 @@ def api_post(endpoint, payload):
         return None
 
 def trading_bot_loop():
-    print("Riobot štartuje s parametrami: Lot 0.01, SL 7, TP 6, BE pri 2 -> +1...")
+    print("Riobot obchodná slučka beží...")
     send_telegram("🤖 Riobot online: Lot 0.01, SL 7$, TP 6$, BE pri 2$ -> +1$.")
     
     price_history = []
@@ -91,7 +75,6 @@ def trading_bot_loop():
 
             positions = api_get("/positions") or []
 
-            # Kontrola Break-Even (zisk 2 -> posun SL na +1)
             for p in positions:
                 if p.get('symbol') == SYMBOL:
                     open_price = p.get('openPrice', 0)
@@ -117,7 +100,6 @@ def trading_bot_loop():
                             if status == 200:
                                 send_telegram(f"🛡️ Break-Even SELL: SL na +1$ ({target_sl})")
 
-            # Vstupy do obchodu (Fibonacci zóna 0.5 - 0.618)
             has_position = any(p.get('symbol') == SYMBOL for p in positions)
             if not has_position and len(price_history) >= 20:
                 max_price = max(price_history)
@@ -130,7 +112,6 @@ def trading_bot_loop():
                     zone_min = min(fib_50, fib_618)
                     zone_max = max(fib_50, fib_618)
 
-                    # BUY vstup
                     if min_price < current_bid and (zone_min <= current_bid <= zone_max):
                         sl = current_bid - 7.0
                         tp = current_bid + 6.0
@@ -146,7 +127,6 @@ def trading_bot_loop():
                             send_telegram(f"🟢 XAUUSD BUY (0.01)\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
                             price_history.clear()
 
-                    # SELL vstup
                     elif max_price > current_bid and (zone_min <= current_bid <= zone_max):
                         sl = current_bid + 7.0
                         tp = current_bid - 6.0
@@ -167,9 +147,6 @@ def trading_bot_loop():
             time.sleep(15)
 
 if __name__ == "__main__":
-    # Hlavná slučka bota beží na pozadí
     threading.Thread(target=trading_bot_loop, daemon=True).start()
-    
-    # Aby aplikácia bežala nepretržite na hlavnom vlákne a port ostal otvorený
-    while True:
-        time.sleep(3600)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
