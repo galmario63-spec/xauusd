@@ -5,24 +5,6 @@ import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-# 1. HTTP server pre Railway healthcheck (musí okamžite odpovedať 200 OK)
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args):
-        pass
-
-def run_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    server.serve_forever()
-
-# Spustenie servera na pozadí hneď pri štarte
-threading.Thread(target=run_server, daemon=True).start()
-
-# 2. Nastavenia pre trading bota
 TOKEN = os.getenv('METAAPI_TOKEN', '')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
@@ -34,8 +16,7 @@ def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": message}).encode('utf-8')
-    try:
-        urllib.request.urlopen(urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'}), timeout=10)
+    try: urllib.request.urlopen(urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'}), timeout=10)
     except Exception: pass
 
 def api_get(endpoint):
@@ -51,12 +32,10 @@ def api_post(endpoint, payload):
             return resp.status
     except Exception: return None
 
-# 3. Hlavná slučka bota
-if __name__ == "__main__":
+def run_bot():
     print("Riobot štartuje: Lot 0.01, SL 7$, TP 6$, BE pri 2$")
     send_telegram("🤖 Riobot online: Lot 0.01, SL 7$, TP 6$, BE pri 2$.")
     price_history = []
-    
     while True:
         try:
             time.sleep(20)
@@ -64,7 +43,6 @@ if __name__ == "__main__":
             if not price_data: continue
             bid, ask = price_data.get('bid'), price_data.get('ask')
             if not bid or not ask: continue
-            
             price_history.append(bid)
             if len(price_history) > 30: price_history.pop(0)
             
@@ -95,3 +73,16 @@ if __name__ == "__main__":
                             price_history.clear()
         except Exception: 
             time.sleep(15)
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args): pass
+
+if __name__ == "__main__":
+    threading.Thread(target=run_bot, daemon=True).start()
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    server.serve_forever()
