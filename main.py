@@ -2,25 +2,14 @@ import os
 import time
 import json
 import urllib.request
-import socket
-import threading
+from flask import Flask
 
-# 1. Ultra-rýchly socket server, ktorý zaručene otvorí port pre Railway
-def start_dummy_server():
-    port = int(os.environ.get("PORT", 8080))
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("0.0.0.0", port))
-    s.listen(1)
-    while True:
-        try:
-            conn, addr = s.accept()
-            conn.sendall(b"HTTP/1.1 200 OK\nContent-Length: 2\n\nOK")
-            conn.close()
-        except:
-            pass
+# 1. Mini webový server pre Railway, aby kontajner NIKDY nezhodil
+app = Flask(__name__)
 
-threading.Thread(target=start_dummy_server, daemon=True).start()
+@app.route('/')
+def home():
+    return "Riobot is running!", 200
 
 # 2. Trading bota nastavenia
 TOKEN = os.getenv('METAAPI_TOKEN', '')
@@ -51,8 +40,7 @@ def api_post(endpoint, payload):
             return resp.status
     except Exception: return None
 
-# 3. Hlavná slučka
-if __name__ == "__main__":
+def run_trading_bot():
     print("Riobot štartuje: Lot 0.01, SL 7$, TP 6$, BE pri 2$")
     send_telegram("🤖 Riobot online: Lot 0.01, SL 7$, TP 6$, BE pri 2$.")
     price_history = []
@@ -95,3 +83,12 @@ if __name__ == "__main__":
                             price_history.clear()
         except Exception: 
             time.sleep(15)
+
+if __name__ == "__main__":
+    import threading
+    # Spustíme trading bota na pozadí, aby nezablokoval web server
+    threading.Thread(target=run_trading_bot, daemon=True).start()
+    
+    # Spustenie Flask servera na porte, ktorý vyžaduje Railway
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
