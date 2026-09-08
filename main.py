@@ -8,7 +8,6 @@ import threading
 
 PORT = int(os.environ.get("PORT", 8080))
 
-# 1. HTTP Server pre Railway, aby kontajner nikdy nezlyhal a neodpojil sa
 class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -24,7 +23,6 @@ def run_server():
     except Exception:
         pass
 
-# Spustíme HTTP server na pozadí, aby držartoval port pre Railway
 threading.Thread(target=run_server, daemon=True).start()
 
 TOKEN = os.getenv('METAAPI_TOKEN', 'Tvoj_Token_Sem')
@@ -67,8 +65,8 @@ def api_post(endpoint, payload):
         return None
 
 def trading_bot_loop():
-    print("Riobot obchodná slučka beží...")
-    send_telegram("🤖 Riobot online: Lot 0.02, SL 12, TP 9, BE aktívny.")
+    print("Riobot štartuje s mikro lotom (Lot 0.01, SL 7, TP 6)...")
+    send_telegram("🤖 Riobot online: Lot 0.01, SL 7$, TP 6$, BE pri 2$ -> +1$.")
     
     price_history = []
 
@@ -91,7 +89,7 @@ def trading_bot_loop():
 
             positions = api_get("/positions") or []
 
-            # Kontrola Break-Even (zisk 3 -> posun SL na +1)
+            # Kontrola Break-Even (zisk 2 -> posun SL na +1)
             for p in positions:
                 if p.get('symbol') == SYMBOL:
                     open_price = p.get('openPrice', 0)
@@ -102,7 +100,7 @@ def trading_bot_loop():
                     if 'BUY' in pos_type:
                         profit = current_bid - open_price
                         target_sl = open_price + 1.0
-                        if profit >= 3.0 and (current_sl == 0 or current_sl < target_sl):
+                        if profit >= 2.0 and (current_sl == 0 or current_sl < target_sl):
                             payload = {"actionType": "MODIFY_POSITION", "stopLoss": target_sl, "takeProfit": p.get('takeProfit', 0)}
                             status = api_post(f"/positions/{pos_id}", payload)
                             if status == 200:
@@ -111,7 +109,7 @@ def trading_bot_loop():
                     elif 'SELL' in pos_type:
                         profit = open_price - current_ask
                         target_sl = open_price - 1.0
-                        if profit >= 3.0 and (current_sl == 0 or current_sl > target_sl):
+                        if profit >= 2.0 and (current_sl == 0 or current_sl > target_sl):
                             payload = {"actionType": "MODIFY_POSITION", "stopLoss": target_sl, "takeProfit": p.get('takeProfit', 0)}
                             status = api_post(f"/positions/{pos_id}", payload)
                             if status == 200:
@@ -132,34 +130,34 @@ def trading_bot_loop():
 
                     # BUY vstup
                     if min_price < current_bid and (zone_min <= current_bid <= zone_max):
-                        sl = current_bid - 12.0
-                        tp = current_bid + 9.0
+                        sl = current_bid - 7.0
+                        tp = current_bid + 6.0
                         order_payload = {
                             "actionType": "ORDER_TYPE_BUY",
                             "symbol": SYMBOL,
-                            "volume": 0.02,
+                            "volume": 0.01,
                             "stopLoss": sl,
                             "takeProfit": tp
                         }
                         status = api_post("/orders", order_payload)
                         if status == 200:
-                            send_telegram(f"🟢 XAUUSD BUY (0.02)\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
+                            send_telegram(f"🟢 XAUUSD BUY (0.01)\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
                             price_history.clear()
 
                     # SELL vstup
                     elif max_price > current_bid and (zone_min <= current_bid <= zone_max):
-                        sl = current_bid + 12.0
-                        tp = current_bid - 9.0
+                        sl = current_bid + 7.0
+                        tp = current_bid - 6.0
                         order_payload = {
                             "actionType": "ORDER_TYPE_SELL",
                             "symbol": SYMBOL,
-                            "volume": 0.02,
+                            "volume": 0.01,
                             "stopLoss": sl,
                             "takeProfit": tp
                         }
                         status = api_post("/orders", order_payload)
                         if status == 200:
-                            send_telegram(f"🔴 XAUUSD SELL (0.02)\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
+                            send_telegram(f"🔴 XAUUSD SELL (0.01)\nEntry: {current_bid}\nTP: {tp}\nSL: {sl}")
                             price_history.clear()
 
         except Exception as e:
@@ -167,5 +165,4 @@ def trading_bot_loop():
             time.sleep(15)
 
 if __name__ == "__main__":
-    # Spustenie obchodnej logiky na pozadí
     trading_bot_loop()
