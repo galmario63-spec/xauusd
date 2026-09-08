@@ -47,7 +47,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-print("Riobot štartuje v čistom režime...")
+print("Riobot štartuje v stabilnom režime...")
 
 async def bot_loop():
     metaapi = MetaApi(TOKEN)
@@ -55,20 +55,15 @@ async def bot_loop():
     
     while True:
         try:
-            print("Pripájam sa k MetaApi účtu...")
-            try:
-                account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
-                if account.state != 'DEPLOYED':
-                    await account.deploy()
-            except Exception as acc_e:
-                print(f"Pozor (ignorované MetaApi varovanie): {acc_e}")
+            account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
+            if account.state != 'DEPLOYED':
+                await account.deploy()
             
-            # Priame pripojenie na účet bez zbytočného manažmentu subscription
-            connection = metaapi.metatrader_account_api.get_client().get_rpc_connection(ACCOUNT_ID)
+            connection = account.get_rpc_connection()
             await connection.connect()
             await connection.wait_synchronized()
             
-            print("MetaApi pripojenie je stabilné a pripravené.")
+            print("MetaApi pripojenie stabilné. Obchodujem.")
             send_telegram("🚀 Riobot je pripojený a pripravený na obchody!")
 
             while True:
@@ -116,14 +111,14 @@ async def bot_loop():
                             send_telegram(f"🔴 Riobot otvoril SELL XAUUSD! Cena: {current_price}")
 
                 except Exception as inner_e:
-                    print(f"Chyba v obchodnom cykle: {inner_e}")
+                    print(f"Chyba v cykle: {inner_e}")
                     if "connection" in str(inner_e).lower() or "disconnected" in str(inner_e).lower():
                         raise inner_e
 
                 await asyncio.sleep(20)
 
         except Exception as outer_e:
-            print(f"Chyba pripojenia, opakujem o 10 sekúnd: {outer_e}")
+            print(f"Chyba pripojenia, opakujem: {outer_e}")
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
