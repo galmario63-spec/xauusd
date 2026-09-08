@@ -87,11 +87,7 @@ async def bot_loop():
                         )
                         send_telegram(f"🛡️ Riobot: XAUUSD v zisku {profit:.2f}$ -> SL posunutý na +1 BE!")
 
-            # Opravené sťahovanie sviečok cez historické dáta MetaApi
-            terminal_state = account.get_universal_terminal_state()
-            await terminal_state.wait_synchronized()
-            
-            # Získame 1h sviečky pre XAUUSD
+            # Sťahovanie sviečok priamo cez RPC pripojenie
             candles = await connection.get_historical_candles(symbol='XAUUSD', timeframe='1h', limit=200)
             
             if len(candles) >= 200:
