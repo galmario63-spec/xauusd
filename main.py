@@ -5,8 +5,8 @@ import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-# 1. Vstavaný HTTP server (nepotrebuje žiadne inštalácie)
-class SimpleHandler(BaseHTTPRequestHandler):
+# 1. HTTP server pre Railway healthcheck (musí okamžite odpovedať 200 OK)
+class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
@@ -16,12 +16,13 @@ class SimpleHandler(BaseHTTPRequestHandler):
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
+# Spustenie servera na pozadí hneď pri štarte
 threading.Thread(target=run_server, daemon=True).start()
 
-# 2. Trading bota nastavenia
+# 2. Nastavenia pre trading bota
 TOKEN = os.getenv('METAAPI_TOKEN', '')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
