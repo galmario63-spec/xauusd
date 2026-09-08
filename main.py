@@ -47,28 +47,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-print("Riobot štartuje (BUY + SELL režim)...")
-
-def calculate_ema(prices, period):
-    if len(prices) < period:
-        return prices[-1]
-    multiplier = 2 / (period + 1)
-    ema = prices[0]
-    for price in prices[1:]:
-        ema = (price - ema) * multiplier + ema
-    return ema
-
-def calculate_stochastic(prices, k_period=14):
-    if len(prices) < k_period:
-        return 50
-    recent_prices = prices[-k_period:]
-    lowest_low = min(recent_prices)
-    highest_high = max(recent_prices)
-    current_close = prices[-1]
-    
-    if highest_high == lowest_low:
-        return 50
-    return 100 * ((current_close - lowest_low) / (highest_high - lowest_low))
+print("Riobot štartuje v rýchlom obchodnom režime...")
 
 async def bot_loop():
     metaapi = MetaApi(TOKEN)
@@ -84,10 +63,12 @@ async def bot_loop():
             await connection.connect()
             await connection.wait_synchronized()
             
-            print("MetaApi pripojenie stabilné (BUY + SELL).")
+            print("MetaApi pripojenie stabilné. Spúšťam obchodovanie.")
+            send_telegram("🚀 Riobot je pripojený a pripravený obchodovať!")
 
             while True:
                 try:
+                    # 1. Manažment otvorených pozícií (Break-Even)
                     positions = await connection.get_positions()
                     for position in positions:
                         if position['symbol'] == 'XAUUSD':
@@ -104,34 +85,32 @@ async def bot_loop():
                                     await connection.modify_position(position_id=position_id, stop_loss=open_price - 1.0, take_profit=position.get('takeProfit'))
                                     send_telegram(f"🛡️ Riobot: SELL v zisku {profit:.2f}$ -> SL na BE-1!")
 
+                    # 2. Sledowanie ceny
                     symbol_price = await connection.get_symbol_price('XAUUSD')
                     current_price = symbol_price['ask']
                     price_history.append(current_price)
-                    if len(price_history) > 200:
+                    if len(price_history) > 50:
                         price_history.pop(0)
 
                     print(f"XAUUSD Aktuálna cena: {current_price}")
 
-                    if len(positions) == 0 and len(price_history) >= 100:
-                        ema_50 = calculate_ema(price_history, 50)
-                        ema_200 = calculate_ema(price_history, 100)
-
-                        swing_high = max(price_history[-50:])
-                        swing_low = min(price_history[-50:])
-                        diff = swing_high - swing_low
-
-                        fibo_50 = swing_high - (diff * 0.5)
-                        fibo_618 = swing_high - (diff * 0.618)
-                        stoch_k = calculate_stochastic(price_history)
-
-                        # BUY podmienka
-                        if ema_50 > ema_200 and (fibo_618 <= current_price <= fibo_50) and stoch_k < 40:
-                            await connection.create_market_buy_order(symbol='XAUUSD', volume=0.01, stop_loss=swing_low - 1.0, take_profit=current_price + 6.0, comment="Riobot BUY")
+                    # 3. Rýchla stratégia: ak máme aspoň 10 cien, porovnáme smer
+                    if len(positions) == 0 and len(price_history) >= 10:
+                        # Jednoduchý smer: porovnáme cenu teraz a pred chvíľou
+                        old_price = price_history[0]
+                        
+                        if current_price > old_price:
+                            # Rastový impulz -> BUY
+                            tp_price = current_price + 5.0
+                            sl_price = current_price - 5.0
+                            await connection.create_market_buy_order(symbol='XAUUSD', volume=0.01, stop_loss=sl_price, take_profit=tp_price, comment="Riobot Fast BUY")
                             send_telegram(f"🟢 Riobot otvoril BUY XAUUSD! Cena: {current_price}")
-
-                        # SELL podmienka
-                        elif ema_50 < ema_200 and (swing_low + (diff * 0.382) <= current_price <= swing_low + (diff * 0.5)) and stoch_k > 60:
-                            await connection.create_market_sell_order(symbol='XAUUSD', volume=0.01, stop_loss=swing_high + 1.0, take_profit=current_price - 6.0, comment="Riobot SELL")
+                        
+                        elif current_price < old_price:
+                            # Klesajúci impulz -> SELL
+                            tp_price = current_price - 5.0
+                            sl_price = current_price + 5.0
+                            await connection.create_market_sell_order(symbol='XAUUSD', volume=0.01, stop_loss=sl_price, take_profit=tp_price, comment="Riobot Fast SELL")
                             send_telegram(f"🔴 Riobot otvoril SELL XAUUSD! Cena: {current_price}")
 
                 except Exception as inner_e:
@@ -139,7 +118,7 @@ async def bot_loop():
                     if "connection" in str(inner_e).lower():
                         raise inner_e
 
-                await asyncio.sleep(60)
+                await asyncio.sleep(30)
 
         except Exception as outer_e:
             print(f"Chyba pripojenia, opätovný pokus: {outer_e}")
