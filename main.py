@@ -2,27 +2,27 @@ import os
 import time
 import json
 import urllib.request
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import socket
 import threading
 
-# Webový server pre Railway healthcheck
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Riobot is running!")
-    def log_message(self, format, *args):
-        pass
-
-def run_web_server():
+# 1. Ultra-rýchly socket server, ktorý zaručene otvorí port pre Railway
+def start_dummy_server():
     port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
-    server.serve_forever()
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", port))
+    s.listen(1)
+    while True:
+        try:
+            conn, addr = s.accept()
+            conn.sendall(b"HTTP/1.1 200 OK\nContent-Length: 2\n\nOK")
+            conn.close()
+        except:
+            pass
 
-# Spustenie web servera na pozadí
-threading.Thread(target=run_web_server, daemon=True).start()
+threading.Thread(target=start_dummy_server, daemon=True).start()
 
-# Trading nastavenia
+# 2. Trading bota nastavenia
 TOKEN = os.getenv('METAAPI_TOKEN', '')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
@@ -51,6 +51,7 @@ def api_post(endpoint, payload):
             return resp.status
     except Exception: return None
 
+# 3. Hlavná slučka
 if __name__ == "__main__":
     print("Riobot štartuje: Lot 0.01, SL 7$, TP 6$, BE pri 2$")
     send_telegram("🤖 Riobot online: Lot 0.01, SL 7$, TP 6$, BE pri 2$.")
