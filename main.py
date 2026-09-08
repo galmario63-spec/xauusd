@@ -47,7 +47,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-print("Riobot štartuje naisto...")
+print("Riobot štartuje s ochranou trhu...")
 
 async def bot_loop():
     metaapi = MetaApi(TOKEN)
@@ -63,11 +63,20 @@ async def bot_loop():
             await connection.connect()
             await connection.wait_synchronized()
             
-            print("MetaApi pripojenie stabilné. Ide sa.")
-            send_telegram("🚀 Riobot beží a obchoduje!")
+            print("MetaApi pripojenie stabilné.")
+            send_telegram("🚀 Riobot beží a čaká na otvorenie trhu!")
 
             while True:
                 try:
+                    # Skúsime získať cenu, ak je trh zatvorený, vyhodí to výnimku
+                    symbol_price = await connection.get_symbol_price('XAUUSD')
+                    current_price = symbol_price['ask']
+                    price_history.append(current_price)
+                    if len(price_history) > 30:
+                        price_history.pop(0)
+
+                    print(f"XAUUSD Cena: {current_price}")
+
                     # 1. Break-Even manažment
                     positions = await connection.get_positions()
                     for position in positions:
@@ -85,16 +94,7 @@ async def bot_loop():
                                     await connection.modify_position(position_id=position_id, stop_loss=open_price - 1.0, take_profit=position.get('takeProfit'))
                                     send_telegram(f"🛡️ SELL v zisku {profit:.2f}$ -> SL na BE-1!")
 
-                    # 2. Sledovanie ceny
-                    symbol_price = await connection.get_symbol_price('XAUUSD')
-                    current_price = symbol_price['ask']
-                    price_history.append(current_price)
-                    if len(price_history) > 30:
-                        price_history.pop(0)
-
-                    print(f"XAUUSD Cena: {current_price}")
-
-                    # 3. Otvorenie obchodu
+                    # 2. Otvorenie obchodu
                     if len(positions) == 0 and len(price_history) >= 5:
                         old_price = price_history[0]
                         
@@ -117,9 +117,14 @@ async def bot_loop():
                             send_telegram(f"🔴 SELL XAUUSD otvorené! Cena: {current_price}")
 
                 except Exception as inner_e:
-                    print(f"Chyba v cykle: {inner_e}")
-                    if "connection" in str(inner_e).lower() or "disconnected" in str(inner_e).lower():
-                        raise inner_e
+                    err_msg = str(inner_e)
+                    if "market is closed" in err_msg.lower():
+                        print("Trh je momentálne zatvorený. Čakám...")
+                        await asyncio.sleep(60) # Počká dlhšie, aby nezahlcoval logy
+                    else:
+                        print(f"Chyba v cykle: {inner_e}")
+                        if "connection" in err_msg.lower() or "disconnected" in err_msg.lower():
+                            raise inner_e
 
                 await asyncio.sleep(20)
 
