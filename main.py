@@ -16,15 +16,6 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-def run_server():
-    try:
-        with socketserver.TCPServer(("0.0.0.0", PORT), HealthHandler) as httpd:
-            httpd.serve_forever()
-    except Exception:
-        pass
-
-threading.Thread(target=run_server, daemon=True).start()
-
 TOKEN = os.getenv('METAAPI_TOKEN', '')
 ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', 'a763fdbf-f6a5-4809-aa0f-4ee3c185731e')
 SYMBOL = "XAUUSD"
@@ -93,5 +84,9 @@ def trading_bot_loop():
         except Exception: time.sleep(15)
 
 if __name__ == "__main__":
+    # Bot beží na pozadí
     threading.Thread(target=trading_bot_loop, daemon=True).start()
-    while True: time.sleep(3600)
+    
+    # Server beží na hlavnom vlákne a drží port otvorený pre Railway
+    with socketserver.TCPServer(("0.0.0.0", PORT), HealthHandler) as httpd:
+        httpd.serve_forever()
