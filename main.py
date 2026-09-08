@@ -47,8 +47,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-print("Riobot štartuje v nočnom stabilnom režime...")
-send_telegram("🚀 Riobot so stratégiou Fibo + EMA + Stochastic bol úspešne spustený!")
+print("Riobot štartuje v optimalizovanom režime...")
 
 def calculate_ema(prices, period):
     if len(prices) < period:
@@ -72,11 +71,12 @@ def calculate_stochastic(prices, k_period=14):
     return 100 * ((current_close - lowest_low) / (highest_high - lowest_low))
 
 async def bot_loop():
+    metaapi = MetaApi(TOKEN)
     price_history = []
     
     while True:
         try:
-            metaapi = MetaApi(TOKEN)
+            print("Pripájam sa k MetaApi účtu...")
             account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
             
             if account.state != 'DEPLOYED':
@@ -87,6 +87,7 @@ async def bot_loop():
             await connection.wait_synchronized()
             
             print("MetaApi pripojenie stabilné. Bot sleduje trh.")
+            send_telegram("🚀 Riobot je stabilne pripojený a stráži trh!")
 
             while True:
                 try:
@@ -144,13 +145,16 @@ async def bot_loop():
                             send_telegram(f"🟢 Riobot otvoril BUY XAUUSD! Cena: {current_price}, TP: {tp_price}, SL: {sl_price}")
 
                 except Exception as inner_e:
-                    print(f"Chyba v cykle: {inner_e}")
+                    print(f"Chyba v obchodnom cykle: {inner_e}")
+                    # Ak vypadne spojenie, vyskočíme von a obnovíme ho
+                    if "connection" in str(inner_e).lower() or "disconnected" in str(inner_e).lower():
+                        raise inner_e
 
                 await asyncio.sleep(60)
 
         except Exception as outer_e:
-            print(f"Chyba pripojenia, reštartujem o 10 sekúnd: {outer_e}")
-            await asyncio.sleep(10)
+            print(f"Chyba pripojenia, opätovný pokus o 15 sekúnd: {outer_e}")
+            await asyncio.sleep(15)
 
 if __name__ == "__main__":
     asyncio.run(bot_loop())
