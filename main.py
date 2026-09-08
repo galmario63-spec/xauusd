@@ -47,7 +47,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-print("Riobot štartuje v stabilnom režime...")
+print("Riobot štartuje naisto...")
 
 async def bot_loop():
     metaapi = MetaApi(TOKEN)
@@ -63,12 +63,12 @@ async def bot_loop():
             await connection.connect()
             await connection.wait_synchronized()
             
-            print("MetaApi pripojenie stabilné. Obchodujem.")
-            send_telegram("🚀 Riobot je pripojený a pripravený na obchody!")
+            print("MetaApi pripojenie stabilné. Ide sa.")
+            send_telegram("🚀 Riobot beží a obchoduje!")
 
             while True:
                 try:
-                    # 1. Manažment pozícií (Break-Even)
+                    # 1. Break-Even manažment
                     positions = await connection.get_positions()
                     for position in positions:
                         if position['symbol'] == 'XAUUSD':
@@ -80,10 +80,10 @@ async def bot_loop():
                             if profit >= 2.0 and current_sl != 0:
                                 if position['type'] == 'POSITION_TYPE_BUY' and current_sl < open_price:
                                     await connection.modify_position(position_id=position_id, stop_loss=open_price + 1.0, take_profit=position.get('takeProfit'))
-                                    send_telegram(f"🛡️ Riobot: BUY v zisku {profit:.2f}$ -> SL na BE+1!")
+                                    send_telegram(f"🛡️ BUY v zisku {profit:.2f}$ -> SL na BE+1!")
                                 elif position['type'] == 'POSITION_TYPE_SELL' and current_sl > open_price:
                                     await connection.modify_position(position_id=position_id, stop_loss=open_price - 1.0, take_profit=position.get('takeProfit'))
-                                    send_telegram(f"🛡️ Riobot: SELL v zisku {profit:.2f}$ -> SL na BE-1!")
+                                    send_telegram(f"🛡️ SELL v zisku {profit:.2f}$ -> SL na BE-1!")
 
                     # 2. Sledovanie ceny
                     symbol_price = await connection.get_symbol_price('XAUUSD')
@@ -92,23 +92,29 @@ async def bot_loop():
                     if len(price_history) > 30:
                         price_history.pop(0)
 
-                    print(f"XAUUSD Aktuálna cena: {current_price}")
+                    print(f"XAUUSD Cena: {current_price}")
 
-                    # 3. Rýchle otvorenie obchodu hneď po zozbieraní 5 cien
+                    # 3. Otvorenie obchodu
                     if len(positions) == 0 and len(price_history) >= 5:
                         old_price = price_history[0]
                         
                         if current_price > old_price:
-                            tp_price = current_price + 5.0
-                            sl_price = current_price - 5.0
-                            await connection.create_market_buy_order(symbol='XAUUSD', volume=0.01, stop_loss=sl_price, take_profit=tp_price, comment="Riobot Fast BUY")
-                            send_telegram(f"🟢 Riobot otvoril BUY XAUUSD! Cena: {current_price}")
+                            await connection.create_market_buy_order(
+                                symbol='XAUUSD', 
+                                volume=0.01, 
+                                stop_loss=current_price - 5.0, 
+                                take_profit=current_price + 5.0
+                            )
+                            send_telegram(f"🟢 BUY XAUUSD otvorené! Cena: {current_price}")
                         
                         elif current_price < old_price:
-                            tp_price = current_price - 5.0
-                            sl_price = current_price + 5.0
-                            await connection.create_market_sell_order(symbol='XAUUSD', volume=0.01, stop_loss=sl_price, take_profit=tp_price, comment="Riobot Fast SELL")
-                            send_telegram(f"🔴 Riobot otvoril SELL XAUUSD! Cena: {current_price}")
+                            await connection.create_market_sell_order(
+                                symbol='XAUUSD', 
+                                volume=0.01, 
+                                stop_loss=current_price + 5.0, 
+                                take_profit=current_price - 5.0
+                            )
+                            send_telegram(f"🔴 SELL XAUUSD otvorené! Cena: {current_price}")
 
                 except Exception as inner_e:
                     print(f"Chyba v cykle: {inner_e}")
