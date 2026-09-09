@@ -1,0 +1,3 @@
+requests
+metaapi-cloud-sdk
+pandas
