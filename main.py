@@ -1,10 +1,10 @@
 import os
+os.system("pip install requests")
+
 import time
 import requests
 import asyncio
 from metaapi_cloud_sdk import MetaApi
-
-os.system("pip install requests")
 
 TOKEN = os.getenv("METAAPI_TOKEN")
 ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
