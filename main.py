@@ -47,7 +47,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-print("Riobot štartuje: TP 8, SL 10, BE pri 3$ -> na +1.5 bodu...")
+print("Riobot štartuje: TP 8, SL 10, BE pri 3$ -> na +1.5, Telegram aktívny...")
 
 async def bot_loop():
     metaapi = MetaApi(TOKEN)
@@ -64,11 +64,11 @@ async def bot_loop():
             await connection.wait_synchronized()
             
             print("MetaApi pripojenie stabilné.")
-            send_telegram("🚀 Riobot beží (TP: 8, SL: 10, BE: 3$->1.5b)!")
+            send_telegram("🚀 Riobot beží (TP: 8, SL: 10, BE: 3$->1.5)!")
 
             while True:
                 try:
-                    # 1. Break-Even manažment (aktivácia pri zisku >= 3.0$, posun na +1.5 bodu)
+                    # 1. Break-Even manažment
                     positions = await connection.get_positions()
                     for position in positions:
                         if position['symbol'] == 'XAUUSD':
@@ -79,12 +79,12 @@ async def bot_loop():
                             pos_type = position.get('type')
                             
                             if profit >= 3.0 and current_sl != 0 and pos_type:
-                                if pos_type == 'POSITION_TYPE_BUY' and current_sl < open_price:
+                                if pos_type == 'POSITION_TYPE_BUY' and current_sl < open_price + 1.5:
                                     await connection.modify_position(position_id=position_id, stop_loss=open_price + 1.5, take_profit=position.get('takeProfit'))
-                                    send_telegram(f"🛡️ BUY zisk {profit:.2f}$ -> SL na BE+1.5!")
-                                elif pos_type == 'POSITION_TYPE_SELL' and current_sl > open_price:
+                                    send_telegram(f"🛡️ XAUUSD BUY zisk {profit:.2f}$ -> SL na BE+1.5!")
+                                elif pos_type == 'POSITION_TYPE_SELL' and current_sl > open_price - 1.5:
                                     await connection.modify_position(position_id=position_id, stop_loss=open_price - 1.5, take_profit=position.get('takeProfit'))
-                                    send_telegram(f"🛡️ SELL zisk {profit:.2f}$ -> SL na BE-1.5!")
+                                    send_telegram(f"🛡️ XAUUSD SELL zisk {profit:.2f}$ -> SL na BE-1.5!")
 
                     # 2. Sledovanie ceny
                     symbol_price = await connection.get_symbol_price('XAUUSD')
@@ -104,24 +104,24 @@ async def bot_loop():
                         if current_price > old_price and price_diff >= min_move:
                             sl_price = current_price - 10.0
                             tp_price = current_price + 8.0
+                            send_telegram(f"🟢 XAUUSD BUY (Filter OK)\nEntry: {current_price}\nTP: {tp_price}\nSL: {sl_price}")
                             await connection.create_market_buy_order(
                                 symbol='XAUUSD', 
                                 volume=0.01, 
                                 stop_loss=sl_price, 
                                 take_profit=tp_price
                             )
-                            send_telegram(f"🟢 XAUUSD BUY (Filter OK)\nEntry: {current_price}\nTP: {tp_price}\nSL: {sl_price}")
                         
                         elif current_price < old_price and abs(price_diff) >= min_move:
                             sl_price = current_price + 10.0
                             tp_price = current_price - 8.0
+                            send_telegram(f"🔴 XAUUSD SELL (Filter OK)\nEntry: {current_price}\nTP: {tp_price}\nSL: {sl_price}")
                             await connection.create_market_sell_order(
                                 symbol='XAUUSD', 
                                 volume=0.01, 
                                 stop_loss=sl_price, 
                                 take_profit=tp_price
                             )
-                            send_telegram(f"🔴 XAUUSD SELL (Filter OK)\nEntry: {current_price}\nTP: {tp_price}\nSL: {sl_price}")
 
                 except Exception as inner_e:
                     err_msg = str(inner_e)
