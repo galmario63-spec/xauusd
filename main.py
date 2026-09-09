@@ -1,9 +1,10 @@
 import os
-os.system("pip install requests")
+os.system("pip install requests metaapi-cloud-sdk pandas")
 
 import time
 import requests
 import asyncio
+import pandas as pd
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv("METAAPI_TOKEN")
@@ -47,7 +48,10 @@ async def main():
     terminal_state = account.get_terminal_state()
     await terminal_state.wait_synchronized()
 
-    print("Riobot beží a kontroluje Break-Even...")
+    # Získanie historical client pre dáta sviečok (indikátory)
+    historical_data = account.get_historical_data_provider()
+
+    print("Riobot beží, kontroluje indikátory a Break-Even...")
 
     price_history = []
 
@@ -63,6 +67,7 @@ async def main():
 
             positions = await terminal_state.get_positions()
 
+            # 1. Správa Break-Even pre otvorené pozície
             for pos in positions:
                 if pos["symbol"] == SYMBOL:
                     open_price = float(pos["openPrice"])
@@ -83,19 +88,33 @@ async def main():
                             print(f"Opravujem BE SELL: SL -> {target_sl}")
                             await connection.modify_position(pos["id"], stopLoss=target_sl, takeProfit=float(pos.get("takeProfit", 0)))
 
+            # 2. Vyhodnocovanie nových obchodov s filtrom sviečok / EMA / trendu
             if len(positions) == 0 and len(price_history) >= 10:
-                old_price = price_history[0]
-                diff = bid - old_price
+                # Načítanie sviečok pre výpočet EMA (napr. 1-minútové sviečky)
+                candles = await historical_data.get_candles(SYMBOL, "1m", 60)
+                if len(candles) > 50:
+                    df = pd.DataFrame(candles)
+                    df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
+                    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+                    
+                    last_close = df['close'].iloc[-1]
+                    ema_20_val = df['ema_20'].iloc[-1]
+                    ema_50_val = df['ema_50'].iloc[-1]
 
-                if diff >= MIN_MOVE:
-                    result = await connection.create_market_buy_order(SYMBOL, LOT_SIZE, ask, ask - SL_DISTANCE, ask + TP_DISTANCE)
-                    if result.get("stringCode") == "TRADE_RETCODE_DONE":
-                        send_telegram_message(f"🟢 *XAUUSD BUY*\nEntry: `{ask}`\nTP: `{ask + TP_DISTANCE}`\nSL: `{ask - SL_DISTANCE}`")
+                    old_price = price_history[0]
+                    diff = bid - old_price
 
-                elif diff <= -MIN_MOVE:
-                    result = await connection.create_market_sell_order(SYMBOL, LOT_SIZE, bid, bid + SL_DISTANCE, bid - TP_DISTANCE)
-                    if result.get("stringCode") == "TRADE_RETCODE_DONE":
-                        send_telegram_message(f"🔴 *XAUUSD SELL*\nEntry: `{bid}`\nTP: `{bid - TP_DISTANCE}`\nSL: `{bid + SL_DISTANCE}`")
+                    # Podmienka BUY: Cena rastie + EMA filtre (cena nad EMA a EMA20 nad EMA50)
+                    if diff >= MIN_MOVE and (last_close > ema_20_val and ema_20_val > ema_50_val):
+                        result = await connection.create_market_buy_order(SYMBOL, LOT_SIZE, ask, ask - SL_DISTANCE, ask + TP_DISTANCE)
+                        if result.get("stringCode") == "TRADE_RETCODE_DONE":
+                            send_telegram_message(f"🟢 *XAUUSD BUY*\nEntry: `{ask}`\nTP: `{ask + TP_DISTANCE}`\nSL: `{ask - SL_DISTANCE}`")
+
+                    # Podmienka SELL: Cena klesá + EMA filtre (cena pod EMA a EMA20 pod EMA50)
+                    elif diff <= -MIN_MOVE and (last_close < ema_20_val and ema_20_val < ema_50_val):
+                        result = await connection.create_market_sell_order(SYMBOL, LOT_SIZE, bid, bid + SL_DISTANCE, bid - TP_DISTANCE)
+                        if result.get("stringCode") == "TRADE_RETCODE_DONE":
+                            send_telegram_message(f"🔴 *XAUUSD SELL*\nEntry: `{bid}`\nTP: `{bid - TP_DISTANCE}`\nSL: `{bid + SL_DISTANCE}`")
 
         except Exception as e:
             print(f"Chyba: {e}")
