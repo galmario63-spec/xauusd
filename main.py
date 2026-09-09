@@ -1,9 +1,11 @@
+import os
+os.system("pip install requests metaapi-cloud-sdk pandas")
+
 import time
 import requests
 import asyncio
 import pandas as pd
 from metaapi_cloud_sdk import MetaApi
-import os
 
 TOKEN = os.getenv("METAAPI_TOKEN")
 ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
