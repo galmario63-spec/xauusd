@@ -47,7 +47,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-print("Riobot štartuje: TP/SL 10, BE pri 1$...")
+print("Riobot štartuje: TP 8, SL 10, BE pri 3$ na +1$...")
 
 async def bot_loop():
     metaapi = MetaApi(TOKEN)
@@ -64,11 +64,11 @@ async def bot_loop():
             await connection.wait_synchronized()
             
             print("MetaApi pripojenie stabilné.")
-            send_telegram("🚀 Riobot beží (TP/SL: 10, BE: 1$)!")
+            send_telegram("🚀 Riobot beží (TP: 8, SL: 10, BE pri 3$ -> na 1$)!")
 
             while True:
                 try:
-                    # 1. Break-Even manažment (pri zisku >= 1.0$)
+                    # 1. Break-Even manažment (aktivácia pri zisku >= 3.0$, posun na 1$ v zisku)
                     positions = await connection.get_positions()
                     for position in positions:
                         if position['symbol'] == 'XAUUSD':
@@ -77,7 +77,7 @@ async def bot_loop():
                             open_price = position['openPrice']
                             current_sl = position.get('stopLoss', 0)
                             
-                            if profit >= 1.0 and current_sl != 0:
+                            if profit >= 3.0 and current_sl != 0:
                                 if position['type'] == 'POSITION_TYPE_BUY' and current_sl < open_price:
                                     await connection.modify_position(position_id=position_id, stop_loss=open_price + 1.0, take_profit=position.get('takeProfit'))
                                     send_telegram(f"🛡️ BUY zisk {profit:.2f}$ -> SL na BE+1!")
@@ -94,13 +94,13 @@ async def bot_loop():
 
                     print(f"XAUUSD Cena: {current_price}")
 
-                    # 3. Otvorenie obchodu (TP/SL na 10.0)
+                    # 3. Otvorenie obchodu (TP 8, SL 10)
                     if len(positions) == 0 and len(price_history) >= 5:
                         old_price = price_history[0]
                         
                         if current_price > old_price:
                             sl_price = current_price - 10.0
-                            tp_price = current_price + 10.0
+                            tp_price = current_price + 8.0
                             await connection.create_market_buy_order(
                                 symbol='XAUUSD', 
                                 volume=0.01, 
@@ -111,7 +111,7 @@ async def bot_loop():
                         
                         elif current_price < old_price:
                             sl_price = current_price + 10.0
-                            tp_price = current_price - 10.0
+                            tp_price = current_price - 8.0
                             await connection.create_market_sell_order(
                                 symbol='XAUUSD', 
                                 volume=0.01, 
