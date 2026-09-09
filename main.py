@@ -1,143 +1,122 @@
-import subprocess
-import sys
-
-try:
-    import metaapi_cloud_sdk
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "metaapi-cloud-sdk"])
-
 import os
 import time
-import json
+import requests
 import asyncio
-import urllib.request
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from metaapi_cloud_sdk import MetaApi
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-        
-    def log_message(self, format, *args):
-        pass
+# Načítanie premenných z Railway
+TOKEN = os.getenv("METAAPI_TOKEN")
+ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-def run_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    server.serve_forever()
+SYMBOL = "XAUUSD"
+LOT_SIZE = 0.01
 
-threading.Thread(target=run_server, daemon=True).start()
+# Obchodná logika
+MIN_MOVE = 4.0        # Minimálny pohyb pre vstup
+TP_DISTANCE = 10.0    # Take Profit na 10 bodoch
+SL_DISTANCE = 10.0    # Stop Loss na 10 bodoch
 
-TOKEN = os.getenv('METAAPI_TOKEN', '')
-ACCOUNT_ID = os.getenv('METAAPI_ACCOUNT_ID', '')
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
+# Break-Even nastavenie
+BE_TRIGGER = 4.0      # Pri akom zisku sa aktivuje BE
+BE_LOCK = 2.0         # Na akú úroveň plusu sa posunie SL
 
-def send_telegram(message):
+def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": message}).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
-        urllib.request.urlopen(req)
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+        requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        print(f"Telegram error: {e}")
+        print(f"Chyba pri odosielaní Telegram správy: {e}")
 
-print("Riobot štartuje: TP 8, SL 10, BE pri 3$ -> na +1.5, Telegram aktívny...")
+async def main():
+    if not TOKEN or not ACCOUNT_ID:
+        print("Chýbajú MetaApi premenné!")
+        return
 
-async def bot_loop():
     metaapi = MetaApi(TOKEN)
-    price_history = []
+    account = await metaapi.metainfo_account_api.get_account_id(ACCOUNT_ID)
     
+    if account.state != "DEPLOYED":
+        await account.deploy()
+
+    connection = account.get_rpc_connection()
+    await connection.connect()
+    
+    terminal_state = account.get_terminal_state()
+    await terminal_state.wait_synchronized()
+
+    print(f"Riobot štartuje: TP {TP_DISTANCE}, SL {SL_DISTANCE}, BE pri +{BE_TRIGGER} -> na +{BE_LOCK} -> aktívny...")
+
+    price_history = []
+
     while True:
         try:
-            account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
-            if account.state != 'DEPLOYED':
-                await account.deploy()
+            price = await terminal_state.get_symbol_price(SYMBOL)
+            bid = price["bid"]
+            ask = price["ask"]
             
-            connection = account.get_rpc_connection()
-            await connection.connect()
-            await connection.wait_synchronized()
-            
-            print("MetaApi pripojenie stabilné.")
-            send_telegram("🚀 Riobot beží (TP: 8, SL: 10, BE: 3$->1.5)!")
+            print(f"{SYMBOL} Cena: {bid}")
 
-            while True:
-                try:
-                    # 1. Break-Even manažment
-                    positions = await connection.get_positions()
-                    for position in positions:
-                        if position['symbol'] == 'XAUUSD':
-                            profit = position['profit']
-                            position_id = position['id']
-                            open_price = position['openPrice']
-                            current_sl = position.get('stopLoss', 0)
-                            pos_type = position.get('type')
-                            
-                            if profit >= 3.0 and current_sl != 0 and pos_type:
-                                if pos_type == 'POSITION_TYPE_BUY' and current_sl < open_price + 1.5:
-                                    await connection.modify_position(position_id=position_id, stop_loss=open_price + 1.5, take_profit=position.get('takeProfit'))
-                                    send_telegram(f"🛡️ XAUUSD BUY zisk {profit:.2f}$ -> SL na BE+1.5!")
-                                elif pos_type == 'POSITION_TYPE_SELL' and current_sl > open_price - 1.5:
-                                    await connection.modify_position(position_id=position_id, stop_loss=open_price - 1.5, take_profit=position.get('takeProfit'))
-                                    send_telegram(f"🛡️ XAUUSD SELL zisk {profit:.2f}$ -> SL na BE-1.5!")
+            price_history.append(bid)
+            if len(price_history) > 30:
+                price_history.pop(0)
 
-                    # 2. Sledovanie ceny
-                    symbol_price = await connection.get_symbol_price('XAUUSD')
-                    current_price = symbol_price['ask']
-                    price_history.append(current_price)
-                    if len(price_history) > 30:
-                        price_history.pop(0)
+            positions = await terminal_state.get_positions()
 
-                    print(f"XAUUSD Cena: {current_price}")
+            # Kontrola Break-Even pre existujúce pozície
+            for pos in positions:
+                if pos["symbol"] == SYMBOL:
+                    open_price = pos["openPrice"]
+                    pos_type = pos["type"]
+                    current_sl = pos.get("stopLoss", 0)
+                    
+                    if pos_type == "POSITION_TYPE_BUY":
+                        profit_points = bid - open_price
+                        # Ak dosiahol zisk +4 a SL ešte nie je posunutý na +2
+                        if profit_points >= BE_TRIGGER and current_sl < (open_price + BE_LOCK):
+                            new_sl = open_price + BE_LOCK
+                            print(f"Aktivujem Break-Even pre BUY! Posúvam SL na {new_sl}")
+                            await connection.modify_position(pos["id"], stopLoss=new_sl, takeProfit=pos.get("takeProfit"))
+                    
+                    elif pos_type == "POSITION_TYPE_SELL":
+                        profit_points = open_price - ask
+                        # Ak dosiahol zisk +4 a SL ešte nie je posunutý na +2 do plusu
+                        if profit_points >= BE_TRIGGER and (current_sl > (open_price - BE_LOCK) or current_sl == 0):
+                            new_sl = open_price - BE_LOCK
+                            print(f"Aktivujem Break-Even pre SELL! Posúvam SL na {new_sl}")
+                            await connection.modify_position(pos["id"], stopLoss=new_sl, takeProfit=pos.get("takeProfit"))
 
-                    # 3. Otvorenie obchodu s filtrom proti bočnému trhu
-                    if len(positions) == 0 and len(price_history) >= 5:
-                        old_price = price_history[0]
-                        price_diff = current_price - old_price
-                        min_move = 4.0
+            # Podmienka: Otvoriť obchod len ak nie je žiadna pozícia
+            if len(positions) == 0 and len(price_history) >= 10:
+                old_price = price_history[0]
+                diff = bid - old_price
 
-                        if current_price > old_price and price_diff >= min_move:
-                            sl_price = current_price - 10.0
-                            tp_price = current_price + 8.0
-                            send_telegram(f"🟢 XAUUSD BUY (Filter OK)\nEntry: {current_price}\nTP: {tp_price}\nSL: {sl_price}")
-                            await connection.create_market_buy_order(
-                                symbol='XAUUSD', 
-                                volume=0.01, 
-                                stop_loss=sl_price, 
-                                take_profit=tp_price
-                            )
-                        
-                        elif current_price < old_price and abs(price_diff) >= min_move:
-                            sl_price = current_price + 10.0
-                            tp_price = current_price - 8.0
-                            send_telegram(f"🔴 XAUUSD SELL (Filter OK)\nEntry: {current_price}\nTP: {tp_price}\nSL: {sl_price}")
-                            await connection.create_market_sell_order(
-                                symbol='XAUUSD', 
-                                volume=0.01, 
-                                stop_loss=sl_price, 
-                                take_profit=tp_price
-                            )
+                # BUY logika
+                if diff >= MIN_MOVE:
+                    print(f"Detekovaný silný BUY pohyb: {diff}")
+                    result = await connection.create_market_buy_order(SYMBOL, LOT_SIZE, ask, ask - SL_DISTANCE, ask + TP_DISTANCE)
+                    
+                    if result.get("stringCode") == "TRADE_RETCODE_DONE":
+                        msg = f"🟢 *XAUUSD BUY*\n\nEntry: `{ask}`\nTP: `{ask + TP_DISTANCE}`\nSL: `{ask - SL_DISTANCE}`"
+                        send_telegram_message(msg)
 
-                except Exception as inner_e:
-                    err_msg = str(inner_e)
-                    if "market is closed" in err_msg.lower():
-                        print("Trh je zatvorený. Čakám...")
-                        await asyncio.sleep(60)
-                    else:
-                        print(f"Chyba v cykle: {inner_e}")
-                        if "connection" in err_msg.lower() or "disconnected" in err_msg.lower():
-                            raise inner_e
+                # SELL logika
+                elif diff <= -MIN_MOVE:
+                    print(f"Detekovaný silný SELL pohyb: {diff}")
+                    result = await connection.create_market_sell_order(SYMBOL, LOT_SIZE, bid, bid + SL_DISTANCE, bid - TP_DISTANCE)
+                    
+                    if result.get("stringCode") == "TRADE_RETCODE_DONE":
+                        msg = f"🔴 *XAUUSD SELL*\n\nEntry: `{bid}`\nTP: `{bid - TP_DISTANCE}`\nSL: `{bid + SL_DISTANCE}`"
+                        send_telegram_message(msg)
 
-                await asyncio.sleep(20)
+        except Exception as e:
+            print(f"Chyba v cykle: {e}")
 
-        except Exception as outer_e:
-            print(f"Chyba pripojenia, opakujem: {outer_e}")
-            await asyncio.sleep(10)
+        await asyncio.sleep(20)
 
 if __name__ == "__main__":
-    asyncio.run(bot_loop())
+    asyncio.run(main())
