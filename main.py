@@ -47,7 +47,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-print("Riobot štartuje: TP 8, SL 10, BE pri 3$ na +1$...")
+print("Riobot štartuje: TP 8, SL 10, BE pri 3$ -> na 1$, s anti-sideways filtrom...")
 
 async def bot_loop():
     metaapi = MetaApi(TOKEN)
@@ -64,7 +64,7 @@ async def bot_loop():
             await connection.wait_synchronized()
             
             print("MetaApi pripojenie stabilné.")
-            send_telegram("🚀 Riobot beží (TP: 8, SL: 10, BE pri 3$ -> na 1$)!")
+            send_telegram("🚀 Riobot beží (TP: 8, SL: 10, BE: 3$->1$, + Filter proti bočnému trhu)!")
 
             while True:
                 try:
@@ -94,11 +94,13 @@ async def bot_loop():
 
                     print(f"XAUUSD Cena: {current_price}")
 
-                    # 3. Otvorenie obchodu (TP 8, SL 10)
+                    # 3. Otvorenie obchodu s filtrom proti bočnému trhu
                     if len(positions) == 0 and len(price_history) >= 5:
                         old_price = price_history[0]
-                        
-                        if current_price > old_price:
+                        price_diff = current_price - old_price
+                        min_move = 4.0  # Minimálny rozdiel v bodoch, aby to nebol len bočný trh
+
+                        if current_price > old_price and price_diff >= min_move:
                             sl_price = current_price - 10.0
                             tp_price = current_price + 8.0
                             await connection.create_market_buy_order(
@@ -107,9 +109,9 @@ async def bot_loop():
                                 stop_loss=sl_price, 
                                 take_profit=tp_price
                             )
-                            send_telegram(f"🟢 XAUUSD BUY\nEntry: {current_price}\nTP: {tp_price}\nSL: {sl_price}")
+                            send_telegram(f"🟢 XAUUSD BUY (Filter OK)\nEntry: {current_price}\nTP: {tp_price}\nSL: {sl_price}")
                         
-                        elif current_price < old_price:
+                        elif current_price < old_price and abs(price_diff) >= min_move:
                             sl_price = current_price + 10.0
                             tp_price = current_price - 8.0
                             await connection.create_market_sell_order(
@@ -118,7 +120,7 @@ async def bot_loop():
                                 stop_loss=sl_price, 
                                 take_profit=tp_price
                             )
-                            send_telegram(f"🔴 XAUUSD SELL\nEntry: {current_price}\nTP: {tp_price}\nSL: {sl_price}")
+                            send_telegram(f"🔴 XAUUSD SELL (Filter OK)\nEntry: {current_price}\nTP: {tp_price}\nSL: {sl_price}")
 
                 except Exception as inner_e:
                     err_msg = str(inner_e)
