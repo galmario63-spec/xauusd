@@ -1,6 +1,4 @@
 import os
-os.system("pip install requests metaapi-cloud-sdk pandas")
-
 import time
 import requests
 import asyncio
@@ -67,7 +65,6 @@ async def main():
 
             positions = await terminal_state.get_positions()
 
-            # 1. Správa Break-Even
             for pos in positions:
                 if pos["symbol"] == SYMBOL:
                     open_price = float(pos["openPrice"])
@@ -88,23 +85,19 @@ async def main():
                             await connection.modify_position(pos["id"], stopLoss=target_sl, takeProfit=float(pos.get("takeProfit", 0)))
                             send_telegram_message(f"🔒 Break-Even posunutý pre SELL na SL: {target_sl}")
 
-            # 2. Obchodovanie s EMA, MACD a Stochastic filtrom
             if len(positions) == 0 and len(price_history) >= 10:
                 candles = await historical_data.get_candles(SYMBOL, "1m", 100)
                 if len(candles) > 60:
                     df = pd.DataFrame(candles)
                     
-                    # EMA 20 & 50
                     df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
                     df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
                     
-                    # MACD (12, 26, 9)
                     exp1 = df['close'].ewm(span=12, adjust=False).mean()
                     exp2 = df['close'].ewm(span=26, adjust=False).mean()
                     df['macd'] = exp1 - exp2
                     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
                     
-                    # Stochastic (14, 3)
                     low_14 = df['low'].rolling(window=14).min()
                     high_14 = df['high'].rolling(window=14).max()
                     df['stoch_k'] = 100 * (df['close'] - low_14) / (high_14 - low_14)
