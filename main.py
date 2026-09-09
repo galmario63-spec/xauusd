@@ -121,7 +121,6 @@ async def main():
                     old_price = price_history[0]
                     diff = bid - old_price
 
-                    # Filtre pre BUY a SELL
                     buy_filter = (last_close > ema_20_val) and (ema_20_val > ema_50_val) and (macd_val > signal_val) and (stoch_k > stoch_d)
                     sell_filter = (last_close < ema_20_val) and (ema_20_val < ema_50_val) and (macd_val < signal_val) and (stoch_k < stoch_d)
 
