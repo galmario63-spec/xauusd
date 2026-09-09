@@ -94,9 +94,9 @@ async def main():
                         send_telegram_message(f"🟢 *XAUUSD BUY*\nEntry: `{ask}`\nTP: `{ask + TP_DISTANCE}`\nSL: `{ask - SL_DISTANCE}`")
 
                 elif diff <= -MIN_MOVE:
-                    print(f5"SELL pohyb: {diff}")
+                    print(f"SELL pohyb: {diff}")
                     result = await connection.create_market_sell_order(SYMBOL, LOT_SIZE, bid, bid + SL_DISTANCE, bid - TP_DISTANCE)
-                    if result.get("stringCode") == "TRADE_RETCODE_DONE":
+                    if result.get("stringCode`") == "TRADE_RETCODE_DONE":
                         send_telegram_message(f"🔴 *XAUUSD SELL*\nEntry: `{bid}`\nTP: `{bid - TP_DISTANCE}`\nSL: `{bid + SL_DISTANCE}`")
 
         except Exception as e:
