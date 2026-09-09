@@ -47,7 +47,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-print("Riobot štartuje so SL/TP na 10...")
+print("Riobot štartuje: TP/SL 10, BE pri 1$...")
 
 async def bot_loop():
     metaapi = MetaApi(TOKEN)
@@ -64,11 +64,11 @@ async def bot_loop():
             await connection.wait_synchronized()
             
             print("MetaApi pripojenie stabilné.")
-            send_telegram("🚀 Riobot beží a obchoduje (SL/TP: 10)!")
+            send_telegram("🚀 Riobot beží (TP/SL: 10, BE: 1$)!")
 
             while True:
                 try:
-                    # 1. Break-Even manažment
+                    # 1. Break-Even manažment (pri zisku >= 1.0$)
                     positions = await connection.get_positions()
                     for position in positions:
                         if position['symbol'] == 'XAUUSD':
@@ -77,13 +77,13 @@ async def bot_loop():
                             open_price = position['openPrice']
                             current_sl = position.get('stopLoss', 0)
                             
-                            if profit >= 2.0 and current_sl != 0:
+                            if profit >= 1.0 and current_sl != 0:
                                 if position['type'] == 'POSITION_TYPE_BUY' and current_sl < open_price:
                                     await connection.modify_position(position_id=position_id, stop_loss=open_price + 1.0, take_profit=position.get('takeProfit'))
-                                    send_telegram(f"🛡️ BUY v zisku {profit:.2f}$ -> SL na BE+1!")
+                                    send_telegram(f"🛡️ BUY zisk {profit:.2f}$ -> SL na BE+1!")
                                 elif position['type'] == 'POSITION_TYPE_SELL' and current_sl > open_price:
                                     await connection.modify_position(position_id=position_id, stop_loss=open_price - 1.0, take_profit=position.get('takeProfit'))
-                                    send_telegram(f"🛡️ SELL v zisku {profit:.2f}$ -> SL na BE-1!")
+                                    send_telegram(f"🛡️ SELL zisk {profit:.2f}$ -> SL na BE-1!")
 
                     # 2. Sledovanie ceny
                     symbol_price = await connection.get_symbol_price('XAUUSD')
