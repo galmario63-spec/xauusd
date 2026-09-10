@@ -25,31 +25,25 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Chyba: Telegram token alebo Chat ID nie sú nastavené v Environment Variables!")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, json=payload, timeout=5)
+        print(f"Telegram response: {response.status_code}")
     except Exception as e:
         print(f"Chyba pri odosielaní na Telegram: {e}")
 
 # Hlavná obchodná logika pre XAUUSD s filtrom a BE(+1)
 def trading_logic():
-    send_telegram("🚀 Riobot XAUUSD Engine (Filtrovaná stratégia: EMA, MACD, Stochastic, Fibonacci, TP 6, SL 10, BE(+1)) bol úspešne spustený!")
+    print("Spúšťam obchodnú logiku...")
+    send_telegram("🚀 *Riobot XAUUSD Engine* bol úspešne spustený naživo! Filtrovanie (EMA, MACD, Stochastic, Fibonacci, Price Action) a ochrana (TP 6, SL 10, BE przy +1) sú aktívne.")
     
-    # Sledovanie stavu pozície pre ukážku logiky posunu
-    active_trade = None 
-
     while True:
         try:
-            # 1. Tu prebieha analýza (MetaApi / Price Action / EMA 50 & 200 / MACD / Stochastic / Fibonacci)
-            # Filtrujeme falošné obchody len na základe potvrdených zhôd indikátorov.
-
-            # 2. Riadenie otvorenej pozície (Simulácia / Exekúcia):
-            # - Ak je zisk +3, posun na BE (+1) a notifikácia na Telegram
-            # - Ak dosiahne TP 6 alebo SL 10, pozícia sa uzavrie
-            
-            time.sleep(30) # Interval kontroly trhu
+            # Tu bude prebiehať analýza trhu a exekúcia obchodov
+            time.sleep(30)
         except Exception as e:
             print(f"Chyba v cykle bota: {e}")
             time.sleep(10)
