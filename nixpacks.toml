@@ -1,3 +1,0 @@
-[phases.build]
-cmds = ["pip install requests metaapi-cloud-sdk pandas"]
-
