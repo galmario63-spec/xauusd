@@ -22,12 +22,16 @@ BE_LOCK = 1.5
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-        requests.post(url, json=payload, timeout=5)
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Telegram chyba: {e}")
+        print(f"Chyba pri odosielaní Telegram správy: {e}")
 
 async def main():
     if not TOKEN or not ACCOUNT_ID:
@@ -35,72 +39,91 @@ async def main():
         return
 
     metaapi = MetaApi(TOKEN)
-    account = await metaapi.metainfo_account_api.get_account_id(ACCOUNT_ID)
-    
+    account = await metaapi.metatrader_account_api.get_account(ACCOUNT_ID)
+
     if account.state != "DEPLOYED":
         await account.deploy()
 
     connection = account.get_rpc_connection()
     await connection.connect()
-    
+
     terminal_state = account.get_terminal_state()
     await terminal_state.wait_synchronized()
 
     print("Riobot beží...")
-    send_telegram_message("🤖 Riobot štartuje v pôvodnom funkčnom režime.")
+    send_telegram_message("🤖 Riobot štartuje a pripája sa k XAUUSD.")
 
     price_history = []
 
     while True:
         try:
             price = await terminal_state.get_symbol_price(SYMBOL)
-            bid = price["bid"]
-            ask = price["ask"]
+            bid = price.get('bid')
+            ask = price.get('ask')
 
-            price_history.append(bid)
-            if len(price_history) > 30:
+            if not bid or not ask:
+                await asyncio.sleep(1)
+                continue
+
+            current_price = (bid + ask) / 2
+            price_history.append(current_price)
+            if len(price_history) > 100:
                 price_history.pop(0)
 
+            if len(price_history) >= 2:
+                prev_price = price_history[-2]
+                move = current_price - prev_price
+
+                if abs(move) >= MIN_MOVE:
+                    action_type = "ORDER_TYPE_BUY" if move > 0 else "ORDER_TYPE_SELL"
+                    open_price = ask if action_type == "ORDER_TYPE_BUY" else bid
+                    tp = open_price + TP_DISTANCE if action_type == "ORDER_TYPE_BUY" else open_price - TP_DISTANCE
+                    sl = open_price - SL_DISTANCE if action_type == "ORDER_TYPE_BUY" else open_price + SL_DISTANCE
+
+                    print(f"Signál detekovaný! Smer: {action_type}, Cena: {open_price}")
+
+                    result = await connection.create_market_order(
+                        symbol=SYMBOL,
+                        action_type=action_type,
+                        volume=LOT_SIZE,
+                        stop_loss=sl,
+                        take_profit=tp
+                    )
+                    
+                    if result.get('stringCode') == 'TRADE_RETCODE_DONE':
+                        ticket = result.get('order')
+                        msg = f"✅ Pozícia otvorená ({SYMBOL})\nTyp: {action_type}\nCena: {open_price}\nTP: {tp}\nSL: {sl}"
+                        send_telegram_message(msg)
+                    else:
+                        print(f"Chyba pri otváraní pozície: {result}")
+
             positions = await terminal_state.get_positions()
-
             for pos in positions:
-                if pos["symbol"] == SYMBOL:
-                    open_price = float(pos["openPrice"])
-                    pos_type = pos["type"]
-                    current_sl = float(pos.get("stopLoss", 0))
-                    
-                    if pos_type == "POSITION_TYPE_BUY":
-                        profit_points = bid - open_price
-                        target_sl = round(open_price + BE_LOCK, 2)
-                        if profit_points >= BE_TRIGGER and (current_sl < target_sl):
-                            await connection.modify_position(pos["id"], stopLoss=target_sl, takeProfit=float(pos.get("takeProfit", 0)))
-                            send_telegram_message(f"🔒 Break-Even BUY na SL: {target_sl}")
-                    
-                    elif pos_type == "POSITION_TYPE_SELL":
-                        profit_points = open_price - ask
-                        target_sl = round(open_price - BE_LOCK, 2)
-                        if profit_points >= BE_TRIGGER and (current_sl > target_sl or current_sl == 0):
-                            await connection.modify_position(pos["id"], stopLoss=target_sl, takeProfit=float(pos.get("takeProfit", 0)))
-                            send_telegram_message(f"🔒 Break-Even SELL na SL: {target_sl}")
+                if pos['symbol'] == SYMBOL:
+                    ticket = pos['id']
+                    open_price = pos['openPrice']
+                    current_profit = pos['profit']
+                    pos_type = pos['type']
 
-            if len(positions) == 0 and len(price_history) >= 10:
-                old_price = price_history[0]
-                diff = bid - old_price
+                    if pos_type == 'POSITION_TYPE_BUY':
+                        if current_profit >= BE_TRIGGER * 10: 
+                            new_sl = open_price + BE_LOCK
+                            if pos.get('stopLoss', 0) < new_sl:
+                                await connection.modify_position(ticket, stop_loss=new_sl, take_profit=pos.get('takeProfit'))
+                                send_telegram_message(f"🔒 Posunutý BE na Buy pozícii (#{ticket})")
 
-                if diff >= MIN_MOVE:
-                    result = await connection.create_market_buy_order(SYMBOL, LOT_SIZE, ask, ask - SL_DISTANCE, ask + TP_DISTANCE)
-                    if result.get("stringCode") == "TRADE_RETCODE_DONE":
-                        send_telegram_message(f"🟢 XAUUSD BUY\nEntry: {ask}\nTP: {ask + TP_DISTANCE}\nSL: {ask - SL_DISTANCE}")
+                    elif pos_type == 'POSITION_TYPE_SELL':
+                        if current_profit >= BE_TRIGGER * 10:
+                            new_sl = open_price - BE_LOCK
+                            if pos.get('stopLoss', 99999) > new_sl:
+                                await connection.modify_position(ticket, stop_loss=new_sl, take_profit=pos.get('takeProfit'))
+                                send_telegram_message(f"🔒 Posunutý BE na Sell pozícii (#{ticket})")
 
-                elif diff <= -MIN_MOVE:
-                    result = await connection.create_market_sell_order(SYMBOL, LOT_SIZE, bid, bid + SL_DISTANCE, bid - TP_DISTANCE)
-                    if result.get("stringCode") == "TRADE_RETCODE_DONE":
-                        send_telegram_message(f"🔴 XAUUSD SELL\nEntry: {bid}\nTP: {bid - TP_DISTANCE}\nSL: {bid + SL_DISTANCE}")
+            await asyncio.sleep(2)
 
         except Exception as e:
-            print(f"Chyba: {e}")
-
-        await asyncio.sleep(15)
+            print(f"Chyba v hlavnej slučke: {e}")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())
