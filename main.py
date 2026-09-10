@@ -59,8 +59,10 @@ async def main():
     await connection.connect()
     await connection.wait_synchronized()
 
+    # Hneď pošle správu na Telegram, že bot žije
+    send_telegram_message("🚀 *Riobot je online a ostrý na XAUUSD!*")
+
     print("Riobot beží...")
-    send_telegram_message("🤖 Riobot štartuje a je pripojený k XAUUSD.")
 
     while True:
         try:
