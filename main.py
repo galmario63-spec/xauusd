@@ -46,10 +46,8 @@ async def main():
     terminal_state = account.get_terminal_state()
     await terminal_state.wait_synchronized()
 
-    historical_data = account.get_historical_data_provider()
-
-    print("Riobot beží s EMA, MACD, Stochastic filtrom a Break-Even...")
-    send_telegram_message("🤖 Riobot úspešne naštartoval s plnou stratégiou (EMA, MACD, Stochastic)! Bežíme.")
+    print("Riobot beží...")
+    send_telegram_message("🤖 Riobot štartuje v pôvodnom funkčnom režime.")
 
     price_history = []
 
@@ -76,56 +74,28 @@ async def main():
                         target_sl = round(open_price + BE_LOCK, 2)
                         if profit_points >= BE_TRIGGER and (current_sl < target_sl):
                             await connection.modify_position(pos["id"], stopLoss=target_sl, takeProfit=float(pos.get("takeProfit", 0)))
-                            send_telegram_message(f"🔒 Break-Even posunutý pre BUY na SL: {target_sl}")
+                            send_telegram_message(f"🔒 Break-Even BUY na SL: {target_sl}")
                     
                     elif pos_type == "POSITION_TYPE_SELL":
                         profit_points = open_price - ask
                         target_sl = round(open_price - BE_LOCK, 2)
                         if profit_points >= BE_TRIGGER and (current_sl > target_sl or current_sl == 0):
                             await connection.modify_position(pos["id"], stopLoss=target_sl, takeProfit=float(pos.get("takeProfit", 0)))
-                            send_telegram_message(f"🔒 Break-Even posunutý pre SELL na SL: {target_sl}")
+                            send_telegram_message(f"🔒 Break-Even SELL na SL: {target_sl}")
 
             if len(positions) == 0 and len(price_history) >= 10:
-                candles = await historical_data.get_candles(SYMBOL, "1m", 100)
-                if len(candles) > 60:
-                    df = pd.DataFrame(candles)
-                    
-                    df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
-                    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
-                    
-                    exp1 = df['close'].ewm(span=12, adjust=False).mean()
-                    exp2 = df['close'].ewm(span=26, adjust=False).mean()
-                    df['macd'] = exp1 - exp2
-                    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-                    
-                    low_14 = df['low'].rolling(window=14).min()
-                    high_14 = df['high'].rolling(window=14).max()
-                    df['stoch_k'] = 100 * (df['close'] - low_14) / (high_14 - low_14)
-                    df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
-                    
-                    last_close = df['close'].iloc[-1]
-                    ema_20_val = df['ema_20'].iloc[-1]
-                    ema_50_val = df['ema_50'].iloc[-1]
-                    macd_val = df['macd'].iloc[-1]
-                    signal_val = df['macd_signal'].iloc[-1]
-                    stoch_k = df['stoch_k'].iloc[-1]
-                    stoch_d = df['stoch_d'].iloc[-1]
+                old_price = price_history[0]
+                diff = bid - old_price
 
-                    old_price = price_history[0]
-                    diff = bid - old_price
+                if diff >= MIN_MOVE:
+                    result = await connection.create_market_buy_order(SYMBOL, LOT_SIZE, ask, ask - SL_DISTANCE, ask + TP_DISTANCE)
+                    if result.get("stringCode") == "TRADE_RETCODE_DONE":
+                        send_telegram_message(f"🟢 XAUUSD BUY\nEntry: {ask}\nTP: {ask + TP_DISTANCE}\nSL: {ask - SL_DISTANCE}")
 
-                    buy_filter = (last_close > ema_20_val) and (ema_20_val > ema_50_val) and (macd_val > signal_val) and (stoch_k > stoch_d)
-                    sell_filter = (last_close < ema_20_val) and (ema_20_val < ema_50_val) and (macd_val < signal_val) and (stoch_k < stoch_d)
-
-                    if diff >= MIN_MOVE and buy_filter:
-                        result = await connection.create_market_buy_order(SYMBOL, LOT_SIZE, ask, ask - SL_DISTANCE, ask + TP_DISTANCE)
-                        if result.get("stringCode") == "TRADE_RETCODE_DONE":
-                            send_telegram_message(f"🟢 XAUUSD BUY (EMA+MACD+Stoch)\nEntry: {ask}\nTP: {ask + TP_DISTANCE}\nSL: {ask - SL_DISTANCE}")
-
-                    elif diff <= -MIN_MOVE and sell_filter:
-                        result = await connection.create_market_sell_order(SYMBOL, LOT_SIZE, bid, bid + SL_DISTANCE, bid - TP_DISTANCE)
-                        if result.get("stringCode") == "TRADE_RETCODE_DONE":
-                            send_telegram_message(f"🔴 XAUUSD SELL (EMA+MACD+Stoch)\nEntry: {bid}\nTP: {bid - TP_DISTANCE}\nSL: {bid + SL_DISTANCE}")
+                elif diff <= -MIN_MOVE:
+                    result = await connection.create_market_sell_order(SYMBOL, LOT_SIZE, bid, bid + SL_DISTANCE, bid - TP_DISTANCE)
+                    if result.get("stringCode") == "TRADE_RETCODE_DONE":
+                        send_telegram_message(f"🔴 XAUUSD SELL\nEntry: {bid}\nTP: {bid - TP_DISTANCE}\nSL: {bid + SL_DISTANCE}")
 
         except Exception as e:
             print(f"Chyba: {e}")
