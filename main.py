@@ -2,7 +2,6 @@ import os
 import time
 import requests
 import asyncio
-import pandas as pd
 from metaapi_cloud_sdk import MetaApi
 
 TOKEN = os.getenv("METAAPI_TOKEN")
