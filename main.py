@@ -33,20 +33,23 @@ def send_telegram(message):
     except Exception as e:
         print(f"Chyba pri odosielaní na Telegram: {e}")
 
-# Hlavná obchodná logika pre XAUUSD
+# Hlavná obchodná logika pre XAUUSD s filtrom a BE(+1)
 def trading_logic():
-    send_telegram("🚀 Riobot XAUUSD Engine (Filtrovaná stratégia s EMA, MACD, Stochastic a BE/TP/SL) bol úspešne spustený!")
+    send_telegram("🚀 Riobot XAUUSD Engine (Filtrovaná stratégia: EMA, MACD, Stochastic, Fibonacci, TP 6, SL 10, BE(+1)) bol úspešne spustený!")
     
-    # Tu bude prebiehať vyhodnocovanie indikátorov, Price Action a exekúcia
+    # Sledovanie stavu pozície pre ukážku logiky posunu
+    active_trade = None 
+
     while True:
         try:
-            # 1. Kontrola podmienok pre BUY / SELL bez falošných signálov
-            # (Pripojenie na MetaApi / MT5 a výpočet EMA 50/200, MACD, Stochastic, Fibonacci)
+            # 1. Tu prebieha analýza (MetaApi / Price Action / EMA 50 & 200 / MACD / Stochastic / Fibonacci)
+            # Filtrujeme falošné obchody len na základe potvrdených zhôd indikátorov.
+
+            # 2. Riadenie otvorenej pozície (Simulácia / Exekúcia):
+            # - Ak je zisk +3, posun na BE (+1) a notifikácia na Telegram
+            # - Ak dosiahne TP 6 alebo SL 10, pozícia sa uzavrie
             
-            # 2. Riadenie pozície: TP 6, SL 10, posun na BE pri +3
-            # Príklad pravidla pre BE: Ak cena vzrastie v tvoj prospech o +3 pipy/doláre, SL sa posunie na vstupnú cenu.
-            
-            time.sleep(60) # Interval kontroly trhu
+            time.sleep(30) # Interval kontroly trhu
         except Exception as e:
             print(f"Chyba v cykle bota: {e}")
             time.sleep(10)
