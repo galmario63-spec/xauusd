@@ -1,3 +1,4 @@
 metaapi-cloud-sdk
 pandas
 requests
+flask
