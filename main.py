@@ -2,7 +2,24 @@ import os
 import time
 import requests
 import asyncio
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 from metaapi_cloud_sdk import MetaApi
+
+# Mini server pre Render port
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+# Spustenie servera na pozadí
+threading.Thread(target=run_server, daemon=True).start()
 
 TOKEN = os.getenv("METAAPI_TOKEN")
 ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
@@ -11,12 +28,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SYMBOL = "XAUUSD"
 LOT_SIZE = 0.01
-
-MIN_MOVE = 4.0
-TP_DISTANCE = 7.0
-SL_DISTANCE = 10.0
-BE_TRIGGER = 3.0
-BE_LOCK = 1.5
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -46,8 +57,6 @@ async def main():
     print("Pripájam sa k účtu...")
     connection = account.get_rpc_connection()
     await connection.connect()
-    
-    # Počkáme na synchronizáciu terminálu
     await connection.wait_synchronized()
 
     print("Riobot beží...")
@@ -55,7 +64,6 @@ async def main():
 
     while True:
         try:
-            # Získanie cien cez RPC connection
             price = await connection.get_symbol_price(SYMBOL)
             bid = price.get('bid')
             ask = price.get('ask')
@@ -64,11 +72,6 @@ async def main():
                 await asyncio.sleep(1)
                 continue
 
-            current_price = (bid + ask) / 2
-            
-            # Jednoduchá kontrola pozícií cez RPC
-            positions = await connection.get_positions()
-            
             await asyncio.sleep(2)
 
         except Exception as e:
