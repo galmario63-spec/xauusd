@@ -38,36 +38,6 @@ def send_telegram(message):
     except Exception as e:
         print(f"Chyba Telegram: {e}")
 
-async def manage_open_trades(connection):
-    try:
-        positions = await connection.get_positions()
-        for pos in positions:
-            if pos['symbol'] == SYMBOL:
-                profit = pos.get('profit', 0)
-                open_price = pos.get('openPrice', 0)
-                sl = pos.get('stopLoss', 0)
-                ticket = pos.get('id')
-
-                if pos['type'] == 'POSITION_TYPE_BUY':
-                    if profit >= 3.0 and sl < open_price + 1.0:
-                        await connection.modify_position(
-                            position_id=ticket,
-                            stop_loss=open_price + 1.0,
-                            take_profit=pos.get('takeProfit', 0)
-                        )
-                        send_telegram(f"🛡️ *BREAK-EVEN*🟢 BUY obchod {ticket} posunutý na BE (+1).")
-
-                elif pos['type'] == 'POSITION_TYPE_SELL':
-                    if profit >= 3.0 and (sl > open_price - 1.0 or sl == 0):
-                        await connection.modify_position(
-                            position_id=ticket,
-                            stop_loss=open_price - 1.0,
-                            take_profit=pos.get('takeProfit', 0)
-                        )
-                        send_telegram(f"🛡️ *BREAK-EVEN*🔴 SELL obchod {ticket} posunutý na BE (+1).")
-    except Exception as e:
-        print(f"Chyba v manage_open_trades: {e}")
-
 async def run_bot():
     print("Riobot štartuje pripojenie na MetaApi...")
     api = MetaApi(METAAPI_TOKEN)
@@ -79,35 +49,52 @@ async def run_bot():
     await connection.connect()
     await connection.wait_synchronized()
     print("MetaApi je plne pripojené a synchronizované!")
-    send_telegram("🚀 *Riobot pre XAUUSD bol upravený na vyššiu aktivitu a obchoduje!*")
+    send_telegram("🚀 *Riobot pre XAUUSD je pripojený a obchoduje!*")
 
     while True:
         try:
-            await manage_open_trades(connection)
+            # Správa otvorených pozícií a Break-Even
+            positions = await connection.get_positions()
+            for pos in positions:
+                if pos['symbol'] == SYMBOL:
+                    profit = pos.get('profit', 0)
+                    open_price = pos.get('openPrice', 0)
+                    sl = pos.get('stopLoss', 0)
+                    ticket = pos.get('id')
 
+                    if pos['type'] == 'POSITION_TYPE_BUY':
+                        if profit >= 3.0 and sl < open_price + 1.0:
+                            await connection.modify_position(
+                                position_id=ticket,
+                                stop_loss=open_price + 1.0,
+                                take_profit=pos.get('takeProfit', 0)
+                            )
+                            send_telegram(f"🛡️ *BREAK-EVEN*🟢 BUY obchod {ticket} posunutý na BE (+1).")
+
+                    elif pos['type'] == 'POSITION_TYPE_SELL':
+                        if profit >= 3.0 and (sl > open_price - 1.0 or sl == 0):
+                            await connection.modify_position(
+                                position_id=ticket,
+                                stop_loss=open_price - 1.0,
+                                take_profit=pos.get('takeProfit', 0)
+                            )
+                            send_telegram(f"🛡️ *BREAK-EVEN*🔴 SELL obchod {ticket} posunutý na BE (+1).")
+
+            # Načítanie sviečok a stratégia
             candles = await connection.get_candles(SYMBOL, timeframe='5m', count=100)
             df = pd.DataFrame(candles)
 
             if df.empty or len(df) < 50:
-                print("Nedostatok dát, čakám...")
                 await asyncio.sleep(15)
                 continue
 
-            # Rýchlejšie EMA (20 a 50) pre citlivejší trend
             df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
             df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
 
-            # Stochastic Oscillator
             low_min = df['low'].rolling(window=14).min()
             high_max = df['high'].rolling(window=14).max()
             df['stoch_k'] = ((df['close'] - low_min) / (high_max - low_min)) * 100
             df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
-
-            # MACD
-            exp1 = df['close'].ewm(span=12, adjust=False).mean()
-            exp2 = df['close'].ewm(span=26, adjust=False).mean()
-            df['macd'] = exp1 - exp2
-            df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
 
             last = df.iloc[-2]
             current_price = df.iloc[-1]['close']
@@ -116,14 +103,10 @@ async def run_bot():
             trend_bearish = last['ema20'] < last['ema50']
             stoch_k = last['stoch_k']
             stoch_d = last['stoch_d']
-            macd_val = last['macd']
-            macd_sig = last['macd_signal']
 
-            positions = await connection.get_positions()
             symbol_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
             if len(symbol_positions) == 0:
-                # Agresívnejšie podmienky (Stochastic pod 40 pre BUY, nad 60 pre SELL)
                 if trend_bullish and stoch_k < 40 and stoch_k > stoch_d:
                     entry = current_price
                     tp = entry + 6.0
