@@ -1,7 +1,6 @@
 import os
 import time
 import asyncio
-import pandas as pd
 from flask import Flask
 from threading import Thread
 from metaapi_cloud_sdk import MetaApi
@@ -11,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot XAUUSD Active"
+    return "Riobot XAUUSD Safe Mode"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -28,57 +27,70 @@ METAAPI_ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
 SYMBOL = "XAUUSD"
 LOT_SIZE = 0.01
 
+last_trade_time = 0
+COOLDOWN_SECONDS = 900  # 15 minút pauza medzi obchodmi
+
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=5)
-    except: 
-        pass
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
 async def run_bot():
+    global last_trade_time
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
     await account.wait_connected()
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
-    send_telegram("🚀 *Riobot ide s bezpečnejším SL (-18) a TP (+12)!*")
+    send_telegram("Riobot aktualizovany: SL 15, TP 10, pauza 15m + BE pri +3 na +1.5!")
 
     while True:
         try:
             positions = await connection.get_positions()
             
-            # Break-Even manažment
+            # Break-Even manažment: pri +3 zisk posunúť SL na +1.5 od vstupu
             for pos in positions:
-                if pos['symbol'] == SYMBOL:
-                    if pos.get('profit', 0) >= 5.0 and pos.get('stopLoss', 0) == 0:
-                        op = pos.get('openPrice', 0)
-                        sl = op + 1.0 if pos['type'] == 'POSITION_TYPE_BUY' else op - 1.0
-                        await connection.modify_position(pos['id'], stop_loss=sl, take_profit=pos.get('takeProfit', 0))
-                        send_telegram(f"🛡️ *Break-Even aktivovaný* pre pozíciu {pos['id']}")
+                if pos['symbol'] == SYMBOL and pos['type'] == 'POSITION_TYPE_BUY':
+                    op = pos.get('openPrice', 0)
+                    current_sl = pos.get('stopLoss', 0)
+                    price_info = await connection.get_symbol_price(SYMBOL)
+                    bid = price_info.get('bid', 0)
+                    
+                    if bid and op:
+                        current_profit_points = bid - op
+                        # Ak je zisk >= 3 body a SL ešte nie je na +1.5
+                        if current_profit_points >= 3.0 and current_sl < (op + 1.5):
+                            new_sl = op + 1.5
+                            await connection.modify_position(pos['id'], stop_loss=new_sl, take_profit=pos.get('takeProfit', 0))
+                            send_telegram(f"Break-Even aktivovaný! SL posunutý na +1.5 (Cena: {new_sl:.2f})")
 
             symbol_positions = [p for p in positions if p['symbol'] == SYMBOL]
+            current_time = time.time()
 
-            if len(symbol_positions) == 0:
+            if len(symbol_positions) == 0 and (current_time - last_trade_time >= COOLDOWN_SECONDS):
                 price_info = await connection.get_symbol_price(SYMBOL)
                 bid = price_info.get('bid')
                 ask = price_info.get('ask')
                 
                 if ask and bid:
-                    # Upravené hodnoty pre reálnu volatilitu zlata: TP +12.0, SL -18.0
-                    tp = ask + 12.0
-                    sl = ask - 18.0
-                    await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp)
+                    tp = ask + 10.0
+                    sl = ask - 15.0
                     
-                    msg = f"🟢 *XAUUSD BUY Obchod (vylepšený SL)!*\nCena: {ask}\nTP: {tp:.2f}\nSL: {sl:.2f}"
+                    await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp)
+                    last_trade_time = time.time()
+                    
+                    msg = f"XAUUSD Obchod otvoreny\nCena: {ask}\nTP: {tp:.2f}\nSL: {sl:.2f}"
                     send_telegram(msg)
                     print(msg)
 
-            await asyncio.sleep(20)
+            await asyncio.sleep(30)
         except Exception as e:
-            print(f"Chyba v cykle: {e}")
+            print(f"Chyba: {e}")
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
