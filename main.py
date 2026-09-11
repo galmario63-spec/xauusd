@@ -11,7 +11,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot XAUUSD Auto-Trading Engine is running live!"
+    return "Riobot XAUUSD Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -28,104 +28,57 @@ METAAPI_ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
 SYMBOL = "XAUUSD"
 LOT_SIZE = 0.01
 
-def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
+def send_telegram(msg):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        requests.post(url, json=payload, timeout=5)
-    except Exception as e:
-        print(f"Chyba Telegram: {e}")
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
+                      json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=5)
+    except: pass
 
 async def run_bot():
-    print("Riobot štartuje pripojenie na MetaApi...")
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
-    
-    print("Čakám na pripojenie k MetaTrader API...")
     await account.wait_connected()
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
-    print("MetaApi je plne pripojené a synchronizované!")
-    send_telegram("🚀 *Riobot pre XAUUSD je pripojený a pripravený ihneď obchodovať!*")
+    send_telegram("🚀 *Riobot je pripojený a vynucuje obchod!*")
 
     while True:
         try:
-            # Správa otvorených pozícií a Break-Even
             positions = await connection.get_positions()
+            
+            # Správa Break-Even
             for pos in positions:
                 if pos['symbol'] == SYMBOL:
-                    profit = pos.get('profit', 0)
-                    open_price = pos.get('openPrice', 0)
-                    sl = pos.get('stopLoss', 0)
-                    ticket = pos.get('id')
-
-                    if pos['type'] == 'POSITION_TYPE_BUY':
-                        if profit >= 3.0 and sl < open_price + 1.0:
-                            await connection.modify_position(
-                                position_id=ticket,
-                                stop_loss=open_price + 1.0,
-                                take_profit=pos.get('takeProfit', 0)
-                            )
-                            send_telegram(f"🛡️ *BREAK-EVEN*🟢 BUY obchod {ticket} posunutý na BE (+1).")
-
-                    elif pos['type'] == 'POSITION_TYPE_SELL':
-                        if profit >= 3.0 and (sl > open_price - 1.0 or sl == 0):
-                            await connection.modify_position(
-                                position_id=ticket,
-                                stop_loss=open_price - 1.0,
-                                take_profit=pos.get('takeProfit', 0)
-                            )
-                            send_telegram(f"🛡️ *BREAK-EVEN*🔴 SELL obchod {ticket} posunutý na BE (+1).")
-
-            # Načítanie sviečok
-            candles = await connection.get_candles(SYMBOL, timeframe='5m', count=50)
-            df = pd.DataFrame(candles)
-
-            if df.empty or len(df) < 20:
-                await asyncio.sleep(15)
-                continue
-
-            # Rýchle EMA a jednoduché podmienky pre okamžitý vstup
-            df['ema20'] = df['close'].ewm(span=10, adjust=False).mean()
-            df['ema50'] = df['close'].ewm(span=30, adjust=False).mean()
-
-            last = df.iloc[-2]
-            current_price = df.iloc[-1]['close']
+                    if pos.get('profit', 0) >= 3.0 and pos.get('stopLoss', 0) == 0:
+                        op = pos.get('openPrice', 0)
+                        sl = op + 1.0 if pos['type'] == 'POSITION_TYPE_BUY' else op - 1.0
+                        await connection.modify_position(pos['id'], stop_loss=sl, take_profit=pos.get('takeProfit', 0))
+                        send_telegram(f"🛡️ Break-Even aktivovaný pre {pos['id']}")
 
             symbol_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
-            # Ak nie je otvorený žiadny obchod, hneď ho otvoríme na základe aktuálneho smeru sviečky/EMA
+            # Okamžitý vynútený vstup, ak nie je pozícia
             if len(symbol_positions) == 0:
-                entry = current_price
+                price_info = await connection.get_symbol_price(SYMBOL)
+                bid = price_info.get('bid')
+                ask = price_info.get('ask')
                 
-                # Ak je kratšia EMA nad dlhšou, pustíme BUY, inak SELL, aby to okamžite naskočilo
-                if last['ema20'] >= last['ema50']:
-                    tp = entry + 5.0
-                    sl = entry - 10.0
+                if ask and bid:
+                    # Otvoríme okamžitý BUY na aktuálnej cene
+                    tp = ask + 5.0
+                    sl = ask - 10.0
                     await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp)
-                    msg = f"🟢 *XAUUSD BUY Obchod otvorený!*\nCena: {entry:.2f}\nTP: {tp:.2f}\nSL: {sl:.2f}"
-                    send_telegram(msg)
-                    print(msg)
-                else:
-                    tp = entry - 5.0
-                    sl = entry + 10.0
-                    await connection.create_market_sell_order(SYMBOL, LOT_SIZE, sl, tp)
-                    msg = f"🔴 *XAUUSD SELL Obchod otvorený!*\nCena: {entry:.2f}\nTP: {tp:.2f}\nSL: {sl:.2f}"
+                    msg = f"🟢 *XAUUSD BUY Vynútený obchod!*\nCena: {ask}\nTP: {tp}\nSL: {sl}"
                     send_telegram(msg)
                     print(msg)
 
-            await asyncio.sleep(15)
-
-        except Exception as loop_error:
-            print(f"Chyba v cykle: {loop_error}")
+            await asyncio.sleep(20)
+        except Exception as e:
+            print(f"Chyba: {e}")
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
     keep_alive()
-    try:
-        asyncio.run(run_bot())
-    except Exception as e:
-        print(f"Chyba spustenia bota: {e}")
+    asyncio.run(run_bot())
