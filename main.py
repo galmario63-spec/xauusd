@@ -28,7 +28,7 @@ SYMBOL = "XAUUSD"
 LOT_SIZE = 0.01
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 30  # Znížené na 30 sekúnd
+COOLDOWN_SECONDS = 30
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -38,31 +38,6 @@ def send_telegram(msg):
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
     except Exception as e:
         print(f"Telegram error: {e}")
-
-def calculate_ema(prices, period):
-    if len(prices) < period:
-        return prices[-1] if prices else 0
-    multiplier = 2 / (period + 1)
-    ema = sum(prices[:period]) / period
-    for price in prices[period:]:
-        ema = (price - ema) * multiplier + ema
-    return ema
-
-def calculate_macd(prices):
-    if len(prices) < 26:
-        return 0, 0
-    ema12 = calculate_ema(prices, 12)
-    ema26 = calculate_ema(prices, 26)
-    return ema12 - ema26, 0
-
-def calculate_stochastic(highs, lows, closes, period=14):
-    if len(closes) < period:
-        return 50
-    lowest_low = min(lows[-period:])
-    highest_high = max(highs[-period:])
-    if highest_high == lowest_low:
-        return 50
-    return 100 * ((closes[-1] - lowest_low) / (highest_high - lowest_low))
 
 async def run_bot():
     global last_trade_time
@@ -74,31 +49,46 @@ async def run_bot():
             connection = account.get_rpc_connection()
             await connection.connect()
             await connection.wait_synchronized()
-            send_telegram("Riobot úspešne naštartovaný a pripravený!")
+            send_telegram("Riobot úspešne naštartovaný!")
 
             while True:
                 positions = await connection.get_positions()
                 current_time = time.time()
 
-                # Vstupná logika - ak nie je žiadna pozícia, otvorí novú s SL a TP
+                # Break-even a manažment otvorených pozícií
+                for pos in positions:
+                    if pos['symbol'] == SYMBOL and pos['type'] == 'POSITION_TYPE_BUY':
+                        open_price = pos['openPrice']
+                        current_sl = pos.get('stopLoss', 0)
+                        price_info = await connection.get_symbol_price(SYMBOL)
+                        bid = price_info.get('bid')
+
+                        if bid and (bid - open_price) >= 3.0:
+                            if current_sl < open_price + 1.0:
+                                new_sl = open_price + 1.0
+                                await connection.modify_position(
+                                    position_id=pos['id'],
+                                    stop_loss=new_sl,
+                                    take_profit=pos.get('takeProfit', open_price + 15.0)
+                                )
+                                send_telegram("🔒 BE posunuté na +1!")
+
+                # Vstupná logika
                 if len(positions) == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
-                    bid = price_info.get('bid')
                     ask = price_info.get('ask')
 
                     if ask:
-                        print("Otváram pozíciu na XAUUSD s SL a TP...")
-                        sl = ask - 3.0
-                        tp = ask + 5.0
+                        sl = ask - 12.0
+                        tp = ask + 15.0
                         await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stopLoss=sl, takeProfit=tp)
                         last_trade_time = current_time
-                        send_telegram("🚀 Riobot otvoril nový obchod na XAUUSD s ochranou (SL/TP)!")
+                        send_telegram("🚀 Riobot otvoril obchod (TP 15, SL 12)!")
 
-                await asyncio.sleep(10)
+                await asyncio.sleep(5)
 
         except Exception as e:
-            print(f"Chyba v bote: {e}")
-            send_telegram(f"⚠️ Riobot hlási chybu: {e}")
+            print(f"Chyba: {e}")
             await asyncio.sleep(15)
 
 if __name__ == "__main__":
