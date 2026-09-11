@@ -28,7 +28,7 @@ SYMBOL = "XAUUSD"
 LOT_SIZE = 0.01
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 30  # Znížené na 30 sekúnd pre bleskovú reakciu
+COOLDOWN_SECONDS = 30  # Znížené na 30 sekúnd
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -80,18 +80,19 @@ async def run_bot():
                 positions = await connection.get_positions()
                 current_time = time.time()
 
-                # Vstupná logika - uvoľnené podmienky pre rýchlejšie obchody
+                # Vstupná logika - ak nie je žiadna pozícia, otvorí novú s SL a TP
                 if len(positions) == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     bid = price_info.get('bid')
                     ask = price_info.get('ask')
 
                     if ask:
-                        # Okamžitý nákupný signál pre test / rozbehnutie
-                        print("Otváram pozíciu na XAUUSD...")
-                        await connection.create_market_buy_order(SYMBOL, LOT_SIZE)
+                        print("Otváram pozíciu na XAUUSD s SL a TP...")
+                        sl = ask - 3.0
+                        tp = ask + 5.0
+                        await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stopLoss=sl, takeProfit=tp)
                         last_trade_time = current_time
-                        send_telegram("🚀 Riobot otvoril nový obchod na XAUUSD!")
+                        send_telegram("🚀 Riobot otvoril nový obchod na XAUUSD s ochranou (SL/TP)!")
 
                 await asyncio.sleep(10)
 
