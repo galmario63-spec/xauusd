@@ -79,7 +79,7 @@ async def run_bot():
     await connection.connect()
     await connection.wait_synchronized()
     print("MetaApi je plne pripojené a synchronizované!")
-    send_telegram("🚀 *Riobot pre XAUUSD bol úspešne spustený a obchoduje!*")
+    send_telegram("🚀 *Riobot pre XAUUSD bol upravený na vyššiu aktivitu a obchoduje!*")
 
     while True:
         try:
@@ -88,19 +88,22 @@ async def run_bot():
             candles = await connection.get_candles(SYMBOL, timeframe='5m', count=100)
             df = pd.DataFrame(candles)
 
-            if df.empty or len(df) < 200:
+            if df.empty or len(df) < 50:
                 print("Nedostatok dát, čakám...")
-                await asyncio.sleep(30)
+                await asyncio.sleep(15)
                 continue
 
+            # Rýchlejšie EMA (20 a 50) pre citlivejší trend
+            df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
             df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-            df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
+            # Stochastic Oscillator
             low_min = df['low'].rolling(window=14).min()
             high_max = df['high'].rolling(window=14).max()
             df['stoch_k'] = ((df['close'] - low_min) / (high_max - low_min)) * 100
             df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
 
+            # MACD
             exp1 = df['close'].ewm(span=12, adjust=False).mean()
             exp2 = df['close'].ewm(span=26, adjust=False).mean()
             df['macd'] = exp1 - exp2
@@ -109,8 +112,8 @@ async def run_bot():
             last = df.iloc[-2]
             current_price = df.iloc[-1]['close']
 
-            trend_bullish = last['ema50'] > last['ema200']
-            trend_bearish = last['ema50'] < last['ema200']
+            trend_bullish = last['ema20'] > last['ema50']
+            trend_bearish = last['ema20'] < last['ema50']
             stoch_k = last['stoch_k']
             stoch_d = last['stoch_d']
             macd_val = last['macd']
@@ -120,7 +123,8 @@ async def run_bot():
             symbol_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
             if len(symbol_positions) == 0:
-                if trend_bullish and stoch_k < 20 and stoch_k > stoch_d and macd_val > macd_sig:
+                # Agresívnejšie podmienky (Stochastic pod 40 pre BUY, nad 60 pre SELL)
+                if trend_bullish and stoch_k < 40 and stoch_k > stoch_d:
                     entry = current_price
                     tp = entry + 6.0
                     sl = entry - 10.0
@@ -130,7 +134,7 @@ async def run_bot():
                     send_telegram(msg)
                     print(msg)
 
-                elif trend_bearish and stoch_k > 80 and stoch_k < stoch_d and macd_val < macd_sig:
+                elif trend_bearish and stoch_k > 60 and stoch_k < stoch_d:
                     entry = current_price
                     tp = entry - 6.0
                     sl = entry + 10.0
@@ -140,11 +144,11 @@ async def run_bot():
                     send_telegram(msg)
                     print(msg)
 
-            await asyncio.sleep(30)
+            await asyncio.sleep(15)
 
         except Exception as loop_error:
             print(f"Chyba v cykle: {loop_error}")
-            await asyncio.sleep(15)
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
     keep_alive()
