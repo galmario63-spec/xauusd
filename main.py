@@ -55,7 +55,7 @@ async def run_bot():
                 positions = await connection.get_positions()
                 current_time = time.time()
 
-                # Break-even a manažment otvorených pozícií
+                # Break-even manažment: ak zisk >= 3.0, posuň SL na openPrice + 1.0
                 for pos in positions:
                     if pos['symbol'] == SYMBOL and pos['type'] == 'POSITION_TYPE_BUY':
                         open_price = pos['openPrice']
@@ -64,16 +64,16 @@ async def run_bot():
                         bid = price_info.get('bid')
 
                         if bid and (bid - open_price) >= 3.0:
-                            if current_sl < open_price + 1.0:
-                                new_sl = open_price + 1.0
+                            target_sl = open_price + 1.0
+                            if current_sl < target_sl:
                                 await connection.modify_position(
-                                    position_id=pos['id'],
-                                    stop_loss=new_sl,
-                                    take_profit=pos.get('takeProfit', open_price + 15.0)
+                                    positionId=pos['id'],
+                                    stopLoss=target_sl,
+                                    takeProfit=pos.get('takeProfit', open_price + 15.0)
                                 )
-                                send_telegram("🔒 BE posunuté na +1!")
+                                send_telegram("🔒 BE aktívne: SL posunutý na +1!")
 
-                # Vstupná logika
+                # Vstupná logika: SL 12, TP 15
                 if len(positions) == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     ask = price_info.get('ask')
