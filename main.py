@@ -49,7 +49,7 @@ async def run_bot():
     await connection.connect()
     await connection.wait_synchronized()
     print("MetaApi je plne pripojené a synchronizované!")
-    send_telegram("🚀 *Riobot pre XAUUSD je pripojený a obchoduje!*")
+    send_telegram("🚀 *Riobot pre XAUUSD je pripojený a pripravený ihneď obchodovať!*")
 
     while True:
         try:
@@ -80,48 +80,38 @@ async def run_bot():
                             )
                             send_telegram(f"🛡️ *BREAK-EVEN*🔴 SELL obchod {ticket} posunutý na BE (+1).")
 
-            # Načítanie sviečok a stratégia
-            candles = await connection.get_candles(SYMBOL, timeframe='5m', count=100)
+            # Načítanie sviečok
+            candles = await connection.get_candles(SYMBOL, timeframe='5m', count=50)
             df = pd.DataFrame(candles)
 
-            if df.empty or len(df) < 50:
+            if df.empty or len(df) < 20:
                 await asyncio.sleep(15)
                 continue
 
-            df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
-            df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-
-            low_min = df['low'].rolling(window=14).min()
-            high_max = df['high'].rolling(window=14).max()
-            df['stoch_k'] = ((df['close'] - low_min) / (high_max - low_min)) * 100
-            df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+            # Rýchle EMA a jednoduché podmienky pre okamžitý vstup
+            df['ema20'] = df['close'].ewm(span=10, adjust=False).mean()
+            df['ema50'] = df['close'].ewm(span=30, adjust=False).mean()
 
             last = df.iloc[-2]
             current_price = df.iloc[-1]['close']
 
-            trend_bullish = last['ema20'] > last['ema50']
-            trend_bearish = last['ema20'] < last['ema50']
-            stoch_k = last['stoch_k']
-            stoch_d = last['stoch_d']
-
             symbol_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
+            # Ak nie je otvorený žiadny obchod, hneď ho otvoríme na základe aktuálneho smeru sviečky/EMA
             if len(symbol_positions) == 0:
-                if trend_bullish and stoch_k < 40 and stoch_k > stoch_d:
-                    entry = current_price
-                    tp = entry + 6.0
+                entry = current_price
+                
+                # Ak je kratšia EMA nad dlhšou, pustíme BUY, inak SELL, aby to okamžite naskočilo
+                if last['ema20'] >= last['ema50']:
+                    tp = entry + 5.0
                     sl = entry - 10.0
-                    
                     await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp)
                     msg = f"🟢 *XAUUSD BUY Obchod otvorený!*\nCena: {entry:.2f}\nTP: {tp:.2f}\nSL: {sl:.2f}"
                     send_telegram(msg)
                     print(msg)
-
-                elif trend_bearish and stoch_k > 60 and stoch_k < stoch_d:
-                    entry = current_price
-                    tp = entry - 6.0
+                else:
+                    tp = entry - 5.0
                     sl = entry + 10.0
-                    
                     await connection.create_market_sell_order(SYMBOL, LOT_SIZE, sl, tp)
                     msg = f"🔴 *XAUUSD SELL Obchod otvorený!*\nCena: {entry:.2f}\nTP: {tp:.2f}\nSL: {sl:.2f}"
                     send_telegram(msg)
