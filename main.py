@@ -69,21 +69,21 @@ async def run_bot():
                                 await connection.modify_position(
                                     positionId=pos['id'],
                                     stopLoss=target_sl,
-                                    takeProfit=pos.get('takeProfit', open_price + 15.0)
+                                    takeProfit=pos.get('takeProfit', open_price + 12.0)
                                 )
                                 send_telegram("🔒 BE aktívne: SL posunutý na +1!")
 
-                # Vstupná logika: SL 12, TP 15
+                # Vstupná logika: SL 15, TP 12
                 if len(positions) == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     ask = price_info.get('ask')
 
                     if ask:
-                        sl = ask - 12.0
-                        tp = ask + 15.0
+                        sl = ask - 15.0
+                        tp = ask + 12.0
                         await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stopLoss=sl, takeProfit=tp)
                         last_trade_time = current_time
-                        send_telegram("🚀 Riobot otvoril obchod (TP 15, SL 12)!")
+                        send_telegram("🚀 Riobot otvoril obchod (SL 15, TP 12)!")
 
                 await asyncio.sleep(5)
 
