@@ -7,7 +7,6 @@ from threading import Thread
 from metaapi_cloud_sdk import MetaApi
 import requests
 
-# Flask server pre udržanie živého stavu
 app = Flask('')
 
 @app.route('/')
@@ -22,7 +21,6 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# Konfigurácia z Environment Variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 METAAPI_TOKEN = os.getenv("METAAPI_TOKEN")
@@ -41,7 +39,6 @@ def send_telegram(message):
         print(f"Chyba Telegram: {e}")
 
 async def manage_open_trades(connection):
-    """Sleduje otvorené obchody a ak zisk dosiahne +3, posunie SL na Break-Even (+1)"""
     try:
         positions = await connection.get_positions()
         for pos in positions:
@@ -51,7 +48,6 @@ async def manage_open_trades(connection):
                 sl = pos.get('stopLoss', 0)
                 ticket = pos.get('id')
 
-                # Ak je to BUY obchod
                 if pos['type'] == 'POSITION_TYPE_BUY':
                     if profit >= 3.0 and sl < open_price + 1.0:
                         await connection.modify_position(
@@ -61,7 +57,6 @@ async def manage_open_trades(connection):
                         )
                         send_telegram(f"🛡️ *BREAK-EVEN*🟢 BUY obchod {ticket} posunutý na BE (+1).")
 
-                # Ak je to SELL obchod
                 elif pos['type'] == 'POSITION_TYPE_SELL':
                     if profit >= 3.0 and (sl > open_price - 1.0 or sl == 0):
                         await connection.modify_position(
@@ -77,9 +72,6 @@ async def run_bot():
     print("Riobot štartuje pripojenie na MetaApi...")
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
-    
-    if account.state != 'DEPLOYED':
-        await account.deploy()
     
     print("Čakám na pripojenie k MetaTrader API...")
     await account.wait_connected()
