@@ -30,14 +30,12 @@ LOT_SIZE = 0.01
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
-        print("Chýba Telegram token alebo chat ID!")
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        res = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=5)
-        print(f"Telegram odpoveď: {res.status_code}")
-    except Exception as e:
-        print(f"Chyba odoslania Telegram: {e}")
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=5)
+    except: 
+        pass
 
 async def run_bot():
     api = MetaApi(METAAPI_TOKEN)
@@ -46,16 +44,16 @@ async def run_bot():
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
-    send_telegram("🚀 *Riobot je pripojený, Telegram notifikácie sú aktívne!*")
+    send_telegram("🚀 *Riobot ide s bezpečnejším SL (-18) a TP (+12)!*")
 
     while True:
         try:
             positions = await connection.get_positions()
             
-            # Správa Break-Even
+            # Break-Even manažment
             for pos in positions:
                 if pos['symbol'] == SYMBOL:
-                    if pos.get('profit', 0) >= 3.0 and pos.get('stopLoss', 0) == 0:
+                    if pos.get('profit', 0) >= 5.0 and pos.get('stopLoss', 0) == 0:
                         op = pos.get('openPrice', 0)
                         sl = op + 1.0 if pos['type'] == 'POSITION_TYPE_BUY' else op - 1.0
                         await connection.modify_position(pos['id'], stop_loss=sl, take_profit=pos.get('takeProfit', 0))
@@ -69,12 +67,12 @@ async def run_bot():
                 ask = price_info.get('ask')
                 
                 if ask and bid:
-                    # Presné nastavenie TP (+6.0) a SL (-10.0)
-                    tp = ask + 6.0
-                    sl = ask - 10.0
+                    # Upravené hodnoty pre reálnu volatilitu zlata: TP +12.0, SL -18.0
+                    tp = ask + 12.0
+                    sl = ask - 18.0
                     await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl, tp)
                     
-                    msg = f"🟢 *XAUUSD BUY Obchod otvorený!*\nCena: {ask}\nTP: {tp:.2f}\nSL: {sl:.2f}"
+                    msg = f"🟢 *XAUUSD BUY Obchod (vylepšený SL)!*\nCena: {ask}\nTP: {tp:.2f}\nSL: {sl:.2f}"
                     send_telegram(msg)
                     print(msg)
 
