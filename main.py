@@ -47,9 +47,15 @@ async def run_bot():
             api = MetaApi(METAAPI_TOKEN)
             account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
             
+            if account.state != 'DEPLOYED':
+                await account.deploy()
+            
             await account.wait_connected()
             connection = account.get_rpc_connection()
-            await connection.connect()
+            
+            if not connection.connected:
+                await connection.connect()
+            
             await connection.wait_synchronized()
             
             send_telegram("🚀 Riobot úspešne naštartovaný a pripojený k BTCUSD!")
@@ -66,28 +72,29 @@ async def run_bot():
                         price_info = await connection.get_symbol_price(SYMBOL)
                         bid = price_info.get('bid')
 
-                        if bid and (bid - open_price) >= 3.0:
-                            target_sl = open_price + 1.0
+                        # Upravený posun na Break-Even (napr. pri zisku 100 bodov)
+                        if bid and (bid - open_price) >= 100.0:
+                            target_sl = open_price + 10.0
                             if current_sl < target_sl:
                                 await connection.modify_position(
                                     positionId=pos['id'],
-                                    stopLoss=target_sl,
-                                    takeProfit=pos.get('takeProfit', open_price + 5.0)
+                                    stop_loss=target_sl,
+                                    take_profit=pos.get('takeProfit', open_price + 300.0)
                                 )
-                                send_telegram("🔒 BE aktívne: SL posunutý na +1!")
+                                send_telegram("🔒 BE aktívne: SL posunutý do plusu!")
 
                 if len(positions) == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     ask = price_info.get('ask')
 
                     if ask:
-                        sl = ask - 8.0
-                        tp = ask + 5.0
+                        # Zväčšené rozstupy pre BTC: SL -150, TP +300
+                        sl = ask - 150.0
+                        tp = ask + 300.0
                         
-                        # Opravené na stop_loss a take_profit
                         await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                         last_trade_time = current_time
-                        send_telegram(f"🚀 Riobot otvoril BTC obchod (SL -8, TP +5)!")
+                        send_telegram(f"🚀 Riobot otvoril BTC obchod (SL -150, TP +300)!")
 
                 await asyncio.sleep(5)
 
