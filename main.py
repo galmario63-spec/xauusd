@@ -29,7 +29,7 @@ SYMBOL = "BTCUSD"
 LOT_SIZE = 0.01
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 300  # Zvýšené na 5 minút pauzu medzi obchodmi
+COOLDOWN_SECONDS = 300  # 5 minút pauza
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -53,9 +53,8 @@ async def run_bot():
             await account.wait_connected()
             connection = account.get_rpc_connection()
             
-            if not connection.connected:
-                await connection.connect()
-            
+            # Opravené: priamo zavoláme connect bez neexistujúceho atribútu
+            await connection.connect()
             await connection.wait_synchronized()
             
             send_telegram("🚀 Riobot úspešne naštartovaný a pripojený k BTCUSD!")
@@ -64,7 +63,6 @@ async def run_bot():
                 positions = await connection.get_positions()
                 current_time = time.time()
 
-                # Skontrolujeme, či už nejaká pozícia pre BTCUSD existuje
                 btc_positions_count = sum(1 for p in positions if p['symbol'] == SYMBOL)
 
                 for pos in positions:
@@ -85,7 +83,6 @@ async def run_bot():
                                 )
                                 send_telegram("🔒 BE aktívne: SL posunutý do plusu!")
 
-                # Otvorí nový obchod IBA vtedy, ak nie je ŽIADNA pozícia na BTC a uplynul 5-minútový cooldown
                 if btc_positions_count == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     ask = price_info.get('ask')
