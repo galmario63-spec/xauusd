@@ -59,49 +59,52 @@ async def run_bot():
             send_telegram("🚀 Riobot pripojený a stráži BTCUSD (0.1 lot)!")
 
             while True:
-                positions = await connection.get_positions()
-                current_time = time.time()
+                try:
+                    positions = await connection.get_positions()
+                    current_time = time.time()
 
-                btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
-                btc_positions_count = len(btc_positions)
+                    btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
+                    btc_positions_count = len(btc_positions)
 
-                # Break-Even: aktivácia pri zisku +4, posun SL na +1
-                for pos in btc_positions:
-                    if pos['type'] == 'POSITION_TYPE_BUY':
-                        open_price = pos['openPrice']
-                        current_sl = pos.get('stopLoss', 0)
-                        
+                    # Break-Even: aktivácia pri zisku +4, posun SL na +1
+                    for pos in btc_positions:
+                        if pos['type'] == 'POSITION_TYPE_BUY':
+                            open_price = pos['openPrice']
+                            current_sl = pos.get('stopLoss', 0)
+                            
+                            price_info = await connection.get_symbol_price(SYMBOL)
+                            bid = price_info.get('bid')
+
+                            if bid and (bid - open_price) >= 4.0:
+                                target_sl = open_price + 1.0
+                                if current_sl < target_sl:
+                                    await connection.modify_position(
+                                        positionId=pos['id'],
+                                        stop_loss=target_sl,
+                                        take_profit=pos.get('takeProfit', open_price + 10.0)
+                                    )
+                                    send_telegram("🔒 BE aktívne: SL posunutý na +1!")
+
+                    # Otvorenie obchodu: SL -8, TP +10
+                    if btc_positions_count == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                         price_info = await connection.get_symbol_price(SYMBOL)
-                        bid = price_info.get('bid')
+                        ask = price_info.get('ask')
 
-                        if bid and (bid - open_price) >= 4.0:
-                            target_sl = open_price + 1.0
-                            if current_sl < target_sl:
-                                await connection.modify_position(
-                                    positionId=pos['id'],
-                                    stop_loss=target_sl,
-                                    take_profit=pos.get('takeProfit', open_price + 10.0)
-                                )
-                                send_telegram("🔒 BE aktívne: SL posunutý na +1!")
+                        if ask:
+                            sl = ask - 8.0
+                            tp = ask + 10.0
+                            
+                            await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                            last_trade_time = current_time
+                            send_telegram(f"🚀 Riobot otvoril BTC obchod 0.1 lotu (SL -8, TP +10)!")
 
-                # Otvorenie obchodu: SL -8, TP +10
-                if btc_positions_count == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
-                    price_info = await connection.get_symbol_price(SYMBOL)
-                    ask = price_info.get('ask')
-
-                    if ask:
-                        sl = ask - 8.0
-                        tp = ask + 10.0
-                        
-                        await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                        last_trade_time = current_time
-                        send_telegram(f"🚀 Riobot otvoril BTC obchod 0.1 lotu (SL -8, TP +10)!")
+                except Exception as inner_e:
+                    print(f"Chyba v slučke obchodu: {inner_e}")
 
                 await asyncio.sleep(5)
 
         except Exception as e:
             print(f"Chyba pripojenia/behu: {e}")
-            send_telegram(f"⚠️ Riobot hlási chybu: {e}")
             await asyncio.sleep(15)
 
 if __name__ == "__main__":
