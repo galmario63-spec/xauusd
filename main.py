@@ -29,7 +29,7 @@ SYMBOL = "BTCUSD"
 LOT_SIZE = 0.01
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 30
+COOLDOWN_SECONDS = 300  # Zvýšené na 5 minút pauzu medzi obchodmi
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -64,6 +64,9 @@ async def run_bot():
                 positions = await connection.get_positions()
                 current_time = time.time()
 
+                # Skontrolujeme, či už nejaká pozícia pre BTCUSD existuje
+                btc_positions_count = sum(1 for p in positions if p['symbol'] == SYMBOL)
+
                 for pos in positions:
                     if pos['symbol'] == SYMBOL and pos['type'] == 'POSITION_TYPE_BUY':
                         open_price = pos['openPrice']
@@ -72,7 +75,6 @@ async def run_bot():
                         price_info = await connection.get_symbol_price(SYMBOL)
                         bid = price_info.get('bid')
 
-                        # Upravený posun na Break-Even (napr. pri zisku 100 bodov)
                         if bid and (bid - open_price) >= 100.0:
                             target_sl = open_price + 10.0
                             if current_sl < target_sl:
@@ -83,12 +85,12 @@ async def run_bot():
                                 )
                                 send_telegram("🔒 BE aktívne: SL posunutý do plusu!")
 
-                if len(positions) == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
+                # Otvorí nový obchod IBA vtedy, ak nie je ŽIADNA pozícia na BTC a uplynul 5-minútový cooldown
+                if btc_positions_count == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     ask = price_info.get('ask')
 
                     if ask:
-                        # Zväčšené rozstupy pre BTC: SL -150, TP +300
                         sl = ask - 150.0
                         tp = ask + 300.0
                         
