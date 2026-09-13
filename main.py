@@ -29,7 +29,7 @@ SYMBOL = "BTCUSD"
 LOT_SIZE = 0.1
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 300  # 5 minút pauza
+COOLDOWN_SECONDS = 300
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -62,11 +62,10 @@ async def run_bot():
                 positions = await connection.get_positions()
                 current_time = time.time()
 
-                # Nájdeme všetky pozície pre náš symbol
                 btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
                 btc_positions_count = len(btc_positions)
 
-                # Break-Even manažment: posun pri zisku 150 bodov
+                # Break-Even: aktivácia pri zisku +4, posun SL na +1
                 for pos in btc_positions:
                     if pos['type'] == 'POSITION_TYPE_BUY':
                         open_price = pos['openPrice']
@@ -75,29 +74,28 @@ async def run_bot():
                         price_info = await connection.get_symbol_price(SYMBOL)
                         bid = price_info.get('bid')
 
-                        if bid and (bid - open_price) >= 150.0:
-                            target_sl = open_price + 10.0
+                        if bid and (bid - open_price) >= 4.0:
+                            target_sl = open_price + 1.0
                             if current_sl < target_sl:
                                 await connection.modify_position(
                                     positionId=pos['id'],
                                     stop_loss=target_sl,
-                                    take_profit=pos.get('takeProfit', open_price + 600.0)
+                                    take_profit=pos.get('takeProfit', open_price + 10.0)
                                 )
-                                send_telegram("🔒 BE aktívne: SL posunutý do plusu!")
+                                send_telegram("🔒 BE aktívne: SL posunutý na +1!")
 
-                # Otvorenie obchodu IBA ak nie je ŽIADNA pozícia a prešiel cooldown
+                # Otvorenie obchodu: SL -8, TP +10
                 if btc_positions_count == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     ask = price_info.get('ask')
 
                     if ask:
-                        # Poriadna oprava: presne 300 bodov SL a 600 bodov TP
-                        sl = ask - 300.0
-                        tp = ask + 600.0
+                        sl = ask - 8.0
+                        tp = ask + 10.0
                         
                         await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                         last_trade_time = current_time
-                        send_telegram(f"🚀 Riobot otvoril BTC obchod 0.1 lotu (SL -300, TP +600)!")
+                        send_telegram(f"🚀 Riobot otvoril BTC obchod 0.1 lotu (SL -8, TP +10)!")
 
                 await asyncio.sleep(5)
 
