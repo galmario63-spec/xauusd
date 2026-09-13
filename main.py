@@ -46,8 +46,6 @@ def send_telegram(msg):
 def calculate_indicators(candles):
     df = pd.DataFrame(candles)
     close = df['close']
-    high = df['high']
-    low = df['low']
     
     df['ema50'] = close.ewm(span=50, adjust=False).mean()
     df['ema200'] = close.ewm(span=200, adjust=False).mean()
@@ -57,11 +55,7 @@ def calculate_indicators(candles):
     df['macd'] = exp1 - exp2
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
     
-    low_14 = low.rolling(window=14).min()
-    high_14 = high.rolling(window=14).max()
-    df['stoch_k'] = 100 * ((close - low_14) / (high_14 - low_14))
-    df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
-    
+    # Stochastik bol odstránený pre rýchlejšie reakcie
     return df.iloc[-1]
 
 async def run_bot():
@@ -82,20 +76,20 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený a stabilizovaný!")
+            send_telegram("🚀 Riobot beží s rýchlejšou stratégiou (bez Stochastiku)!")
             
             while True:
                 positions = await connection.get_positions()
                 btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
                 
-                # Sem patrí tvoja logika pre obchodovanie
+                # Sem patrí tvoja logika pre obchodovanie s novými, voľnejšími filtrami
                 
                 await asyncio.sleep(15)
                 
         except Exception as e:
             print(f"Chyba: {e}")
             send_telegram(f"⚠️ Riobot čaká 60s kvôli limitu/chybe...")
-            await asyncio.sleep(60) # Bezpečná pauza 60 sekúnd pri chybe
+            await asyncio.sleep(60)
 
 if __name__ == "__main__":
     asyncio.run(run_bot())
