@@ -12,7 +12,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Advanced Engine - Optimized"
+    return "Riobot Advanced Engine - Obojstranný režim (BUY & SELL)"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -32,7 +32,7 @@ LOT_SIZE = 0.1
 TIMEFRAME = "5m"
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 120  # Skrátené na 2 minúty pre častejšie príležitosti
+COOLDOWN_SECONDS = 120  # 2 minúty pauza medzi obchodmi
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -65,13 +65,7 @@ def calculate_indicators(candles):
     df['stoch_k'] = 100 * ((close - low_14) / (high_14 - low_14))
     df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
 
-    # Fibonacci (posledných 50 sviečok)
-    recent_high = high.tail(50).max()
-    recent_low = low.tail(50).min()
-    fib_618 = recent_high - (recent_high - recent_low) * 0.618
-    fib_382 = recent_high - (recent_high - recent_low) * 0.382 # Rozšírené pásmo pre Fibo
-
-    return df.iloc[-1], fib_382, fib_618
+    return df.iloc[-1]
 
 async def run_bot():
     global last_trade_time
@@ -89,7 +83,7 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
             
-            send_telegram("🚀 Riobot beží s optimalizovanou stratégiou (rýchlejší cooldown + voľnejšie filtre)!")
+            send_telegram("🚀 Riobot beží v obojstrannom režime (BUY & SELL aktívne)!")
 
             while True:
                 try:
@@ -99,15 +93,14 @@ async def run_bot():
                     btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
                     btc_positions_count = len(btc_positions)
 
-                    # Break-Even manažment: zisk +4 -> SL na +1
+                    # Break-Even manažment pre BUY aj SELL
                     for pos in btc_positions:
+                        open_price = pos['openPrice']
+                        current_sl = pos.get('stopLoss', 0)
+                        price_info = await connection.get_symbol_price(SYMBOL)
+                        
                         if pos['type'] == 'POSITION_TYPE_BUY':
-                            open_price = pos['openPrice']
-                            current_sl = pos.get('stopLoss', 0)
-                            
-                            price_info = await connection.get_symbol_price(SYMBOL)
                             bid = price_info.get('bid')
-
                             if bid and (bid - open_price) >= 4.0:
                                 target_sl = open_price + 1.0
                                 if current_sl < target_sl:
@@ -116,33 +109,53 @@ async def run_bot():
                                         stop_loss=target_sl,
                                         take_profit=pos.get('takeProfit', open_price + 10.0)
                                     )
-                                    send_telegram("🔒 BE aktívne: SL posunutý na +1!")
+                                    send_telegram("🔒 BE aktívne (BUY): SL posunutý na +1!")
+                                    
+                        elif pos['type'] == 'POSITION_TYPE_SELL':
+                            ask = price_info.get('ask')
+                            if ask and (open_price - ask) >= 4.0:
+                                target_sl = open_price - 1.0
+                                if current_sl > target_sl or current_sl == 0:
+                                    await connection.modify_position(
+                                        positionId=pos['id'],
+                                        stop_loss=target_sl,
+                                        take_profit=pos.get('takeProfit', open_price - 10.0)
+                                    )
+                                    send_telegram("🔒 BE aktívne (SELL): SL posunutý na +1!")
 
-                    # Vstupná logika s optimalizovanými filtrami
+                    # Obojstranná vstupná logika
                     if btc_positions_count == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                         candles = await connection.get_historical_candles(SYMBOL, TIMEFRAME, None, 200)
                         
                         if candles and len(candles) > 200:
-                            latest, fib_low, fib_high = calculate_indicators(candles)
+                            latest = calculate_indicators(candles)
                             price_info = await connection.get_symbol_price(SYMBOL)
                             ask = price_info.get('ask')
+                            bid = price_info.get('bid')
 
-                            if ask:
-                                # Optimalizované podmienky pre BUY:
-                                # 1. Trend: Cena nad EMA 50 (alebo veľmi blízko)
-                                # 2. Momentum: MACD rastie alebo je nad signálom
-                                # 3. Stochastic: Nie je v silnej prekúpenej zóne (< 85)
-                                trend_ok = ask >= (latest['ema50'] * 0.999)
-                                momentum_ok = latest['macd'] >= latest['macd_signal']
-                                stoch_ok = latest['stoch_k'] < 85
+                            if ask and bid:
+                                # Podmienky pre BUY
+                                buy_trend = ask >= (latest['ema50'] * 0.999)
+                                buy_momentum = latest['macd'] >= latest['macd_signal']
+                                buy_stoch = latest['stoch_k'] < 85
 
-                                if trend_ok and momentum_ok and stoch_ok:
+                                # Podmienky pre SELL (obrat na vrchole)
+                                sell_momentum = latest['macd'] <= latest['macd_signal']
+                                sell_stoch = latest['stoch_k'] > 85
+
+                                if buy_trend and buy_momentum and buy_stoch:
                                     sl = ask - 8.0
                                     tp = ask + 10.0
-                                    
                                     await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                                     last_trade_time = current_time
-                                    send_telegram(f"🎯 Riobot našiel príležitosť! Otvoril BUY (SL -8, TP +10).")
+                                    send_telegram("🎯 Riobot otvoril BUY (Trend pokračuje).")
+
+                                elif sell_stoch and sell_momentum:
+                                    sl = bid + 8.0
+                                    tp = bid - 10.0
+                                    await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                                    last_trade_time = current_time
+                                    send_telegram("🎯 Riobot otvoril SELL (Obrat na vrchole).")
 
                 except Exception as inner_e:
                     print(f"Chyba v obchodnej slučke: {inner_e}")
