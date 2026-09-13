@@ -12,7 +12,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Advanced Engine Live"
+    return "Riobot Advanced Engine - Optimized"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -29,10 +29,10 @@ METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 SYMBOL = "BTCUSD"
 LOT_SIZE = 0.1
-TIMEFRAME = "5m"  # 5-minútový graf
+TIMEFRAME = "5m"
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 300
+COOLDOWN_SECONDS = 120  # Skrátené na 2 minúty pre častejšie príležitosti
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -65,13 +65,13 @@ def calculate_indicators(candles):
     df['stoch_k'] = 100 * ((close - low_14) / (high_14 - low_14))
     df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
 
-    # Fibonacci / Swing (posledných 50 sviečok)
+    # Fibonacci (posledných 50 sviečok)
     recent_high = high.tail(50).max()
     recent_low = low.tail(50).min()
     fib_618 = recent_high - (recent_high - recent_low) * 0.618
-    fib_500 = recent_high - (recent_high - recent_low) * 0.500
+    fib_382 = recent_high - (recent_high - recent_low) * 0.382 # Rozšírené pásmo pre Fibo
 
-    return df.iloc[-1], fib_500, fib_618
+    return df.iloc[-1], fib_382, fib_618
 
 async def run_bot():
     global last_trade_time
@@ -89,7 +89,7 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
             
-            send_telegram("🚀 Riobot spustil pokročilú analýzu (EMA, MACD, Stoch, Fibo)!")
+            send_telegram("🚀 Riobot beží s optimalizovanou stratégiou (rýchlejší cooldown + voľnejšie filtre)!")
 
             while True:
                 try:
@@ -118,33 +118,31 @@ async def run_bot():
                                     )
                                     send_telegram("🔒 BE aktívne: SL posunutý na +1!")
 
-                    # Analýza a vstup podľa indikátorov
+                    # Vstupná logika s optimalizovanými filtrami
                     if btc_positions_count == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                         candles = await connection.get_historical_candles(SYMBOL, TIMEFRAME, None, 200)
                         
                         if candles and len(candles) > 200:
-                            latest, fib_50, fib_61 = calculate_indicators(candles)
+                            latest, fib_low, fib_high = calculate_indicators(candles)
                             price_info = await connection.get_symbol_price(SYMBOL)
                             ask = price_info.get('ask')
 
                             if ask:
-                                # Podmienky pre BUY konfluenciu:
-                                # 1. Trend: Cena je nad EMA 50
-                                # 2. Momentum: MACD je nad signálnou líniou
-                                # 3. Stochastic: Nie je v prekúpenej zóne (napr. pod 80)
-                                # 4. Korekcia: Cena je v blízkosti Fibonacciho zóny (medzi 50% a 61.8%)
-                                trend_ok = ask > latest['ema50']
-                                momentum_ok = latest['macd'] > latest['macd_signal']
-                                stoch_ok = latest['stoch_k'] < 80 and latest['stoch_k'] > latest['stoch_d']
-                                fib_ok = fib_61 <= ask <= fib_50
+                                # Optimalizované podmienky pre BUY:
+                                # 1. Trend: Cena nad EMA 50 (alebo veľmi blízko)
+                                # 2. Momentum: MACD rastie alebo je nad signálom
+                                # 3. Stochastic: Nie je v silnej prekúpenej zóne (< 85)
+                                trend_ok = ask >= (latest['ema50'] * 0.999)
+                                momentum_ok = latest['macd'] >= latest['macd_signal']
+                                stoch_ok = latest['stoch_k'] < 85
 
-                                if trend_ok and momentum_ok and stoch_ok:  # Pridat fib_ok pre prísnejšie Fibo
+                                if trend_ok and momentum_ok and stoch_ok:
                                     sl = ask - 8.0
                                     tp = ask + 10.0
                                     
                                     await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                                     last_trade_time = current_time
-                                    send_telegram(f"🎯 Riobot našiel silný signál! Otvoril BUY (SL -8, TP +10).")
+                                    send_telegram(f"🎯 Riobot našiel príležitosť! Otvoril BUY (SL -8, TP +10).")
 
                 except Exception as inner_e:
                     print(f"Chyba v obchodnej slučke: {inner_e}")
