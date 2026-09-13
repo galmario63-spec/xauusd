@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot XAUUSD Safe Engine"
+    return "Riobot BTCUSD Safe Engine"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -24,7 +24,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 METAAPI_TOKEN = os.getenv("METAAPI_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
-SYMBOL = "XAUUSD"
+
+SYMBOL = "BTCUSD"
 LOT_SIZE = 0.01
 
 last_trade_time = 0
@@ -49,7 +50,8 @@ async def run_bot():
             connection = account.get_rpc_connection()
             await connection.connect()
             await connection.wait_synchronized()
-            send_telegram("Riobot úspešne naštartovaný!")
+            
+            send_telegram("🚀 Riobot úspešne naštartovaný pre BTCUSD!")
 
             while True:
                 positions = await connection.get_positions()
@@ -60,6 +62,7 @@ async def run_bot():
                     if pos['symbol'] == SYMBOL and pos['type'] == 'POSITION_TYPE_BUY':
                         open_price = pos['openPrice']
                         current_sl = pos.get('stopLoss', 0)
+                        
                         price_info = await connection.get_symbol_price(SYMBOL)
                         bid = price_info.get('bid')
 
@@ -69,21 +72,22 @@ async def run_bot():
                                 await connection.modify_position(
                                     positionId=pos['id'],
                                     stopLoss=target_sl,
-                                    takeProfit=pos.get('takeProfit', open_price + 12.0)
+                                    takeProfit=pos.get('takeProfit', open_price + 5.0)
                                 )
                                 send_telegram("🔒 BE aktívne: SL posunutý na +1!")
 
-                # Vstupná logika: SL 15, TP 12
+                # Vstupná logika pre 1 obchod: SL -8, TP +5
                 if len(positions) == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     ask = price_info.get('ask')
 
                     if ask:
-                        sl = ask - 15.0
-                        tp = ask + 12.0
+                        sl = ask - 8.0
+                        tp = ask + 5.0
+                        
                         await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stopLoss=sl, takeProfit=tp)
                         last_trade_time = current_time
-                        send_telegram("🚀 Riobot otvoril obchod (SL 15, TP 12)!")
+                        send_telegram(f"🚀 Riobot otvoril BTC obchod (SL -8, TP +5)!")
 
                 await asyncio.sleep(5)
 
