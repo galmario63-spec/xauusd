@@ -26,10 +26,10 @@ METAAPI_TOKEN = os.getenv("M_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 SYMBOL = "BTCUSD"
-LOT_SIZE = 0.1  # Zvýšený lot na 0.1
+LOT_SIZE = 0.1
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 300  # 5 minút pauza medzi obchodmi
+COOLDOWN_SECONDS = 300  # 5 minút pauza
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -56,23 +56,25 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
             
-            send_telegram("🚀 Riobot úspešne naštartovaný a pripojený k BTCUSD (Lot: 0.1)!")
+            send_telegram("🚀 Riobot pripojený a stráži BTCUSD (0.1 lot)!")
 
             while True:
                 positions = await connection.get_positions()
                 current_time = time.time()
 
-                btc_positions_count = sum(1 for p in positions if p['symbol'] == SYMBOL)
+                # Nájdeme všetky pozície pre náš symbol
+                btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
+                btc_positions_count = len(btc_positions)
 
-                for pos in positions:
-                    if pos['symbol'] == SYMBOL and pos['type'] == 'POSITION_TYPE_BUY':
+                # Break-Even manažment: posun pri zisku 150 bodov
+                for pos in btc_positions:
+                    if pos['type'] == 'POSITION_TYPE_BUY':
                         open_price = pos['openPrice']
                         current_sl = pos.get('stopLoss', 0)
                         
                         price_info = await connection.get_symbol_price(SYMBOL)
                         bid = price_info.get('bid')
 
-                        # Break-Even manažment pre 0.1 lot: posun pri zisku 150 bodov
                         if bid and (bid - open_price) >= 150.0:
                             target_sl = open_price + 10.0
                             if current_sl < target_sl:
@@ -81,15 +83,15 @@ async def run_bot():
                                     stop_loss=target_sl,
                                     take_profit=pos.get('takeProfit', open_price + 600.0)
                                 )
-                                send_telegram("🔒 BE aktívne: SL posunutý do plusu na 0.1 lote!")
+                                send_telegram("🔒 BE aktívne: SL posunutý do plusu!")
 
-                # Otvorenie obchodu, ak žiadna pozícia nebeží a prešiel cooldown
+                # Otvorenie obchodu IBA ak nie je ŽIADNA pozícia a prešiel cooldown
                 if btc_positions_count == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     ask = price_info.get('ask')
 
                     if ask:
-                        # Rozumné intradenné rozstupy pre 0.1 lot: SL -300, TP +600
+                        # Poriadna oprava: presne 300 bodov SL a 600 bodov TP
                         sl = ask - 300.0
                         tp = ask + 600.0
                         
@@ -101,7 +103,7 @@ async def run_bot():
 
         except Exception as e:
             print(f"Chyba pripojenia/behu: {e}")
-            send_telegram(f"⚠️ Riobot hlási chybu/výpadok pripojenia: {e}")
+            send_telegram(f"⚠️ Riobot hlási chybu: {e}")
             await asyncio.sleep(15)
 
 if __name__ == "__main__":
