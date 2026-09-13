@@ -1,3 +1,4 @@
+
 import os
 import time
 import asyncio
@@ -12,7 +13,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Advanced Engine - Obojstranný režim (BUY & SELL)"
+    return "Riobot Advanced Engine - Obojstranný režim (Stabilizovaný)"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -32,7 +33,7 @@ LOT_SIZE = 0.1
 TIMEFRAME = "5m"
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 120  # 2 minúty pauza medzi obchodmi
+COOLDOWN_SECONDS = 120
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -49,17 +50,14 @@ def calculate_indicators(candles):
     high = df['high']
     low = df['low']
 
-    # EMA 50 a 200
     df['ema50'] = close.ewm(span=50, adjust=False).mean()
     df['ema200'] = close.ewm(span=200, adjust=False).mean()
 
-    # MACD
     exp1 = close.ewm(span=12, adjust=False).mean()
     exp2 = close.ewm(span=26, adjust=False).mean()
     df['macd'] = exp1 - exp2
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
 
-    # Stochastic (14, 3, 3)
     low_14 = low.rolling(window=14).min()
     high_14 = high.rolling(window=14).max()
     df['stoch_k'] = 100 * ((close - low_14) / (high_14 - low_14))
@@ -80,10 +78,15 @@ async def run_bot():
             await account.wait_connected()
             connection = account.get_rpc_connection()
             
-            await connection.connect()
-            await connection.wait_synchronized()
+            try:
+                await connection.connect()
+                await connection.wait_synchronized()
+            except Exception as conn_err:
+                print(f"Chyba pri synchronizácii pripojenia: {conn_err}")
+                await asyncio.sleep(10)
+                continue
             
-            send_telegram("🚀 Riobot beží v obojstrannom režime (BUY & SELL aktívne)!")
+            send_telegram("🚀 Riobot beží v stabilizovanom obojstrannom režime!")
 
             while True:
                 try:
@@ -93,7 +96,7 @@ async def run_bot():
                     btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
                     btc_positions_count = len(btc_positions)
 
-                    # Break-Even manažment pre BUY aj SELL
+                    # Break-Even manažment
                     for pos in btc_positions:
                         open_price = pos['openPrice']
                         current_sl = pos.get('stopLoss', 0)
@@ -123,7 +126,7 @@ async def run_bot():
                                     )
                                     send_telegram("🔒 BE aktívne (SELL): SL posunutý na +1!")
 
-                    # Obojstranná vstupná logika
+                    # Vstupná logika
                     if btc_positions_count == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                         candles = await connection.get_historical_candles(SYMBOL, TIMEFRAME, None, 200)
                         
@@ -134,12 +137,10 @@ async def run_bot():
                             bid = price_info.get('bid')
 
                             if ask and bid:
-                                # Podmienky pre BUY
                                 buy_trend = ask >= (latest['ema50'] * 0.999)
                                 buy_momentum = latest['macd'] >= latest['macd_signal']
                                 buy_stoch = latest['stoch_k'] < 85
 
-                                # Podmienky pre SELL (obrat na vrchole)
                                 sell_momentum = latest['macd'] <= latest['macd_signal']
                                 sell_stoch = latest['stoch_k'] > 85
 
@@ -163,7 +164,7 @@ async def run_bot():
                 await asyncio.sleep(10)
 
         except Exception as e:
-            print(f"Chyba pripojenia: {e}")
+            print(f"Chyba pripojenia (MetaAPI): {e}")
             await asyncio.sleep(15)
 
 if __name__ == "__main__":
