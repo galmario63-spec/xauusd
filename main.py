@@ -32,7 +32,7 @@ LOT_SIZE = 0.1
 TIMEFRAME = "5m"
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 30  # Rýchlejší reštart po obchode
+COOLDOWN_SECONDS = 30
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -66,41 +66,36 @@ def calculate_indicators(candles):
 
 async def run_bot():
     global last_trade_time
-    keep_alive() # Spustenie Flask servera
-    
-    # Inicializácia MetaApi sa urobí IBA RAZ pred hlavnou slučkou
-    api = MetaApi(METAAPI_TOKEN)
-    account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
-    
-    if account.state != 'DEPLOYED':
-        await account.deploy()
-        
-    await account.wait_connected()
-    connection = account.get_rpc_connection()
-    
-    try:
-        await connection.connect()
-        await connection.wait_synchronized()
-    except Exception as conn_err:
-        print(f"Chyba pri pripojení: {conn_err}")
-        
-    send_telegram("🚀 Riobot beží s opravenou inicializáciou!")
+    keep_alive()
     
     while True:
         try:
-            positions = await connection.get_positions()
-            current_time = time.time()
+            api = MetaApi(METAAPI_TOKEN)
+            account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
             
-            btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
-            btc_positions_count = len(btc_positions)
+            if account.state != 'DEPLOYED':
+                await account.deploy()
+                
+            await account.wait_connected()
+            connection = account.get_rpc_connection()
             
-            # Sem patrí tvoja obchodná logika pre analýzu sviečok a vstup
+            await connection.connect()
+            await connection.wait_synchronized()
+                
+            send_telegram("🚀 Riobot pripojený a stabilizovaný!")
             
-            await asyncio.sleep(15) # Kontrola každých 15 sekúnd
-            
+            while True:
+                positions = await connection.get_positions()
+                btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
+                
+                # Sem patrí tvoja logika pre obchodovanie
+                
+                await asyncio.sleep(15)
+                
         except Exception as e:
-            print(f"Chyba v slučke: {e}")
-            await asyncio.sleep(10)
+            print(f"Chyba: {e}")
+            send_telegram(f"⚠️ Riobot čaká 60s kvôli limitu/chybe...")
+            await asyncio.sleep(60) # Bezpečná pauza 60 sekúnd pri chybe
 
 if __name__ == "__main__":
     asyncio.run(run_bot())
