@@ -46,12 +46,14 @@ async def run_bot():
         try:
             api = MetaApi(METAAPI_TOKEN)
             account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
-            await account.wait_connected()
+            
+            # Počkáme na pripojenie s timeoutom
+            await account.wait_connected(timeout=30)
             connection = account.get_rpc_connection()
             await connection.connect()
-            await connection.wait_synchronized()
+            await connection.wait_synchronized(timeout=30)
             
-            send_telegram("🚀 Riobot úspešne naštartovaný pre BTCUSD!")
+            send_telegram("🚀 Riobot úspešne naštartovaný a pripojený k BTCUSD!")
 
             while True:
                 positions = await connection.get_positions()
@@ -92,7 +94,8 @@ async def run_bot():
                 await asyncio.sleep(5)
 
         except Exception as e:
-            print(f"Chyba: {e}")
+            print(f"Chyba pripojenia/behu: {e}")
+            send_telegram(f"⚠️ Riobot hlási chybu/výpadok pripojenia: {e}")
             await asyncio.sleep(15)
 
 if __name__ == "__main__":
