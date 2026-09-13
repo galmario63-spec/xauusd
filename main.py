@@ -26,10 +26,10 @@ METAAPI_TOKEN = os.getenv("M_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 SYMBOL = "BTCUSD"
-LOT_SIZE = 0.01
+LOT_SIZE = 0.1  # Zvýšený lot na 0.1
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 300  # 5 minút pauza
+COOLDOWN_SECONDS = 300  # 5 minút pauza medzi obchodmi
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -53,11 +53,10 @@ async def run_bot():
             await account.wait_connected()
             connection = account.get_rpc_connection()
             
-            # Opravené: priamo zavoláme connect bez neexistujúceho atribútu
             await connection.connect()
             await connection.wait_synchronized()
             
-            send_telegram("🚀 Riobot úspešne naštartovaný a pripojený k BTCUSD!")
+            send_telegram("🚀 Riobot úspešne naštartovaný a pripojený k BTCUSD (Lot: 0.1)!")
 
             while True:
                 positions = await connection.get_positions()
@@ -73,27 +72,30 @@ async def run_bot():
                         price_info = await connection.get_symbol_price(SYMBOL)
                         bid = price_info.get('bid')
 
-                        if bid and (bid - open_price) >= 100.0:
+                        # Break-Even manažment pre 0.1 lot: posun pri zisku 150 bodov
+                        if bid and (bid - open_price) >= 150.0:
                             target_sl = open_price + 10.0
                             if current_sl < target_sl:
                                 await connection.modify_position(
                                     positionId=pos['id'],
                                     stop_loss=target_sl,
-                                    take_profit=pos.get('takeProfit', open_price + 300.0)
+                                    take_profit=pos.get('takeProfit', open_price + 600.0)
                                 )
-                                send_telegram("🔒 BE aktívne: SL posunutý do plusu!")
+                                send_telegram("🔒 BE aktívne: SL posunutý do plusu na 0.1 lote!")
 
+                # Otvorenie obchodu, ak žiadna pozícia nebeží a prešiel cooldown
                 if btc_positions_count == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     ask = price_info.get('ask')
 
                     if ask:
-                        sl = ask - 150.0
-                        tp = ask + 300.0
+                        # Rozumné intradenné rozstupy pre 0.1 lot: SL -300, TP +600
+                        sl = ask - 300.0
+                        tp = ask + 600.0
                         
                         await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                         last_trade_time = current_time
-                        send_telegram(f"🚀 Riobot otvoril BTC obchod (SL -150, TP +300)!")
+                        send_telegram(f"🚀 Riobot otvoril BTC obchod 0.1 lotu (SL -300, TP +600)!")
 
                 await asyncio.sleep(5)
 
