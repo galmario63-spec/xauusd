@@ -20,10 +20,11 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-METAAPI_TOKEN = os.getenv("METAAPI_TOKEN")
-METAAPI_ACCOUNT_ID = os.getenv("METAAPI_ACCOUNT_ID")
+# Načítanie cez nové skrátené premenné pre Render
+TELEGRAM_TOKEN = os.getenv("T_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("T_CHAT")
+METAAPI_TOKEN = os.getenv("M_TOKEN")
+METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 SYMBOL = "BTCUSD"
 LOT_SIZE = 0.01
