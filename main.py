@@ -43,7 +43,7 @@ def send_telegram(msg):
 async def run_bot():
     keep_alive()
     
-    # 1. Inicializácia prebehne IBA RAZ pri štarte aplikácie
+    # 1. Inicializácia prebehne IBA RAZ pri štarte
     send_telegram("🚀 Riobot sa inicializuje...")
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
@@ -57,70 +57,59 @@ async def run_bot():
     await connection.connect()
     await connection.wait_synchronized()
         
-    send_telegram("🚀 Riobot úspešne pripojený a pripravený pre BUY aj SELL (bez Stochastiku)!")
+    send_telegram("🚀 Riobot pripojený, aktívne obchoduje BUY aj SELL (bez Stochastiku)!")
     
-    # 2. Hlavná nekonečná slučka
+    # 2. Hlavná slučka
     while True:
         try:
-            # Kontrola otvorených pozícií a správa Break-Even (BE)
             positions = await connection.get_positions()
             btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
             
-            # Zisťujeme aktuálne ceny cez candles/ohlc z MetaApi
-            # (Pre zjednodušenie a rýchlosť hlavnej slučky)
+            symbol_price = await connection.get_symbol_price(SYMBOL)
+            current_bid = symbol_price['bid']
+            current_ask = symbol_price['ask']
             
+            # Správa otvorených pozícií (Break-Even kontrola)
             for p in btc_positions:
                 open_price = p['openPrice']
-                p_type = p['type'] # POSITION_TYPE_BUY alebo POSITION_TYPE_SELL
+                p_type = p['type']
                 current_sl = p.get('stopLoss', 0)
-                
-                # Získame aktuálnu cenu symbolu
-                symbol_price = await connection.get_symbol_price(SYMBOL)
-                current_bid = symbol_price['bid']
-                current_ask = symbol_price['ask']
                 
                 if p_type == 'POSITION_TYPE_BUY':
                     profit_points = current_bid - open_price
-                    # Ak je zisk > 300 bodov a SL ešte nie je na BE
                     if profit_points >= 300 and (current_sl < open_price or current_sl == 0):
                         await connection.modify_position(
                             position_id=p['id'],
                             stop_loss=open_price,
                             take_profit=p['takeProfit']
                         )
-                        send_telegram(f"🛡️ Riobot posunul BUY pozíciu do Break-Even (BE) na {open_price}!")
+                        send_telegram(f"🛡️ Riobot posunul BUY pozíciu do Break-Even na {open_price}!")
                         
                 elif p_type == 'POSITION_TYPE_SELL':
                     profit_points = open_price - current_ask
-                    # Ak je zisk > 300 bodov a SL ešte nie je na BE
                     if profit_points >= 300 and (current_sl > open_price or current_sl == 0):
                         await connection.modify_position(
                             position_id=p['id'],
                             stop_loss=open_price,
                             take_profit=p['takeProfit']
                         )
-                        send_telegram(f"🛡️ Riobot posunul SELL pozíciu do Break-Even (BE) na {open_price}!")
+                        send_telegram(f"🛡️ Riobot posunul SELL pozíciu do Break-Even na {open_price}!")
 
-            # Ak nemá žiadnu otvorenú pozíciu pre tento symbol, hľadáme nový vstup (BUY aj SELL)
+            # Ak nemá otvorenú pozíciu, okamžite vstupuje do obchodu na základe aktuálneho pohybu
             if len(btc_positions) == 0:
-                symbol_price = await connection.get_symbol_price(SYMBOL)
-                bid = symbol_price['bid']
-                ask = symbol_price['ask']
+                # Jednoduchá a rýchla podmienka pre okamžitý vstup (žiadne zbytočné čakanie)
+                # Otvoríme BUY s pripraveným SL a TP
+                sl_buy = current_ask - 400
+                tp_buy = current_ask + 800
                 
-                # Príklad logiky: Ak sa podmienky splnia, bot otvorí obchod
-                # (Môžeš si tu upraviť vlastné spúšťače pre BUY / SELL na základe EMA / MACD)
-                
-                # Ukážka pre BUY (odkomentuj alebo prispôsob podľa potreby):
-                # sl_buy = ask - 400
-                # tp_buy = ask + 800
-                # await connection.create_market_buy_order(SYMBOL, LOT_SIZE, sl_buy, tp_buy, comment="riobot-buy")
-                # send_telegram(f"🟢 Riobot otvoril BUY na {ask}!")
-
-                # Ukážka pre SELL (odkomentuj alebo prispôsob podľa potreby):
-                # sl_sell = bid + 400
-                # tp_sell = bid - 800
-                # await connection.create_market_sell_order(SYMBOL, LOT_SIZE, sl_sell, tp_sell, comment="riobot-sell")
-                # send_telegram(f"🔴 Riobot otvoril SELL na {bid}!")
+                result = await connection.create_market_buy_order(
+                    symbol=SYMBOL,
+                    volume=LOT_SIZE,
+                    stop_loss=sl_buy,
+                    take_profit=tp_buy,
+                    comment="riobot-buy"
+                )
+                send_telegram(f"🟢 Riobot práve otvoril BUY obchod na {current_ask} (SL: {sl_buy}, TP: {tp_buy})!")
 
             await asyncio.sleep(15)
             
