@@ -32,7 +32,7 @@ LOT_SIZE = 0.1
 TIMEFRAME = "5m"
 
 last_trade_time = 0
-COOLDOWN_SECONDS = 30  # Znížené z 120 na 30 sekúnd pre rýchlejší reštart
+COOLDOWN_SECONDS = 30  # Rýchlejší reštart po obchode
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -68,43 +68,38 @@ async def run_bot():
     global last_trade_time
     keep_alive() # Spustenie Flask servera
     
+    # Inicializácia MetaApi sa urobí IBA RAZ pred hlavnou slučkou
+    api = MetaApi(METAAPI_TOKEN)
+    account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
+    
+    if account.state != 'DEPLOYED':
+        await account.deploy()
+        
+    await account.wait_connected()
+    connection = account.get_rpc_connection()
+    
+    try:
+        await connection.connect()
+        await connection.wait_synchronized()
+    except Exception as conn_err:
+        print(f"Chyba pri pripojení: {conn_err}")
+        
+    send_telegram("🚀 Riobot beží s opravenou inicializáciou!")
+    
     while True:
         try:
-            api = MetaApi(METAAPI_TOKEN)
-            account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
+            positions = await connection.get_positions()
+            current_time = time.time()
             
-            if account.state != 'DEPLOYED':
-                await account.deploy()
-                
-            await account.wait_connected()
-            connection = account.get_rpc_connection()
+            btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
+            btc_positions_count = len(btc_positions)
             
-            try:
-                await connection.connect()
-                await connection.wait_synchronized()
-            except Exception as conn_err:
-                print(f"Chyba pri synchronizácii pripojenia: {conn_err}")
-                await asyncio.sleep(10)
-                continue
-                
-            send_telegram("🚀 Riobot beží v aktualizovanom režime!")
+            # Sem patrí tvoja obchodná logika pre analýzu sviečok a vstup
             
-            while True:
-                positions = await connection.get_positions()
-                current_time = time.time()
-                
-                btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
-                btc_positions_count = len(btc_positions)
-                
-                # Tu pokračuje tvoja logika pre získanie sviečok, volanie calculate_indicators
-                # a vyhodnotenie podmienok pre vstup. 
-                # Ak chceš uvoľniť filtre, skontroluj, či podmienky vyžadujú AND (všetko platí) 
-                # alebo ich môžeš zmeniť na OR, prípadne vynechať napr. Stochastik.
-                
-                await asyncio.sleep(15) # Kontrola každých 15 sekúnd
-                
+            await asyncio.sleep(15) # Kontrola každých 15 sekúnd
+            
         except Exception as e:
-            print(f"Hlavná chyba v cykle bota: {e}")
+            print(f"Chyba v slučke: {e}")
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
