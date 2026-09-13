@@ -20,7 +20,6 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# Načítanie cez nové skrátené premenné pre Render
 TELEGRAM_TOKEN = os.getenv("T_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("T_CHAT")
 METAAPI_TOKEN = os.getenv("M_TOKEN")
@@ -48,11 +47,11 @@ async def run_bot():
             api = MetaApi(METAAPI_TOKEN)
             account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
             
-            # Počkáme na pripojenie s timeoutom
-            await account.wait_connected(timeout=30)
+            # Opravené: odstránený nepodporovaný parameter timeout
+            await account.wait_connected()
             connection = account.get_rpc_connection()
             await connection.connect()
-            await connection.wait_synchronized(timeout=30)
+            await connection.wait_synchronized()
             
             send_telegram("🚀 Riobot úspešne naštartovaný a pripojený k BTCUSD!")
 
@@ -60,7 +59,6 @@ async def run_bot():
                 positions = await connection.get_positions()
                 current_time = time.time()
 
-                # Break-even manažment: ak zisk >= 3.0, posuň SL na openPrice + 1.0
                 for pos in positions:
                     if pos['symbol'] == SYMBOL and pos['type'] == 'POSITION_TYPE_BUY':
                         open_price = pos['openPrice']
@@ -79,7 +77,6 @@ async def run_bot():
                                 )
                                 send_telegram("🔒 BE aktívne: SL posunutý na +1!")
 
-                # Vstupná logika pre 1 obchod: SL -8, TP +5
                 if len(positions) == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
                     price_info = await connection.get_symbol_price(SYMBOL)
                     ask = price_info.get('ask')
