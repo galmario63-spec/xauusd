@@ -47,7 +47,6 @@ async def run_bot():
             api = MetaApi(METAAPI_TOKEN)
             account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
             
-            # Opravené: odstránený nepodporovaný parameter timeout
             await account.wait_connected()
             connection = account.get_rpc_connection()
             await connection.connect()
@@ -85,7 +84,8 @@ async def run_bot():
                         sl = ask - 8.0
                         tp = ask + 5.0
                         
-                        await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stopLoss=sl, takeProfit=tp)
+                        # Opravené na stop_loss a take_profit
+                        await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                         last_trade_time = current_time
                         send_telegram(f"🚀 Riobot otvoril BTC obchod (SL -8, TP +5)!")
 
