@@ -1,7 +1,6 @@
 import os
 import time
 import asyncio
-from datetime import datetime
 from flask import Flask
 from threading import Thread
 from metaapi_cloud_sdk import MetaApi
@@ -39,7 +38,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def run_bot():
-    send_telegram("🚀 Riobot štartuje s ladičením chýb...")
+    send_telegram("🚀 Riobot štartuje na čistú cenu...")
     
     while True:
         try:
@@ -54,12 +53,15 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený a sleduje chyby!")
+            send_telegram("🚀 Riobot pripojený a páli na základe cien!")
+            
+            last_btc = None
+            last_gold = None
             
             while True:
                 try:
                     positions = await connection.get_positions()
-                except Exception as pos_err:
+                except Exception:
                     await asyncio.sleep(3)
                     continue
                 
@@ -67,42 +69,43 @@ async def run_bot():
                 gold_positions = [p for p in positions if p['symbol'] == 'XAUUSD']
 
                 try:
-                    candles_gold = await connection.get_candles('XAUUSD', timeframe='5m', limit=3)
-                    candles_btc = await connection.get_candles('BTCUSD', timeframe='5m', limit=3)
+                    # Zlato cena
+                    gold_price = await connection.get_symbol_price('XAUUSD')
+                    g_bid = gold_price['bid']
                     
-                    # Zlato
-                    if len(gold_positions) == 0 and len(candles_gold) >= 2:
-                        c_curr = candles_gold[-1]
-                        symbol_price = await connection.get_symbol_price('XAUUSD')
-                        if c_curr['close'] > c_curr['open']:
-                            ask = symbol_price['ask']
+                    if len(gold_positions) == 0 and last_gold is not None:
+                        if g_bid > last_gold:
+                            ask = gold_price['ask']
                             await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=ask - 14, take_profit=ask + 10)
                             send_telegram(f"🟢 XAUUSD BUY!")
-                        elif c_curr['close'] < c_curr['open']:
-                            bid = symbol_price['bid']
+                        elif g_bid < last_gold:
+                            bid = gold_price['bid']
                             await connection.create_market_sell_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=bid + 14, take_profit=bid - 10)
                             send_telegram(f"🔴 XAUUSD SELL!")
+                    last_gold = g_bid
 
-                    # BTC
-                    if len(btc_positions) == 0 and len(candles_btc) >= 2:
-                        c_curr = candles_btc[-1]
-                        symbol_price = await connection.get_symbol_price('BTCUSD')
-                        if c_curr['close'] > c_curr['open']:
-                            ask = symbol_price['ask']
+                    # BTC cena
+                    btc_price = await connection.get_symbol_price('BTCUSD')
+                    b_bid = btc_price['bid']
+                    
+                    if len(btc_positions) == 0 and last_btc is not None:
+                        if b_bid > last_btc:
+                            ask = btc_price['ask']
                             await connection.create_market_buy_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=ask - 100, take_profit=ask + 150)
                             send_telegram(f"🟢 BTCUSD BUY!")
-                        elif c_curr['close'] < c_curr['open']:
-                            bid = symbol_price['bid']
+                        elif b_bid < last_btc:
+                            bid = btc_price['bid']
                             await connection.create_market_sell_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=bid + 100, take_profit=bid - 150)
                             send_telegram(f"🔴 BTCUSD SELL!")
+                    last_btc = b_bid
                             
-                except Exception as candle_err:
-                    send_telegram(f"⚠️ Chyba bota: {str(candle_err)[:100]}")
+                except Exception as err:
+                    send_telegram(f"⚠️ Chyba: {str(err)[:80]}")
 
                 await asyncio.sleep(3)
                 
         except Exception as e:
-            send_telegram(f"⚠️ Výpadok spojenia: {str(e)[:100]}")
+            send_telegram(f"⚠️ Výpadok: {str(e)[:80]}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
