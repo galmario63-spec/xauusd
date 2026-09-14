@@ -1,7 +1,7 @@
 import os
 import time
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
 import pytz
 from flask import Flask
 from threading import Thread
@@ -12,7 +12,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Fast-Trigger Engine - Online"
+    return "Riobot Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -42,26 +42,19 @@ def send_telegram(msg):
 def is_safe_to_trade():
     local_tz = pytz.timezone('Europe/Bratislava')
     now = datetime.now(local_tz)
-    
     weekday = now.weekday()
     hour = now.hour
     minute = now.minute
     current_time_minutes = hour * 60 + minute
 
-    if weekday >= 5:
-        return False
-    if weekday == 4 and hour >= 18:
-        return False
-    if weekday == 0 and current_time_minutes < 15:
-        return False
-    if 840 <= current_time_minutes <= 1020:
-        return False
-
+    if weekday >= 5: return False
+    if weekday == 4 and hour >= 18: return False
+    if weekday == 0 and current_time_minutes < 15: return False
+    if 840 <= current_time_minutes <= 1020: return False
     return True
 
 async def run_bot():
-    keep_alive()
-    send_telegram("🚀 Riobot štartuje (Bleskový Trigger M5)...")
+    send_telegram("🚀 Riobot štartuje naostro...")
     
     while True:
         try:
@@ -135,50 +128,42 @@ async def run_bot():
                     except Exception as e:
                         print(f"Gold BE error: {e}")
 
-                # --- VSTUPY (RÝCHLY MOMENTUM TRIGGER) ---
+                # --- VSTUPY ---
                 if is_safe_to_trade():
                     try:
                         candles_gold = await connection.get_candles('XAUUSD', timeframe='5m', limit=3)
                         candles_btc = await connection.get_candles('BTCUSD', timeframe='5m', limit=3)
                         
-                        # --- ZLATO ---
+                        # Zlato
                         if len(gold_positions) == 0 and len(candles_gold) >= 2:
-                            c_prev = candles_gold[-2]
                             c_curr = candles_gold[-1]
-                            
-                            # Ak je aktuálna sviečka zelená a rastie
+                            symbol_price = await connection.get_symbol_price('XAUUSD')
                             if c_curr['close'] > c_curr['open']:
-                                symbol_price = await connection.get_symbol_price('XAUUSD')
                                 ask = symbol_price['ask']
                                 await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=ask - 14, take_profit=ask + 10)
-                                send_telegram(f"🟢 XAUUSD BUY (Bleskový vstup)!")
-                            # Ak je aktuálna sviečka červená a klesá
+                                send_telegram(f"🟢 XAUUSD BUY!")
                             elif c_curr['close'] < c_curr['open']:
-                                symbol_price = await connection.get_symbol_price('XAUUSD')
                                 bid = symbol_price['bid']
                                 await connection.create_market_sell_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=bid + 14, take_profit=bid - 10)
-                                send_telegram(f"🔴 XAUUSD SELL (Bleskový vstup)!")
+                                send_telegram(f"🔴 XAUUSD SELL!")
 
-                        # --- BTC ---
+                        # BTC
                         if len(btc_positions) == 0 and len(candles_btc) >= 2:
-                            c_prev = candles_btc[-2]
                             c_curr = candles_btc[-1]
-                            
+                            symbol_price = await connection.get_symbol_price('BTCUSD')
                             if c_curr['close'] > c_curr['open']:
-                                symbol_price = await connection.get_symbol_price('BTCUSD')
                                 ask = symbol_price['ask']
                                 await connection.create_market_buy_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=ask - 100, take_profit=ask + 150)
-                                send_telegram(f"🟢 BTCUSD BUY (Bleskový vstup)!")
+                                send_telegram(f"🟢 BTCUSD BUY!")
                             elif c_curr['close'] < c_curr['open']:
-                                symbol_price = await connection.get_symbol_price('BTCUSD')
                                 bid = symbol_price['bid']
                                 await connection.create_market_sell_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=bid + 100, take_profit=bid - 150)
-                                send_telegram(f"🔴 BTCUSD SELL (Bleskový vstup)!")
+                                send_telegram(f"🔴 BTCUSD SELL!")
                                 
                     except Exception as candle_err:
                         print(f"Chyba sviečok: {candle_err}")
 
-                await asyncio.sleep(3) # Kontrola každé 3 sekundy
+                await asyncio.sleep(3)
                 
         except Exception as e:
             print(f"Chyba spojenia: {e}")
@@ -186,4 +171,5 @@ async def run_bot():
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
+    keep_alive()
     asyncio.run(run_bot())
