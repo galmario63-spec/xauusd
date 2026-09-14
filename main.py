@@ -38,7 +38,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def run_bot():
-    send_telegram("🚀 Riobot beží s upraveným BTC (SL 12 / BE +4)...")
+    send_telegram("🚀 Riobot beží s čistým kódom...")
     
     while True:
         try:
@@ -53,7 +53,7 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený, BTC aj zlato nastavené!")
+            send_telegram("🚀 Riobot pripojený, hodnoty sú v poriadku!")
             
             last_btc = None
             last_gold = None
@@ -79,16 +79,16 @@ async def run_bot():
                     b_bid = symbol_prices['BTCUSD']['bid']
                     b_ask = symbol_prices['BTCUSD']['ask']
 
-                    # --- BE BTC (pri zisku +4 posun na +1.5) ---
+                    # --- BE BTC (pri zisku +7 posun na +1) ---
                     for p in btc_positions:
                         open_price = p['openPrice']
                         current_sl = p.get('stopLoss', 0)
-                        if p['type'] == 'POSITION_TYPE_BUY' and (b_bid - open_price) >= 4 and current_sl < open_price + 1.5:
-                            await connection.modify_position(position_id=p['id'], stop_loss=open_price + 1.5, take_profit=p['takeProfit'])
-                            send_telegram("🛡️ BTC BUY -> BE (+1.5)")
-                        elif p['type'] == 'POSITION_TYPE_SELL' and (open_price - b_ask) >= 4 and (current_sl > open_price - 1.5 or current_sl == 0):
-                            await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1.5, take_profit=p['takeProfit'])
-                            send_telegram("🛡️ BTC SELL -> BE (-1.5)")
+                        if p['type'] == 'POSITION_TYPE_BUY' and (b_bid - open_price) >= 7 and current_sl < open_price + 1:
+                            await connection.modify_position(position_id=p['id'], stop_loss=open_price + 1, take_profit=p['takeProfit'])
+                            send_telegram("🛡️ BTC BUY -> BE (+1)")
+                        elif p['type'] == 'POSITION_TYPE_SELL' and (open_price - b_ask) >= 7 and (current_sl > open_price - 1 or current_sl == 0):
+                            await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1, take_profit=p['takeProfit'])
+                            send_telegram("🛡️ BTC SELL -> BE (-1)")
 
                     # --- BE ZLATO (pri zisku +5 posun na +1) ---
                     for p in gold_positions:
@@ -116,11 +116,11 @@ async def run_bot():
 
                     if len(btc_positions) == 0 and last_btc is not None:
                         if b_bid > last_btc:
-                            await connection.create_market_buy_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=b_ask - 12, take_profit=b_ask + 150)
+                            await connection.create_market_buy_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=b_ask - 100, take_profit=b_ask + 150)
                             send_telegram("🟢 BTCUSD BUY!")
                             await asyncio.sleep(2)
                         elif b_bid < last_btc:
-                            await connection.create_market_sell_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=b_bid + 12, take_profit=b_bid - 150)
+                            await connection.create_market_sell_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=b_bid + 100, take_profit=b_bid - 150)
                             send_telegram("🔴 BTCUSD SELL!")
                             await asyncio.sleep(2)
                     last_btc = b_bid
