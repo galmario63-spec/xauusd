@@ -37,10 +37,9 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-# Pomocná funkcia na výpočet Stochastic Oscillator z uzavretých sviečok
-align_stochastic(candles, k_period=14, d_period=3):
+def align_stochastic(candles, k_period=14, d_period=3):
     if len(candles) < k_period:
-        return 50, 50 # Predvolená neutrálna hodnota ak niet dát
+        return 50, 50
     
     closes = [c['close'] for c in candles]
     highs = [c['high'] for c in candles]
@@ -68,7 +67,7 @@ align_stochastic(candles, k_period=14, d_period=3):
 async def run_bot():
     keep_alive()
     
-    send_telegram("🚀 Riobot štartuje (Sviečky + Stochastic filter)...")
+    send_telegram("🚀 Riobot štartuje (Opravený Stochastic filter)...")
     
     while True:
         try:
@@ -84,7 +83,7 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený, sleduje Stochastic!")
+            send_telegram("🚀 Riobot pripojený a beží!")
             
             while True:
                 positions = await connection.get_positions()
@@ -134,7 +133,6 @@ async def run_bot():
 
                 # --- VSTUPY: SVIEČKY + STOCHASTIC ---
                 try:
-                    # Stiahneme viac sviečok kvôli výpočtu Stochastic (potrebujeme aspoň 20)
                     candles_gold = await connection.get_candles('XAUUSD', timeframe='5m', limit=25)
                     candles_btc = await connection.get_candles('BTCUSD', timeframe='5m', limit=25)
                     
@@ -147,7 +145,6 @@ async def run_bot():
                         k_g, d_g = align_stochastic(candles_gold)
                         symbol_price = await connection.get_symbol_price('XAUUSD')
                         
-                        # Podmienka: 2 sviečky + Stochastic nie je v extréme (nekupujeme nad 80, nepredávame pod 20)
                         if is_green_1 and is_green_2 and k_g < 80:
                             ask = symbol_price['ask']
                             await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=ask - 12, take_profit=ask + 10)
