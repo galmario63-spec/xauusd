@@ -38,7 +38,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def run_bot():
-    send_telegram("🚀 Riobot beží s ochranou BE...")
+    send_telegram("🚀 Riobot beží s aktualizovaným zlatom...")
     
     while True:
         try:
@@ -53,7 +53,7 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený, stráži ceny aj BE!")
+            send_telegram("🚀 Riobot pripojený, zlato upravené (SL 12 / TP 10 / BE +5)!")
             
             last_btc = None
             last_gold = None
@@ -90,24 +90,24 @@ async def run_bot():
                             await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1, take_profit=p['takeProfit'])
                             send_telegram("🛡️ BTC SELL -> BE (-1)")
 
-                    # --- BE ZLATO ---
+                    # --- BE ZLATO (pri zisku +5 posun na +1) ---
                     for p in gold_positions:
                         open_price = p['openPrice']
                         current_sl = p.get('stopLoss', 0)
-                        if p['type'] == 'POSITION_TYPE_BUY' and (g_bid - open_price) >= 6 and current_sl < open_price + 1.5:
-                            await connection.modify_position(position_id=p['id'], stop_loss=open_price + 1.5, take_profit=p['takeProfit'])
-                            send_telegram("🛡️ XAU BUY -> BE (+1.5)")
-                        elif p['type'] == 'POSITION_TYPE_SELL' and (open_price - g_ask) >= 6 and (current_sl > open_price - 1.5 or current_sl == 0):
-                            await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1.5, take_profit=p['takeProfit'])
-                            send_telegram("🛡️ XAU SELL -> BE (-1.5)")
+                        if p['type'] == 'POSITION_TYPE_BUY' and (g_bid - open_price) >= 5 and current_sl < open_price + 1:
+                            await connection.modify_position(position_id=p['id'], stop_loss=open_price + 1, take_profit=p['takeProfit'])
+                            send_telegram("🛡️ XAU BUY -> BE (+1)")
+                        elif p['type'] == 'POSITION_TYPE_SELL' and (open_price - g_ask) >= 5 and (current_sl > open_price - 1 or current_sl == 0):
+                            await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1, take_profit=p['takeProfit'])
+                            send_telegram("🛡️ XAU SELL -> BE (-1)")
 
                     # --- VSTUPY ---
                     if len(gold_positions) == 0 and last_gold is not None:
                         if g_bid > last_gold:
-                            await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=g_ask - 14, take_profit=g_ask + 10)
+                            await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=g_ask - 12, take_profit=g_ask + 10)
                             send_telegram("🟢 XAUUSD BUY!")
                         elif g_bid < last_gold:
-                            await connection.create_market_sell_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=g_bid + 14, take_profit=g_bid - 10)
+                            await connection.create_market_sell_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=g_bid + 12, take_profit=g_bid - 10)
                             send_telegram("🔴 XAUUSD SELL!")
                     last_gold = g_bid
 
