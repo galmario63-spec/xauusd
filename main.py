@@ -12,7 +12,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Safe Engine - Online"
+    return "Riobot Engulfing Engine - Online"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -52,16 +52,15 @@ def is_safe_to_trade():
     if weekday >= 5:
         return False
 
-    # 2. Piatok po 18:00 -> NEZAČÍNAŤ OBCHODY (ochrana pred víkendom)
+    # 2. Piatok po 18:00 -> NEZAČÍNAŤ OBCHODY
     if weekday == 4 and hour >= 18:
         return False
 
-    # 3. Pondelok pred 00:15 -> NEZAČÍNAŤ OBCHODY (stabilizácia po otváraní)
+    # 3. Pondelok pred 00:15 -> NEZAČÍNAŤ OBCHODY
     if weekday == 0 and current_time_minutes < 15:
         return False
 
     # 4. Denné rizikové okno hlavných správ (Americká seansa: 14:00 - 17:00)
-    # 14:00 je 840 minút, 17:00 je 1020 minút
     if 840 <= current_time_minutes <= 1020:
         return False
 
@@ -70,7 +69,7 @@ def is_safe_to_trade():
 async def run_bot():
     keep_alive()
     
-    send_telegram("🚀 Riobot štartuje (Bezpečnostný filter do 17:00 aktívny)...")
+    send_telegram("🚀 Riobot štartuje (Engulfing / Pohlcovacia stratégia)...")
     
     while True:
         try:
@@ -86,7 +85,7 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený a stráži trhy (Filter do 17:00 pripravený)!")
+            send_telegram("🚀 Riobot pripojený a stráži trhy (Engulfing mód aktívny)!")
             
             while True:
                 positions = await connection.get_positions()
@@ -134,7 +133,7 @@ async def run_bot():
                             await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1.5, take_profit=p['takeProfit'])
                             send_telegram(f"🛡️ XAUUSD (0.02) SELL posunutý do BE (-1.5)!")
 
-                # --- VSTUPY: LEN AK JE BEZPEČNÝ ČAS ---
+                # --- VSTUPY: ENGULFING (POHLCOVANIE SVIEČOK) ---
                 if is_safe_to_trade():
                     try:
                         candles_gold = await connection.get_candles('XAUUSD', timeframe='5m', limit=5)
@@ -142,46 +141,55 @@ async def run_bot():
                         
                         # Zlato vstup (0.02 lot, SL 14, TP 10)
                         if len(gold_positions) == 0 and len(candles_gold) >= 2:
-                            c1, c2 = candles_gold[-1], candles_gold[-2]
-                            is_green_1 = c1['close'] > c1['open']
-                            is_green_2 = c2['close'] > c2['open']
-                            is_red_1 = c1['close'] < c1['open']
-                            is_red_2 = c2['close'] < c2['open']
+                            c_prev = candles_gold[-2]  # predchádzajúca sviečka
+                            c_curr = candles_gold[-1]  # aktuálna uzavretá sviečka
+                            
+                            prev_is_green = c_prev['close'] > c_prev['open']
+                            prev_is_red = c_prev['close'] < c_prev['open']
+                            curr_is_green = c_curr['close'] > c_curr['open']
+                            curr_is_red = c_curr['close'] < c_curr['open']
                             
                             symbol_price = await connection.get_symbol_price('XAUUSD')
                             
-                            if is_green_1 and is_green_2:
+                            # Býčie pohltenie (Zelená pohltí červenú) -> BUY
+                            if curr_is_green and prev_is_red and c_curr['close'] >= c_prev['open'] and c_curr['open'] <= c_prev['close']:
                                 ask = symbol_price['ask']
                                 await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=ask - 14, take_profit=ask + 10)
-                                send_telegram(f"🟢 XAUUSD BUY (0.02 lot)!")
-                            elif is_red_1 and is_red_2:
+                                send_telegram(f"🟢 XAUUSD BUY (Engulfing)!")
+                            
+                            # Medvedie pohltenie (Červená pohltí zelenú) -> SELL
+                            elif curr_is_red and prev_is_green and c_curr['close'] <= c_prev['open'] and c_curr['open'] >= c_prev['close']:
                                 bid = symbol_price['bid']
                                 await connection.create_market_sell_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=bid + 14, take_profit=bid - 10)
-                                send_telegram(f"🔴 XAUUSD SELL (0.02 lot)!")
+                                send_telegram(f"🔴 XAUUSD SELL (Engulfing)!")
 
                         # BTC vstup
                         if len(btc_positions) == 0 and len(candles_btc) >= 2:
-                            c1, c2 = candles_btc[-1], candles_btc[-2]
-                            is_green_1 = c1['close'] > c1['open']
-                            is_green_2 = c2['close'] > c2['open']
-                            is_red_1 = c1['close'] < c1['open']
-                            is_red_2 = c2['close'] < c2['open']
+                            c_prev = candles_btc[-2]
+                            c_curr = candles_btc[-1]
+                            
+                            prev_is_green = c_prev['close'] > c_prev['open']
+                            prev_is_red = c_prev['close'] < c_prev['open']
+                            curr_is_green = c_curr['close'] > c_curr['open']
+                            curr_is_red = c_curr['close'] < c_curr['open']
                             
                             symbol_price = await connection.get_symbol_price('BTCUSD')
                             
-                            if is_green_1 and is_green_2:
+                            # Býčie pohltenie -> BUY
+                            if curr_is_green and prev_is_red and c_curr['close'] >= c_prev['open'] and c_curr['open'] <= c_prev['close']:
                                 ask = symbol_price['ask']
                                 await connection.create_market_buy_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=ask - 100, take_profit=ask + 150)
-                                send_telegram(f"🟢 BTCUSD BUY!")
-                            elif is_red_1 and is_red_2:
+                                send_telegram(f"🟢 BTCUSD BUY (Engulfing)!")
+                            
+                            # Medvedie pohltenie -> SELL
+                            elif curr_is_red and prev_is_green and c_curr['close'] <= c_prev['open'] and c_curr['open'] >= c_prev['close']:
                                 bid = symbol_price['bid']
                                 await connection.create_market_sell_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=bid + 100, take_profit=bid - 150)
-                                send_telegram(f"🔴 BTCUSD SELL!")
+                                send_telegram(f"🔴 BTCUSD SELL (Engulfing)!")
                                 
                     except Exception as candle_err:
                         print(f"Chyba sviečok: {candle_err}")
                 else:
-                    # Mimo bezpečného času bot netvorí nové obchody, len stráži existujúce pozície
                     pass
 
                 await asyncio.sleep(15)
