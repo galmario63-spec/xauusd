@@ -39,7 +39,7 @@ def send_telegram(msg):
 async def run_bot():
     keep_alive()
     
-    send_telegram("🚀 Riobot sa inicializuje (Priamy režim)...")
+    send_telegram("🚀 Riobot sa inicializuje (Opravený režim)...")
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
     
@@ -52,7 +52,7 @@ async def run_bot():
     await connection.connect()
     await connection.wait_synchronized()
         
-    send_telegram("🚀 Riobot pripojený a pripravený na obchody!")
+    send_telegram("🚀 Riobot pripojený a pripravený bez chýb!")
     
     while True:
         try:
@@ -61,7 +61,6 @@ async def run_bot():
             btc_positions = [p for p in positions if p['symbol'] == 'BTCUSD']
             gold_positions = [p for p in positions if p['symbol'] == 'XAUUSD']
             
-            # Správa BTC pozícií a BE
             for p in btc_positions:
                 open_price = p['openPrice']
                 p_type = p['type']
@@ -79,7 +78,6 @@ async def run_bot():
                         await connection.modify_position(position_id=p['id'], stop_loss=open_price, take_profit=p['takeProfit'])
                         send_telegram(f"🛡️ BTCUSD SELL posunutý do BE!")
 
-            # Správa XAUUSD pozícií a BE
             for p in gold_positions:
                 open_price = p['openPrice']
                 p_type = p['type']
@@ -99,22 +97,20 @@ async def run_bot():
                         await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1, take_profit=p['takeProfit'])
                         send_telegram(f"🛡️ XAUUSD SELL posunutý do BE (-1)!")
 
-            # Vstup pre BTCUSD ak žiadny nie je
             if len(btc_positions) == 0:
                 symbol_price = await connection.get_symbol_price('BTCUSD')
                 ask = symbol_price['ask']
                 sl = ask - 400
                 tp = ask + 800
-                await connection.create_market_buy_order(symbol='BTCUSD', volume=LOT_SIZE, stop_loss=sl, take_profit=tp, comment="riobot-btc")
+                await connection.create_market_buy_order(symbol='BTCUSD', volume=LOT_SIZE, stop_loss=sl, take_profit=tp)
                 send_telegram(f"🟢 Riobot otvoril BUY na BTCUSD (SL: {sl}, TP: {tp})!")
 
-            # Vstup pre XAUUSD ak žiadny nie je
             if len(gold_positions) == 0:
                 symbol_price = await connection.get_symbol_price('XAUUSD')
                 ask = symbol_price['ask']
                 sl = ask - 12
                 tp = ask + 10
-                await connection.create_market_buy_order(symbol='XAUUSD', volume=LOT_SIZE, stop_loss=sl, take_profit=tp, comment="riobot-gold")
+                await connection.create_market_buy_order(symbol='XAUUSD', volume=LOT_SIZE, stop_loss=sl, take_profit=tp)
                 send_telegram(f"🟢 Riobot otvoril BUY na XAUUSD (SL: {sl}, TP: {tp})!")
 
             await asyncio.sleep(15)
