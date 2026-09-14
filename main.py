@@ -38,7 +38,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def run_bot():
-    send_telegram("🚀 Riobot beží s aktualizovaným zlatom...")
+    send_telegram("🚀 Riobot beží s opraveným zlatom...")
     
     while True:
         try:
@@ -53,7 +53,7 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený, zlato upravené (SL 12 / TP 10 / BE +5)!")
+            send_telegram("🚀 Riobot pripojený, zlato má správne body (SL 12 / TP 10)!")
             
             last_btc = None
             last_gold = None
@@ -103,11 +103,12 @@ async def run_bot():
 
                     # --- VSTUPY ---
                     if len(gold_positions) == 0 and last_gold is not None:
+                        point = 0.01
                         if g_bid > last_gold:
-                            await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=g_ask - 12, take_profit=g_ask + 10)
+                            await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=g_ask - (12 * point), take_profit=g_ask + (10 * point))
                             send_telegram("🟢 XAUUSD BUY!")
                         elif g_bid < last_gold:
-                            await connection.create_market_sell_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=g_bid + 12, take_profit=g_bid - 10)
+                            await connection.create_market_sell_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=g_bid + (12 * point), take_profit=g_bid - (10 * point))
                             send_telegram("🔴 XAUUSD SELL!")
                     last_gold = g_bid
 
