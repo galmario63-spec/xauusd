@@ -2,7 +2,6 @@ import os
 import time
 import asyncio
 from datetime import datetime
-import pytz
 from flask import Flask
 from threading import Thread
 from metaapi_cloud_sdk import MetaApi
@@ -40,7 +39,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def run_bot():
-    send_telegram("🚀 Riobot štartuje bez obmedzení...")
+    send_telegram("🚀 Riobot štartuje s ladičením chýb...")
     
     while True:
         try:
@@ -55,66 +54,18 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený! Páli okamžite.")
+            send_telegram("🚀 Riobot pripojený a sleduje chyby!")
             
             while True:
                 try:
                     positions = await connection.get_positions()
                 except Exception as pos_err:
-                    print(f"Chyba pozícií: {pos_err}")
                     await asyncio.sleep(3)
                     continue
                 
                 btc_positions = [p for p in positions if p['symbol'] == 'BTCUSD']
                 gold_positions = [p for p in positions if p['symbol'] == 'XAUUSD']
-                
-                # --- BE BTC ---
-                for p in btc_positions:
-                    try:
-                        open_price = p['openPrice']
-                        p_type = p['type']
-                        current_sl = p.get('stopLoss', 0)
-                        symbol_price = await connection.get_symbol_price('BTCUSD')
-                        bid = symbol_price['bid']
-                        ask = symbol_price['ask']
-                        
-                        if p_type == 'POSITION_TYPE_BUY':
-                            profit = bid - open_price
-                            if profit >= 7 and current_sl < open_price + 1:
-                                await connection.modify_position(position_id=p['id'], stop_loss=open_price + 1, take_profit=p['takeProfit'])
-                                send_telegram(f"🛡️ BTCUSD BUY -> BE (+1)!")
-                        elif p_type == 'POSITION_TYPE_SELL':
-                            profit = open_price - ask
-                            if profit >= 7 and (current_sl > open_price - 1 or current_sl == 0):
-                                await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1, take_profit=p['takeProfit'])
-                                send_telegram(f"🛡️ BTCUSD SELL -> BE (-1)!")
-                    except Exception as e:
-                        print(f"BTC BE error: {e}")
 
-                # --- BE ZLATO ---
-                for p in gold_positions:
-                    try:
-                        open_price = p['openPrice']
-                        p_type = p['type']
-                        current_sl = p.get('stopLoss', 0)
-                        symbol_price = await connection.get_symbol_price('XAUUSD')
-                        bid = symbol_price['bid']
-                        ask = symbol_price['ask']
-                        
-                        if p_type == 'POSITION_TYPE_BUY':
-                            profit = bid - open_price
-                            if profit >= 6 and current_sl < open_price + 1.5:
-                                await connection.modify_position(position_id=p['id'], stop_loss=open_price + 1.5, take_profit=p['takeProfit'])
-                                send_telegram(f"🛡️ XAUUSD BUY -> BE (+1.5)!")
-                        elif p_type == 'POSITION_TYPE_SELL':
-                            profit = open_price - ask
-                            if profit >= 6 and (current_sl > open_price - 1.5 or current_sl == 0):
-                                await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1.5, take_profit=p['takeProfit'])
-                                send_telegram(f"🛡️ XAUUSD SELL -> BE (-1.5)!")
-                    except Exception as e:
-                        print(f"Gold BE error: {e}")
-
-                # --- VSTUPY (BEZ ČASOVÉHO FILTRA) ---
                 try:
                     candles_gold = await connection.get_candles('XAUUSD', timeframe='5m', limit=3)
                     candles_btc = await connection.get_candles('BTCUSD', timeframe='5m', limit=3)
@@ -146,13 +97,12 @@ async def run_bot():
                             send_telegram(f"🔴 BTCUSD SELL!")
                             
                 except Exception as candle_err:
-                    print(f"Chyba sviečok: {candle_err}")
+                    send_telegram(f"⚠️ Chyba bota: {str(candle_err)[:100]}")
 
                 await asyncio.sleep(3)
                 
         except Exception as e:
-            print(f"Chyba spojenia: {e}")
-            send_telegram(f"⚠️ Obnovujem spojenie...")
+            send_telegram(f"⚠️ Výpadok spojenia: {str(e)[:100]}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
