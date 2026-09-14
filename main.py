@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Perfect Engine - Online"
+    return "Riobot Stochastic Engine - Online"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -37,10 +37,38 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram error: {e}")
 
+# Pomocná funkcia na výpočet Stochastic Oscillator z uzavretých sviečok
+align_stochastic(candles, k_period=14, d_period=3):
+    if len(candles) < k_period:
+        return 50, 50 # Predvolená neutrálna hodnota ak niet dát
+    
+    closes = [c['close'] for c in candles]
+    highs = [c['high'] for c in candles]
+    lows = [c['low'] for c in candles]
+    
+    k_values = []
+    for i in range(len(candles) - d_period + 1):
+        window_highs = highs[i:i+k_period]
+        window_lows = lows[i:i+k_period]
+        highest_high = max(window_highs)
+        lowest_low = min(window_lows)
+        
+        current_close = closes[i + k_period - 1]
+        if highest_high == lowest_low:
+            k = 50
+        else:
+            k = (current_close - lowest_low) / (highest_high - lowest_low) * 100
+        k_values.append(k)
+        
+    current_k = k_values[-1] if k_values else 50
+    current_d = sum(k_values[-d_period:]) / len(k_values[-d_period:]) if len(k_values) >= d_period else current_k
+    
+    return current_k, current_d
+
 async def run_bot():
     keep_alive()
     
-    send_telegram("🚀 Riobot štartuje (BTC BE pri +7 na +1, Zlato zachované)...")
+    send_telegram("🚀 Riobot štartuje (Sviečky + Stochastic filter)...")
     
     while True:
         try:
@@ -56,7 +84,7 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený a stráži oba trhy!")
+            send_telegram("🚀 Riobot pripojený, sleduje Stochastic!")
             
             while True:
                 positions = await connection.get_positions()
@@ -75,7 +103,6 @@ async def run_bot():
                     
                     if p_type == 'POSITION_TYPE_BUY':
                         profit = bid - open_price
-                        # Pre BTC d'ame reálny posun (počká kým profit prekročí 7)
                         if profit >= 7 and current_sl < open_price + 1:
                             await connection.modify_position(position_id=p['id'], stop_loss=open_price + 1, take_profit=p['takeProfit'])
                             send_telegram(f"🛡️ BTCUSD BUY posunutý do BE (+1)!")
@@ -105,45 +132,51 @@ async def run_bot():
                             await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1, take_profit=p['takeProfit'])
                             send_telegram(f"🛡️ XAUUSD SELL posunutý do BE (-1)!")
 
-                # --- VSTUPY S FILtrom 2 SVIEČOK ---
+                # --- VSTUPY: SVIEČKY + STOCHASTIC ---
                 try:
-                    candles_gold = await connection.get_candles('XAUUSD', timeframe='5m', limit=3)
-                    candles_btc = await connection.get_candles('BTCUSD', timeframe='5m', limit=3)
+                    # Stiahneme viac sviečok kvôli výpočtu Stochastic (potrebujeme aspoň 20)
+                    candles_gold = await connection.get_candles('XAUUSD', timeframe='5m', limit=25)
+                    candles_btc = await connection.get_candles('BTCUSD', timeframe='5m', limit=25)
                     
-                    # Zlato vstup (2 sviečky)
-                    if len(gold_positions) == 0 and len(candles_gold) >= 2:
+                    # Zlato vstup
+                    if len(gold_positions) == 0 and len(candles_gold) >= 20:
                         c1, c2 = candles_gold[-1], candles_gold[-2]
                         is_green_1, is_green_2 = c1['close'] > c1['open'], c2['close'] > c2['open']
                         is_red_1, is_red_2 = c1['close'] < c1['open'], c2['close'] < c2['open']
+                        
+                        k_g, d_g = align_stochastic(candles_gold)
                         symbol_price = await connection.get_symbol_price('XAUUSD')
                         
-                        if is_green_1 and is_green_2:
+                        # Podmienka: 2 sviečky + Stochastic nie je v extréme (nekupujeme nad 80, nepredávame pod 20)
+                        if is_green_1 and is_green_2 and k_g < 80:
                             ask = symbol_price['ask']
                             await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=ask - 12, take_profit=ask + 10)
-                            send_telegram(f"🟢 XAUUSD BUY (2 zelené sviečky)!")
-                        elif is_red_1 and is_red_2:
+                            send_telegram(f"🟢 XAUUSD BUY (Sviečky + Stoch K:{k_g:.1f})!")
+                        elif is_red_1 and is_red_2 and k_g > 20:
                             bid = symbol_price['bid']
                             await connection.create_market_sell_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=bid + 12, take_profit=bid - 10)
-                            send_telegram(f"🔴 XAUUSD SELL (2 červené sviečky)!")
+                            send_telegram(f"🔴 XAUUSD SELL (Sviečky + Stoch K:{k_g:.1f})!")
 
-                    # BTC vstup (2 sviečky, s rozumným TP/SL)
-                    if len(btc_positions) == 0 and len(candles_btc) >= 2:
+                    # BTC vstup
+                    if len(btc_positions) == 0 and len(candles_btc) >= 20:
                         c1, c2 = candles_btc[-1], candles_btc[-2]
                         is_green_1, is_green_2 = c1['close'] > c1['open'], c2['close'] > c2['open']
                         is_red_1, is_red_2 = c1['close'] < c1['open'], c2['close'] < c2['open']
+                        
+                        k_b, d_b = align_stochastic(candles_btc)
                         symbol_price = await connection.get_symbol_price('BTCUSD')
                         
-                        if is_green_1 and is_green_2:
+                        if is_green_1 and is_green_2 and k_b < 80:
                             ask = symbol_price['ask']
-                            await connection.create_market_buy_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=ask - 200, take_profit=ask + 400)
-                            send_telegram(f"🟢 BTCUSD BUY (2 zelené sviečky)!")
-                        elif is_red_1 and is_red_2:
+                            await connection.create_market_buy_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=ask - 100, take_profit=ask + 150)
+                            send_telegram(f"🟢 BTCUSD BUY (Sviečky + Stoch K:{k_b:.1f})!")
+                        elif is_red_1 and is_red_2 and k_b > 20:
                             bid = symbol_price['bid']
-                            await connection.create_market_sell_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=bid + 200, take_profit=bid - 400)
-                            send_telegram(f"🔴 BTCUSD SELL (2 červené sviečky)!")
+                            await connection.create_market_sell_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=bid + 100, take_profit=bid - 150)
+                            send_telegram(f"🔴 BTCUSD SELL (Sviečky + Stoch K:{k_b:.1f})!")
                             
                 except Exception as candle_err:
-                    print(f"Chyba sviečok: {candle_err}")
+                    print(f"Chyba sviečok/Stoch: {candle_err}")
 
                 await asyncio.sleep(15)
                 
