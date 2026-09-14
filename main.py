@@ -12,7 +12,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Safe M5 Engine - Online"
+    return "Riobot Fast-Trigger Engine - Online"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -61,8 +61,7 @@ def is_safe_to_trade():
 
 async def run_bot():
     keep_alive()
-    
-    send_telegram("🚀 Riobot štartuje (Bezpečný M5 mód)...")
+    send_telegram("🚀 Riobot štartuje (Bleskový Trigger M5)...")
     
     while True:
         try:
@@ -74,24 +73,23 @@ async def run_bot():
                 
             await account.wait_connected()
             connection = account.get_rpc_connection()
-            
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený a stabilne stráži trhy!")
+            send_telegram("🚀 Riobot pripojený! Stráži trhy každé 3 sekundy.")
             
             while True:
                 try:
                     positions = await connection.get_positions()
                 except Exception as pos_err:
                     print(f"Chyba pozícií: {pos_err}")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(3)
                     continue
                 
                 btc_positions = [p for p in positions if p['symbol'] == 'BTCUSD']
                 gold_positions = [p for p in positions if p['symbol'] == 'XAUUSD']
                 
-                # --- SPRÁVA BTC ---
+                # --- BE BTC ---
                 for p in btc_positions:
                     try:
                         open_price = p['openPrice']
@@ -105,16 +103,16 @@ async def run_bot():
                             profit = bid - open_price
                             if profit >= 7 and current_sl < open_price + 1:
                                 await connection.modify_position(position_id=p['id'], stop_loss=open_price + 1, take_profit=p['takeProfit'])
-                                send_telegram(f"🛡️ BTCUSD BUY posunutý do BE (+1)!")
+                                send_telegram(f"🛡️ BTCUSD BUY -> BE (+1)!")
                         elif p_type == 'POSITION_TYPE_SELL':
                             profit = open_price - ask
                             if profit >= 7 and (current_sl > open_price - 1 or current_sl == 0):
                                 await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1, take_profit=p['takeProfit'])
-                                send_telegram(f"🛡️ BTCUSD SELL posunutý do BE (-1)!")
+                                send_telegram(f"🛡️ BTCUSD SELL -> BE (-1)!")
                     except Exception as e:
-                        print(f"BTC správa chyba: {e}")
+                        print(f"BTC BE error: {e}")
 
-                # --- SPRÁVA ZLATO ---
+                # --- BE ZLATO ---
                 for p in gold_positions:
                     try:
                         open_price = p['openPrice']
@@ -128,76 +126,62 @@ async def run_bot():
                             profit = bid - open_price
                             if profit >= 6 and current_sl < open_price + 1.5:
                                 await connection.modify_position(position_id=p['id'], stop_loss=open_price + 1.5, take_profit=p['takeProfit'])
-                                send_telegram(f"🛡️ XAUUSD BUY posunutý do BE (+1.5)!")
+                                send_telegram(f"🛡️ XAUUSD BUY -> BE (+1.5)!")
                         elif p_type == 'POSITION_TYPE_SELL':
                             profit = open_price - ask
                             if profit >= 6 and (current_sl > open_price - 1.5 or current_sl == 0):
                                 await connection.modify_position(position_id=p['id'], stop_loss=open_price - 1.5, take_profit=p['takeProfit'])
-                                send_telegram(f"🛡️ XAUUSD SELL posunutý do BE (-1.5)!")
+                                send_telegram(f"🛡️ XAUUSD SELL -> BE (-1.5)!")
                     except Exception as e:
-                        print(f"Gold správa chyba: {e}")
+                        print(f"Gold BE error: {e}")
 
-                # --- VSTUPY ---
+                # --- VSTUPY (RÝCHLY MOMENTUM TRIGGER) ---
                 if is_safe_to_trade():
                     try:
                         candles_gold = await connection.get_candles('XAUUSD', timeframe='5m', limit=3)
                         candles_btc = await connection.get_candles('BTCUSD', timeframe='5m', limit=3)
                         
-                        # Zlato
+                        # --- ZLATO ---
                         if len(gold_positions) == 0 and len(candles_gold) >= 2:
                             c_prev = candles_gold[-2]
                             c_curr = candles_gold[-1]
                             
-                            prev_green = c_prev['close'] > c_prev['open']
-                            prev_red = c_prev['close'] < c_prev['open']
-                            curr_green = c_curr['close'] > c_curr['open']
-                            curr_red = c_curr['close'] < c_curr['open']
-                            
-                            is_gold_buy = (curr_green and prev_green) or (curr_green and prev_red and c_curr['close'] >= c_prev['open'])
-                            is_gold_sell = (curr_red and prev_red) or (curr_red and prev_green and c_curr['close'] <= c_prev['open'])
-                            
-                            symbol_price = await connection.get_symbol_price('XAUUSD')
-                            
-                            if is_gold_buy:
+                            # Ak je aktuálna sviečka zelená a rastie
+                            if c_curr['close'] > c_curr['open']:
+                                symbol_price = await connection.get_symbol_price('XAUUSD')
                                 ask = symbol_price['ask']
                                 await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=ask - 14, take_profit=ask + 10)
-                                send_telegram(f"🟢 XAUUSD BUY!")
-                            elif is_gold_sell:
+                                send_telegram(f"🟢 XAUUSD BUY (Bleskový vstup)!")
+                            # Ak je aktuálna sviečka červená a klesá
+                            elif c_curr['close'] < c_curr['open']:
+                                symbol_price = await connection.get_symbol_price('XAUUSD')
                                 bid = symbol_price['bid']
                                 await connection.create_market_sell_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=bid + 14, take_profit=bid - 10)
-                                send_telegram(f"🔴 XAUUSD SELL!")
+                                send_telegram(f"🔴 XAUUSD SELL (Bleskový vstup)!")
 
-                        # BTC
+                        # --- BTC ---
                         if len(btc_positions) == 0 and len(candles_btc) >= 2:
                             c_prev = candles_btc[-2]
                             c_curr = candles_btc[-1]
                             
-                            prev_green = c_prev['close'] > c_prev['open']
-                            prev_red = c_prev['close'] < c_prev['open']
-                            curr_green = c_curr['close'] > c_curr['open']
-                            curr_red = c_curr['close'] < c_curr['open']
-                            
-                            is_btc_buy = (curr_green and prev_green) or (curr_green and prev_red and c_curr['close'] >= c_prev['open'])
-                            is_btc_sell = (curr_red and prev_red) or (curr_red and prev_green and c_curr['close'] <= c_prev['open'])
-                            
-                            symbol_price = await connection.get_symbol_price('BTCUSD')
-                            
-                            if is_btc_buy:
+                            if c_curr['close'] > c_curr['open']:
+                                symbol_price = await connection.get_symbol_price('BTCUSD')
                                 ask = symbol_price['ask']
                                 await connection.create_market_buy_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=ask - 100, take_profit=ask + 150)
-                                send_telegram(f"🟢 BTCUSD BUY!")
-                            elif is_btc_sell:
+                                send_telegram(f"🟢 BTCUSD BUY (Bleskový vstup)!")
+                            elif c_curr['close'] < c_curr['open']:
+                                symbol_price = await connection.get_symbol_price('BTCUSD')
                                 bid = symbol_price['bid']
                                 await connection.create_market_sell_order(symbol='BTCUSD', volume=BTC_LOT, stop_loss=bid + 100, take_profit=bid - 150)
-                                send_telegram(f"🔴 BTCUSD SELL!")
+                                send_telegram(f"🔴 BTCUSD SELL (Bleskový vstup)!")
                                 
                     except Exception as candle_err:
                         print(f"Chyba sviečok: {candle_err}")
 
-                await asyncio.sleep(10)
+                await asyncio.sleep(3) # Kontrola každé 3 sekundy
                 
         except Exception as e:
-            print(f"Hlavná chyba spojenia: {e}")
+            print(f"Chyba spojenia: {e}")
             send_telegram(f"⚠️ Obnovujem spojenie...")
             await asyncio.sleep(5)
 
