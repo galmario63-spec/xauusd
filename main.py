@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot XAU Safe"
+    return "Riobot Stopped"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -25,9 +25,6 @@ TELEGRAM_CHAT_ID = os.getenv("T_CHAT")
 METAAPI_TOKEN = os.getenv("M_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
-GOLD_LOT = 0.01  # Znížené na 0.01 kvôli zostatku 36€
-POINT = 0.01
-
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -38,7 +35,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def run_bot():
-    send_telegram("🚀 Riobot reštartovaný: Lot znížený na 0.01 pre bezpečné fungovanie.")
+    send_telegram("🛑 Riobot je ÚPLNE ZASTAVENÝ. Žiadne obchody sa neotvárajú.")
     
     while True:
         try:
@@ -53,85 +50,19 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
                 
-            send_telegram("🚀 Riobot pripojený a pripravený (Lot 0.01).")
+            # Zistíme aktuálny stav účtu
+            account_info = await connection.get_account_information()
+            balance = account_info.get('balance', 0)
+            equity = account_info.get('equity', 0)
             
-            last_gold = None
-            last_trade_time = 0
+            send_telegram(f"🛡️ Stav účtu – Balance: {balance} €, Equity: {equity} €. Bot nič nerobí.")
             
             while True:
-                try:
-                    positions = await connection.get_positions()
-                except Exception:
-                    await asyncio.sleep(3)
-                    continue
-                
-                gold_positions = [p for p in positions if p['symbol'] == 'XAUUSD']
-
-                try:
-                    symbol_price = await connection.get_symbol_price('XAUUSD')
-                    g_bid = symbol_price['bid']
-                    g_ask = symbol_price['ask']
-
-                    # --- BE ZLATO (+7 bodov -> +2 body do zisku) ---
-                    for p in gold_positions:
-                        open_price = p['openPrice']
-                        current_sl = p.get('stopLoss', 0)
-                        
-                        if p['type'] == 'POSITION_TYPE_BUY':
-                            profit_points = (g_bid - open_price) / POINT
-                            target_sl = open_price + (2 * POINT)
-                            if profit_points >= 7 and (current_sl < target_sl):
-                                await connection.modify_position(position_id=p['id'], stop_loss=target_sl, take_profit=p['takeProfit'])
-                                send_telegram("🛡️ XAU BUY -> BE (+2 v zisku)")
-                                
-                        elif p['type'] == 'POSITION_TYPE_SELL':
-                            profit_points = (open_price - g_ask) / POINT
-                            target_sl = open_price - (2 * POINT)
-                            if profit_points >= 7 and (current_sl > target_sl or current_sl == 0):
-                                await connection.modify_position(position_id=p['id'], stop_loss=target_sl, take_profit=p['takeProfit'])
-                                send_telegram("🛡️ XAU SELL -> BE (+2 v zisku)")
-
-                    # --- VSTUPY NA ZLATO ---
-                    current_time = time.time()
-                    if len(gold_positions) == 0:
-                        if last_gold is not None and (current_time - last_trade_time) > 60:
-                            price_diff = g_bid - last_gold
-                            
-                            if price_diff >= 0.50:
-                                sl_val = g_ask - (18 * POINT)
-                                tp_val = g_ask + (20 * POINT)
-                                try:
-                                    await connection.create_market_buy_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=sl_val, take_profit=tp_val)
-                                    send_telegram("🟢 XAUUSD BUY (0.01)!")
-                                    last_trade_time = time.time()
-                                except Exception as order_err:
-                                    send_telegram(f"⚠️ Chýba marža/margin: {str(order_err)[:50]}")
-                                    await asyncio.sleep(30) # Pauza ak nie je dostatok prostriedkov
-                                last_gold = g_bid
-                                
-                            elif price_diff <= -0.50:
-                                sl_val = g_bid + (18 * POINT)
-                                tp_val = g_bid - (20 * POINT)
-                                try:
-                                    await connection.create_market_sell_order(symbol='XAUUSD', volume=GOLD_LOT, stop_loss=sl_val, take_profit=tp_val)
-                                    send_telegram("🔴 XAUUSD SELL (0.01)!")
-                                    last_trade_time = time.time()
-                                except Exception as order_err:
-                                    send_telegram(f"⚠️ Chýba marža/margin: {str(order_err)[:50]}")
-                                    await asyncio.sleep(30)
-                                last_gold = g_bid
-                    
-                    if last_gold is None:
-                        last_gold = g_bid
-                            
-                except Exception as err:
-                    pass
-
-                await asyncio.sleep(5)
+                await asyncio.sleep(300) # Len spí a nič nevykonáva
                 
         except Exception as e:
-            send_telegram(f"⚠️ Výpadok: {str(e)[:80]}")
-            await asyncio.sleep(5)
+            send_telegram(f"⚠️ Výpadok pripojenia: {str(e)[:80]}")
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
     keep_alive()
