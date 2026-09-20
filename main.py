@@ -12,7 +12,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot ProCent M15+M5 Active"
+    return "Riobot ProCent M15 Pure Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -29,13 +29,14 @@ METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 SYMBOL = "BTCUSD"
 LOT_SIZE = 0.02
+TIMEFRAME = "15m"
 
 TP_POINTS = 600.0       
 BE_TRIGGER = 400.0      
 BE_LOCK = 150.0         
 SL_POINTS = 2000.0      
 
-last_checked_m5_time = None
+last_checked_candle_time = None
 startup_message_sent = False
 
 def send_telegram(msg):
@@ -48,7 +49,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def main():
-    global last_checked_m5_time, startup_message_sent
+    global last_checked_candle_time, startup_message_sent
     
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
@@ -63,7 +64,7 @@ async def main():
     await connection.wait_synchronized()
     
     if not startup_message_sent:
-        send_telegram("🚀 Riobot je online: M15 trend + M5 konfirmácia pre BTCUSD aktívna.")
+        send_telegram("🚀 Riobot je online: Čistý M15 režim (okamžitý vstup po zatvorení sviečky).")
         startup_message_sent = True
 
     while True:
@@ -97,43 +98,49 @@ async def main():
                             )
                             send_telegram("🔒 BE aktívne (SELL)")
 
-            # 2. Vstupná logika: M15 smer + M5 potvrdenie
+            # 2. Vstupná logika: Čisto M15 trend
             if len(btc_positions) == 0:
-                candles_m15 = await connection.get_historical_candles(SYMBOL, "15m", None, 3)
-                candles_m5 = await connection.get_historical_candles(SYMBOL, "5m", None, 3)
+                candles = await connection.get_historical_candles(SYMBOL, TIMEFRAME, None, 3)
                 
-                if candles_m15 and len(candles_m15) >= 2 and candles_m5 and len(candles_m5) >= 2:
-                    df_m15 = pd.DataFrame(candles_m15)
-                    m15_prev = df_m15.iloc[-2]
-                    m15_bullish = m15_prev['close'] > m15_prev['open']
+                if candles and len(candles) >= 2:
+                    df = pd.DataFrame(candles)
+                    prev_candle = df.iloc[-2] # Posledná uzavretá M15 sviečka
+                    candle_time = prev_candle['time']
                     
-                    df_m5 = pd.DataFrame(candles_m5)
-                    m5_prev = df_m5.iloc[-2]
-                    m5_time = m5_prev['time']
-                    m5_bullish = m5_prev['close'] > m5_prev['open']
-                    
-                    # Obchodujeme iba pri novej M5 sviečke a ak M5 súhlasí s M15 smerom
-                    if last_checked_m5_time != m5_time:
+                    if last_checked_candle_time != candle_time:
+                        c_open = prev_candle['open']
+                        c_close = prev_candle['close']
+                        
                         price_info = await connection.get_symbol_price(SYMBOL)
                         ask = price_info.get('ask')
                         bid = price_info.get('bid')
 
                         if ask and bid:
-                            if m15_bullish and m5_bullish: # Obidva timeframy zelené -> BUY
+                            if c_close > c_open: # Zelená -> BUY
                                 sl = ask - SL_POINTS
                                 tp = ask + TP_POINTS
                                 await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                                last_checked_m5_time = m5_time
-                                send_telegram("🟢 BTCUSD BUY (M15+M5 zhoda) otvorený.")
+                                last_checked_candle_time = candle_time
+                                send_telegram("🟢 BTCUSD BUY (M15 čistý vstup) otvorený.")
 
-                            elif not m15_bullish and not m5_bullish: # Obidva červené -> SELL
+                            elif c_close < c_open: # Červená -> SELL
                                 sl = bid + SL_POINTS
                                 tp = bid - TP_POINTS
                                 await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                                last_checked_m5_time = m5_time
-                                send_telegram("🔴 BTCUSD SELL (M15+M5 zhoda) otvorený.")
+                                last_checked_candle_time = candle_time
+                                send_telegram("🔴 BTCUSD SELL (M15 čistý vstup) otvorený.")
 
-            await asyncio.sleep(15)
+            # 3. Časový filter pre presné zachytenie konca 15m sviečky
+            now = datetime.utcnow()
+            current_minute = now.minute
+            current_second = now.second
+            minute_in_quarter = current_minute % 15
+            seconds_to_next_candle = ((14 - minute_in_quarter) * 60) + (60 - current_second)
+
+            if seconds_to_next_candle <= 30:
+                await asyncio.sleep(1)
+            else:
+                await asyncio.sleep(10)
 
         except Exception as inner_e:
             print(f"Chyba: {inner_e}")
