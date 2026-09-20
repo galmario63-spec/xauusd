@@ -6,6 +6,7 @@ from threading import Thread
 from metaapi_cloud_sdk import MetaApi
 import requests
 import pandas as pd
+from datetime import datetime
 
 app = Flask('')
 
@@ -36,6 +37,7 @@ BE_LOCK = 150.0
 SL_POINTS = 2000.0      
 
 last_checked_candle_time = None
+startup_message_sent = False
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -47,7 +49,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def main():
-    global last_checked_candle_time
+    global last_checked_candle_time, startup_message_sent
     
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
@@ -61,8 +63,9 @@ async def main():
     await connection.connect()
     await connection.wait_synchronized()
     
-    # Úvodná správa pošleme iba raz pri štarte
-    send_telegram("🚀 Riobot je pripojený a sleduje M15 sviečky pre BTCUSD.")
+    if not startup_message_sent:
+        send_telegram("🚀 Riobot je pripojený, má aktívny agresívny časový filter a stráži M15 pre BTCUSD.")
+        startup_message_sent = True
 
     while True:
         try:
@@ -95,7 +98,7 @@ async def main():
                             )
                             send_telegram("🔒 BE aktívne (SELL): SL posunutý do zisku!")
 
-            # 2. Vstupná logika (iba ak nie je otvorená žiadna pozícia)
+            # 2. Vstupná logika s agresívnym časovým filtrom
             if len(btc_positions) == 0:
                 candles = await connection.get_historical_candles(SYMBOL, TIMEFRAME, None, 3)
                 
@@ -113,24 +116,38 @@ async def main():
                         bid = price_info.get('bid')
 
                         if ask and bid:
-                            if c_close > c_open: # Zelená sviečka -> BUY
+                            if c_close > c_open: # Zelená -> BUY
                                 sl = ask - SL_POINTS
                                 tp = ask + TP_POINTS
                                 await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                                 last_checked_candle_time = candle_time
                                 send_telegram("🟢 BTCUSD BUY (0.02) otvorený.")
 
-                            elif c_close < c_open: # Červená sviečka -> SELL
+                            elif c_close < c_open: # Červená -> SELL
                                 sl = bid + SL_POINTS
                                 tp = bid - TP_POINTS
                                 await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                                 last_checked_candle_time = candle_time
                                 send_telegram("🔴 BTCUSD SELL (0.02) otvorený.")
 
+            # 3. Agresívny časový filter: Zistíme, koľko sekúnd zostáva do konca 15-minútovej sviečky
+            now = datetime.utcnow()
+            current_minute = now.minute
+            current_second = now.second
+            
+            # Koľko minút ubehlo v rámci aktuálneho 15-minútového bloku (0, 15, 30, 45)
+            minute_in_quarter = current_minute % 15
+            seconds_to_next_candle = ((14 - minute_in_quarter) * 60) + (60 - current_second)
+
+            # Ak sme v posledných 30 sekundách pred uzavretím sviečky, spíme iba 1 sekundu pre maximálnu presnosť
+            if seconds_to_next_candle <= 30:
+                await asyncio.sleep(1)
+            else:
+                await asyncio.sleep(10)
+
         except Exception as inner_e:
             print(f"Chyba v slučke: {inner_e}")
-
-        await asyncio.sleep(5)
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     keep_alive()
