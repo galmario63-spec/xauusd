@@ -137,7 +137,7 @@ async def main():
             digits = int(specification.get("digits", 2))
 
             if not startup_message_sent:
-                send_telegram(f"🚀 RIObot OPRAVENÝ ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
+                send_telegram(f"🚀 RIObot FINÁLNY BEŽIACI ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
                 startup_message_sent = True
 
             while True:
@@ -145,8 +145,7 @@ async def main():
                     price = await connection.get_symbol_price(symbol)
                     bid, ask = float(price["bid"]), float(price["ask"])
 
-                    # Opravená metóda get_candles namiesto get_historical_candles
-                    candles = await connection.get_candles(symbol, TIMEFRAME, None, 150)
+                    candles = await connection.get_historical_candles(symbol, TIMEFRAME, None, 150)
                     if not candles or len(candles) < 10:
                         await asyncio.sleep(3)
                         continue
