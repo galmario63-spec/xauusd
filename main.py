@@ -4,13 +4,13 @@ import asyncio
 from flask import Flask
 from threading import Thread
 from metaapi_cloud_sdk import MetaApi
-import requests
+requests_mod = __import__('requests')
 
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot BTCUSD Active"
+    return "Riobot Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -25,9 +25,8 @@ TELEGRAM_CHAT_ID = os.getenv("T_CHAT")
 METAAPI_TOKEN = os.getenv("M_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
-SYMBOL = "BTCUSD"
 LOT_SIZE = 0.30         
-TP_POINTS = 600.0       # 3 € zisk
+TP_POINTS = 600.0       
 BE_TRIGGER = 250.0      
 BE_LOCK = 100.0         
 SL_POINTS = 1500.0      
@@ -43,7 +42,7 @@ def send_telegram(msg):
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
+        requests_mod.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
     except Exception as e:
         print(f"Telegram error: {e}")
 
@@ -66,7 +65,6 @@ def get_exact_sar_signal(candles):
         ep = lows[1]
         
     af = SAR_STEP
-    
     for i in range(2, n):
         prev_sar = sar[i-1]
         if bullish:
@@ -110,15 +108,29 @@ async def main():
     await connection.connect()
     await connection.wait_synchronized()
     
+    # Automatické nájdenie správneho symbolu pre BTC
+    symbol = "BTCUSD"
+    try:
+        specifications = await connection.get_symbol_specifications()
+        for spec in specifications:
+            s_name = spec.get('symbol', '')
+            if 'BTC' in s_name.upper():
+                symbol = s_name
+                break
+    except Exception:
+        pass
+
+    print(Použitý symbol: {symbol})
+
     if not startup_message_sent:
-        send_telegram("🚀 Riobot BTCUSD beží naostro.")
+        send_telegram(f"🚀 Riobot beží na symbol: {symbol}")
         startup_message_sent = True
 
     while True:
         try:
             positions = await connection.get_positions()
-            btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
-            price_info = await connection.get_symbol_price(SYMBOL)
+            btc_positions = [p for p in positions if p['symbol'] == symbol]
+            price_info = await connection.get_symbol_price(symbol)
             ask = price_info.get('ask')
             bid = price_info.get('bid')
 
@@ -144,7 +156,7 @@ async def main():
 
             if len(btc_positions) == 0 and ask and bid:
                 try:
-                    candles = await connection.get_historical_candles(SYMBOL, "1m", None, 30)
+                    candles = await connection.get_historical_candles(symbol, "1m", None, 30)
                 except Exception:
                     candles = None
                 
@@ -155,16 +167,16 @@ async def main():
                         if signal == "BUY":
                             sl = ask - SL_POINTS
                             tp = ask + TP_POINTS
-                            await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                            await connection.create_market_buy_order(symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
                             last_signal_candle = current_candle_time
-                            send_telegram("🟢 BTCUSD BUY (0.30 Lot) otvorený.")
+                            send_telegram(f"🟢 {symbol} BUY (0.30 Lot) otvorený.")
                             await asyncio.sleep(10)
                         elif signal == "SELL":
                             sl = bid + SL_POINTS
                             tp = bid - TP_POINTS
-                            await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                            await connection.create_market_sell_order(symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
                             last_signal_candle = current_candle_time
-                            send_telegram("🔴 BTCUSD SELL (0.30 Lot) otvorený.")
+                            send_telegram(f"🔴 {symbol} SELL (0.30 Lot) otvorený.")
                             await asyncio.sleep(10)
 
             await asyncio.sleep(2)
