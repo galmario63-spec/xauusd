@@ -135,7 +135,7 @@ async def main():
             digits = int(specification.get("digits", 2))
 
             if not startup_message_sent:
-                send_telegram(f"🚀 RIObot BEZPEČNÝ ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
+                send_telegram(f"🚀 RIObot FINÁLNY ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
                 startup_message_sent = True
 
             while True:
@@ -187,7 +187,10 @@ async def main():
                             tp = round(ask + TP_POINTS * point, digits)
                             try:
                                 await connection.create_market_buy_order(
-                                    symbol, LOT_SIZE, stop_loss=sl, take_profit=tp,
+                                    symbol=symbol,
+                                    volume=LOT_SIZE,
+                                    stop_loss=sl,
+                                    take_profit=tp,
                                     options={"comment": COMMENT, "magic": MAGIC}
                                 )
                                 send_telegram(f"🟢 BUY OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
@@ -199,7 +202,10 @@ async def main():
                             tp = round(bid - TP_POINTS * point, digits)
                             try:
                                 await connection.create_market_sell_order(
-                                    symbol, LOT_SIZE, stop_loss=sl, take_profit=tp,
+                                    symbol=symbol,
+                                    volume=LOT_SIZE,
+                                    stop_loss=sl,
+                                    take_profit=tp,
                                     options={"comment": COMMENT, "magic": MAGIC}
                                 )
                                 send_telegram(f"🔴 SELL OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
@@ -214,8 +220,8 @@ async def main():
                     break
 
         except Exception as outer_error:
-            print(f"Chyba pripojenia (limit/sieť): {outer_error}")
-            await asyncio.sleep(20) # Dlhšia pauza, aby sa uvoľnila relácia v MetaApi
+            print(f"Chyba pripojenia: {outer_error}")
+            await asyncio.sleep(15)
 
 if __name__ == "__main__":
     keep_alive()
