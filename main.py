@@ -135,7 +135,7 @@ async def main():
             digits = int(specification.get("digits", 2))
 
             if not startup_message_sent:
-                send_telegram(f"🚀 RIObot FINÁLNY ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
+                send_telegram(f"🚀 RIObot FIX OPRAVENÝ\nSymbol: {symbol} | Lot: {LOT_SIZE}")
                 startup_message_sent = True
 
             while True:
@@ -169,7 +169,7 @@ async def main():
                                 target_sl = round(open_price + BE_LOCK * point, digits)
                                 if current_sl == 0 or current_sl < target_sl:
                                     try:
-                                        await connection.modify_position(positionId=pos["id"], stop_loss=target_sl, take_profit=current_tp)
+                                        await connection.modify_position(positionId=pos["id"], stopLoss=target_sl, takeProfit=current_tp)
                                     except Exception:
                                         pass
                         elif pos["type"] == "POSITION_TYPE_SELL":
@@ -177,7 +177,7 @@ async def main():
                                 target_sl = round(open_price - BE_LOCK * point, digits)
                                 if current_sl == 0 or current_sl > target_sl:
                                     try:
-                                        await connection.modify_position(positionId=pos["id"], stop_loss=target_sl, take_profit=current_tp)
+                                        await connection.modify_position(positionId=pos["id"], stopLoss=target_sl, takeProfit=current_tp)
                                     except Exception:
                                         pass
 
@@ -189,9 +189,12 @@ async def main():
                                 await connection.create_market_buy_order(
                                     symbol=symbol,
                                     volume=LOT_SIZE,
-                                    stop_loss=sl,
-                                    take_profit=tp,
-                                    options={"comment": COMMENT, "magic": MAGIC}
+                                    options={
+                                        "stopLoss": sl,
+                                        "takeProfit": tp,
+                                        "comment": COMMENT,
+                                        "magic": MAGIC
+                                    }
                                 )
                                 send_telegram(f"🟢 BUY OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
                             except Exception as e:
@@ -204,9 +207,12 @@ async def main():
                                 await connection.create_market_sell_order(
                                     symbol=symbol,
                                     volume=LOT_SIZE,
-                                    stop_loss=sl,
-                                    take_profit=tp,
-                                    options={"comment": COMMENT, "magic": MAGIC}
+                                    options={
+                                        "stopLoss": sl,
+                                        "takeProfit": tp,
+                                        "comment": COMMENT,
+                                        "magic": MAGIC
+                                    }
                                 )
                                 send_telegram(f"🔴 SELL OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
                             except Exception as e:
