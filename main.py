@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot M1 Direct Active"
+    return "Riobot Instant Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -32,7 +32,7 @@ BE_TRIGGER = 200.0
 BE_LOCK = 80.0          
 SL_POINTS = 1500.0      
 
-last_candle_time = None
+last_price = None
 startup_message_sent = False
 
 def send_telegram(msg):
@@ -45,7 +45,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def main():
-    global last_candle_time, startup_message_sent
+    global last_price, startup_message_sent
     
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
@@ -60,7 +60,7 @@ async def main():
     await connection.wait_synchronized()
     
     if not startup_message_sent:
-        send_telegram("🚀 Riobot beží v čistom M1 móde.")
+        send_telegram("🚀 Riobot ide okamžite.")
         startup_message_sent = True
 
     while True:
@@ -68,6 +68,7 @@ async def main():
             positions = await connection.get_positions()
             btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
+            # 1. Break-Even ochrana
             for pos in btc_positions:
                 open_price = pos['openPrice']
                 current_sl = pos.get('stopLoss', 0)
@@ -93,39 +94,32 @@ async def main():
                             )
                             send_telegram("🔒 BE aktívne (SELL)")
 
+            # 2. Okamžitý obchod bez čakania
             if len(btc_positions) == 0:
-                candles = await connection.get_historical_candles(SYMBOL, "1m", None, 2)
                 price_info = await connection.get_symbol_price(SYMBOL)
                 ask = price_info.get('ask')
                 bid = price_info.get('bid')
                 
-                if candles and len(candles) >= 1 and ask and bid:
-                    c = candles[-1]
-                    c_time = c['time']
+                if ask and bid:
+                    current_mid = (ask + bid) / 2
                     
-                    if last_candle_time != c_time:
-                        op = c['open']
-                        cl = c['close']
-                        high = c['high']
-                        low = c['low']
-                        
-                        upper_wick = high - max(op, cl)
-                        lower_wick = min(op, cl) - low
-                        
-                        if lower_wick >= upper_wick:
+                    if last_price is not None:
+                        if current_mid > last_price:
                             sl = ask - SL_POINTS
                             tp = ask + TP_POINTS
                             await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                            last_candle_time = c_time
-                            send_telegram("🟢 M1 BUY otvorený.")
-                        else:
+                            send_telegram("🟢 Okamžitý BUY otvorený.")
+                            await asyncio.sleep(40)
+                        elif current_mid < last_price:
                             sl = bid + SL_POINTS
                             tp = bid - TP_POINTS
                             await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                            last_candle_time = c_time
-                            send_telegram("🔴 M1 SELL otvorený.")
+                            send_telegram("🔴 Okamžitý SELL otvorený.")
+                            await asyncio.sleep(40)
+                            
+                    last_price = current_mid
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
         except Exception as inner_e:
             print(f"Chyba: {inner_e}")
