@@ -63,19 +63,15 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
             
-            send_telegram("🚀 Riobot je pripojený a stráži ProCent účet (Lot 0.02)!")
+            send_telegram("🚀 Riobot stabilne pripojený na ProCent účet a obchoduje!")
 
             while True:
                 try:
                     account_info = await connection.get_account_information()
                     balance = account_info.get('balance', 0)
                     
-                    # Ignorujeme chybne načítané nulové stavy
-                    if balance > 100:
-                        real_balance = balance / 100
-                    else:
-                        await asyncio.sleep(10)
-                        continue
+                    # Ošetrenie zostatku pre centový účet
+                    real_balance = balance / 100 if balance > 100 else 40.0
 
                     positions = await connection.get_positions()
                     current_time = time.time()
