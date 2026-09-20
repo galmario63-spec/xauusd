@@ -1,37 +1,11 @@
+import asyncioimport asyncio
 import os
-import asyncio
+import traceback
 from flask import Flask
 from threading import Thread
-
-requests_lib = __import__("requests")
-
-app = Flask(__name__)
-
-
-@app.route("/")
-def home():
-    return "Riobot PSAR Active"
-
-
-def run_server():
-    port = int(os.getenv("PORT", "8080"))
-    app.run(host="0.0.0.0", port=port)
-
-
-def keep_alive():
-    t = Thread(target=run_server, daemon=True)
-    t.start()
-
-
-# =========================================================
-# TELEGRAM / METAAPI
-# =========================================================
-
-TELEGRAM_TOKEN = os.getenv("T_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("T_CHAT")
-
-METAAPI_TOKEN = os.getenv("M_TOKEN")
-METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
+import pandas as pd
+import requests
+from metaapi_cloud_sdk import MetaApi
 
 
 # =========================================================
@@ -43,253 +17,296 @@ SYMBOL_REQUEST = "BTCUSD"
 # CENTOVÝ ÚČET
 LOT_SIZE = 0.30
 
+# PSAR
+PSAR_STEP = 0.02
+PSAR_MAX = 0.20
+
+# SL / TP V BODOCH
 TP_POINTS = 600.0
 SL_POINTS = 1500.0
 
 MAGIC = 26092026
 COMMENT = "Riobot PSAR"
 
+# OPRAVENÝ clientId
+CLIENT_ID = "RIO_BTCUSD_PSAR"
 
-# =========================================================
 # BREAK EVEN
-# =========================================================
-
 BE_TRIGGER = 250.0
 BE_LOCK = 100.0
 
+LOOP_SECONDS = 10
 
-startup_message_sent = False
+
+# =========================================================
+# ENV
+# =========================================================
+
+M_TOKEN = os.getenv("M_TOKEN")
+M_ACC = os.getenv("M_ACC")
+
+T_TOKEN = os.getenv("T_TOKEN")
+T_CHAT = os.getenv("T_CHAT")
+
+
+# =========================================================
+# FLASK
+# =========================================================
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Riobot is running"
+
+
+@app.route("/health")
+def health():
+    return "OK"
+
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 
 # =========================================================
 # TELEGRAM
 # =========================================================
 
-def send_telegram(message):
-
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+def telegram(message):
+    if not T_TOKEN or not T_CHAT:
+        print(message)
         return
 
     try:
+        url = f"https://api.telegram.org/bot{T_TOKEN}/sendMessage"
 
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-        requests_lib.post(
+        requests.post(
             url,
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
+            data={
+                "chat_id": T_CHAT,
                 "text": message
             },
-            timeout=5
+            timeout=10
         )
 
     except Exception as e:
-
-        print(f"Telegram error: {e}")
-
-
-# =========================================================
-# ROBOT POSITION
-# =========================================================
-
-def is_bot_position(position):
-
-    try:
-
-        if int(position.get("magic", 0)) == MAGIC:
-            return True
-
-    except Exception:
-        pass
-
-    return position.get("comment") == COMMENT
+        print("Telegram chyba:", e)
 
 
 # =========================================================
 # PSAR
 # =========================================================
 
-def calculate_psar(candles):
+def calculate_psar(df, step=0.02, max_af=0.20):
 
-    highs = [float(c["high"]) for c in candles]
-    lows = [float(c["low"]) for c in candles]
+    high = df["high"].astype(float).tolist()
+    low = df["low"].astype(float).tolist()
 
-    if len(highs) < 3:
+    n = len(df)
+
+    if n < 5:
         return None, None
 
-    psar = lows[0]
+    psar = [0.0] * n
 
-    af = 0.02
-    max_af = 0.20
+    bull = True
+    af = step
 
-    ep = highs[0]
+    ep = high[0]
+    psar[0] = low[0]
 
-    trend = 1
+    for i in range(1, n):
 
-    for i in range(1, len(highs)):
+        prev_psar = psar[i - 1]
 
-        prev_psar = psar
+        if bull:
 
-        if trend == 1:
+            psar[i] = prev_psar + af * (ep - prev_psar)
 
-            psar = prev_psar + af * (ep - prev_psar)
-
-            psar = min(
-                psar,
-                lows[i - 1],
-                lows[max(0, i - 2)]
-            )
-
-            if lows[i] < psar:
-
-                trend = -1
-                psar = ep
-                ep = lows[i]
-                af = 0.02
-
+            if i >= 2:
+                psar[i] = min(
+                    psar[i],
+                    low[i - 1],
+                    low[i - 2]
+                )
             else:
+                psar[i] = min(
+                    psar[i],
+                    low[i - 1]
+                )
 
-                if highs[i] > ep:
+            if low[i] < psar[i]:
 
-                    ep = highs[i]
-                    af = min(
-                        af + 0.02,
-                        max_af
-                    )
+                bull = False
+                psar[i] = ep
+
+                ep = low[i]
+                af = step
+
+            elif high[i] > ep:
+
+                ep = high[i]
+                af = min(af + step, max_af)
 
         else:
 
-            psar = prev_psar - af * (prev_psar - ep)
+            psar[i] = prev_psar + af * (ep - prev_psar)
 
-            psar = max(
-                psar,
-                highs[i - 1],
-                highs[max(0, i - 2)]
-            )
-
-            if highs[i] > psar:
-
-                trend = 1
-                psar = ep
-                ep = highs[i]
-                af = 0.02
-
+            if i >= 2:
+                psar[i] = max(
+                    psar[i],
+                    high[i - 1],
+                    high[i - 2]
+                )
             else:
+                psar[i] = max(
+                    psar[i],
+                    high[i - 1]
+                )
 
-                if lows[i] < ep:
+            if high[i] > psar[i]:
 
-                    ep = lows[i]
-                    af = min(
-                        af + 0.02,
-                        max_af
-                    )
+                bull = True
+                psar[i] = ep
 
-    return trend, psar
+                ep = high[i]
+                af = step
+
+            elif low[i] < ep:
+
+                ep = low[i]
+                af = min(af + step, max_af)
+
+    return psar[-1], bull
+
+
+# =========================================================
+# ERROR DETAILS
+# =========================================================
+
+def get_error_details(api, error):
+
+    try:
+        return api.format_error(error)
+    except Exception:
+        return str(error)
+
+
+# =========================================================
+# SYMBOL INFO
+# =========================================================
+
+async def get_symbol_info(connection, symbol):
+
+    try:
+        return await connection.get_symbol_specification(symbol)
+
+    except Exception as e:
+
+        print(
+            "Nepodarilo sa načítať symbol specification:",
+            e
+        )
+
+        return None
+
+
+# =========================================================
+# POZÍCIE
+# =========================================================
+
+async def get_positions(connection, symbol):
+
+    try:
+
+        positions = await connection.get_positions()
+
+        return [
+            p for p in positions
+            if p.get("symbol") == symbol
+        ]
+
+    except Exception as e:
+
+        print(
+            "Chyba pri načítaní pozícií:",
+            e
+        )
+
+        return []
 
 
 # =========================================================
 # BREAK EVEN
 # =========================================================
 
-async def manage_break_even(
-    connection,
-    positions,
-    symbol,
-    point,
-    digits
-):
+async def manage_break_even(connection, symbol):
 
-    for position in positions:
+    try:
 
-        try:
+        positions = await get_positions(
+            connection,
+            symbol
+        )
 
-            if position.get("symbol") != symbol:
-                continue
+        if not positions:
+            return
 
-            if not is_bot_position(position):
-                continue
+        spec = await get_symbol_info(
+            connection,
+            symbol
+        )
 
-            position_id = position.get("id")
+        if not spec:
+            return
 
-            if not position_id:
-                continue
+        point = float(
+            spec.get("point", 0.01)
+        )
 
-            open_price = float(
-                position.get("openPrice", 0)
-            )
+        digits = int(
+            spec.get("digits", 2)
+        )
 
-            current_price = float(
-                position.get("currentPrice", 0)
-            )
+        for position in positions:
 
-            current_sl = float(
-                position.get("stopLoss", 0) or 0
-            )
+            try:
 
-            take_profit = position.get("takeProfit")
+                position_id = position.get("id")
+                position_type = position.get("type")
 
-            position_type = str(
-                position.get("type", "")
-            ).lower()
+                open_price = float(
+                    position.get("openPrice")
+                )
 
+                current_price = float(
+                    position.get("currentPrice")
+                )
 
-            # BUY
-            if "buy" in position_type:
+                current_sl = position.get("stopLoss")
+                take_profit = position.get("takeProfit")
 
-                profit_points = (
-                    current_price - open_price
-                ) / point
+                # BUY
+                if position_type == "POSITION_TYPE_BUY":
 
-                if profit_points >= BE_TRIGGER:
+                    profit_points = (
+                        current_price - open_price
+                    ) / point
 
-                    new_sl = round(
-                        open_price + BE_LOCK * point,
-                        digits
-                    )
+                    if profit_points >= BE_TRIGGER:
 
-                    if current_sl == 0 or new_sl > current_sl:
+                        new_sl = round(
+                            open_price + BE_LOCK * point,
+                            digits
+                        )
 
-                        try:
-
-                            await connection.modify_position(
-                                position_id=position_id,
-                                stop_loss=new_sl,
-                                take_profit=take_profit
-                            )
-
-                            send_telegram(
-                                f"🛡️ BE BUY AKTIVOVANÝ\n\n"
-                                f"Symbol: {symbol}\n"
-                                f"Profit: {profit_points:.1f} bodov\n"
-                                f"Nový SL: {new_sl}"
-                            )
-
-                        except Exception as e:
-
-                            print(f"❌ BE BUY ERROR: {e}")
-
-                            send_telegram(
-                                f"❌ BE BUY ERROR\n{e}"
-                            )
-
-
-            # SELL
-            elif "sell" in position_type:
-
-                profit_points = (
-                    open_price - current_price
-                ) / point
-
-                if profit_points >= BE_TRIGGER:
-
-                    new_sl = round(
-                        open_price - BE_LOCK * point,
-                        digits
-                    )
-
-                    if current_sl == 0 or new_sl < current_sl:
-
-                        try:
+                        if (
+                            current_sl is None
+                            or float(current_sl) < new_sl
+                        ):
 
                             await connection.modify_position(
                                 position_id=position_id,
@@ -297,24 +314,60 @@ async def manage_break_even(
                                 take_profit=take_profit
                             )
 
-                            send_telegram(
-                                f"🛡️ BE SELL AKTIVOVANÝ\n\n"
+                            telegram(
+                                "🟢 BREAK EVEN – BUY\n\n"
                                 f"Symbol: {symbol}\n"
-                                f"Profit: {profit_points:.1f} bodov\n"
-                                f"Nový SL: {new_sl}"
+                                f"Open: {open_price}\n"
+                                f"Nový SL: {new_sl}\n"
+                                f"Profit: {profit_points:.0f} bodov"
                             )
 
-                        except Exception as e:
+                # SELL
+                elif position_type == "POSITION_TYPE_SELL":
 
-                            print(f"❌ BE SELL ERROR: {e}")
+                    profit_points = (
+                        open_price - current_price
+                    ) / point
 
-                            send_telegram(
-                                f"❌ BE SELL ERROR\n{e}"
+                    if profit_points >= BE_TRIGGER:
+
+                        new_sl = round(
+                            open_price - BE_LOCK * point,
+                            digits
+                        )
+
+                        if (
+                            current_sl is None
+                            or float(current_sl) > new_sl
+                        ):
+
+                            await connection.modify_position(
+                                position_id=position_id,
+                                stop_loss=new_sl,
+                                take_profit=take_profit
                             )
 
-        except Exception as e:
+                            telegram(
+                                "🔴 BREAK EVEN – SELL\n\n"
+                                f"Symbol: {symbol}\n"
+                                f"Open: {open_price}\n"
+                                f"Nový SL: {new_sl}\n"
+                                f"Profit: {profit_points:.0f} bodov"
+                            )
 
-            print(f"❌ BE chyba: {e}")
+            except Exception:
+
+                print(
+                    "BE chyba:",
+                    traceback.format_exc()
+                )
+
+    except Exception:
+
+        print(
+            "Chyba manage_break_even:",
+            traceback.format_exc()
+        )
 
 
 # =========================================================
@@ -323,560 +376,485 @@ async def manage_break_even(
 
 async def main():
 
-    global startup_message_sent
-
-    if not METAAPI_TOKEN:
-
-        print("❌ Chýba M_TOKEN")
+    if not M_TOKEN:
+        telegram("❌ Chýba M_TOKEN")
         return
 
-    if not METAAPI_ACCOUNT_ID:
-
-        print("❌ Chýba M_ACC")
+    if not M_ACC:
+        telegram("❌ Chýba M_ACC")
         return
 
+    api = MetaApi(M_TOKEN)
 
-    from metaapi_cloud_sdk import MetaApi
+    connection = None
 
-    api = MetaApi(METAAPI_TOKEN)
+    try:
 
+        account = await api.metatrader_account_api.get_account(
+            M_ACC
+        )
 
-    while True:
+        await account.wait_connected()
 
-        try:
+        connection = account.get_rpc_connection()
 
-            print("🔄 Pripájam MetaApi...")
+        await connection.connect()
 
-            account = await api.metatrader_account_api.get_account(
-                METAAPI_ACCOUNT_ID
-            )
+        await connection.wait_synchronized()
 
-            if account.state != "DEPLOYED":
+        telegram(
+            "🟢 RIObot spustený\n\n"
+            f"Symbol: {SYMBOL_REQUEST}\n"
+            f"Lot: {LOT_SIZE}\n"
+            f"TP: {TP_POINTS} bodov\n"
+            f"SL: {SL_POINTS} bodov\n"
+            f"BE trigger: {BE_TRIGGER} bodov\n"
+            f"BE lock: {BE_LOCK} bodov\n\n"
+            f"PSAR: ON\n"
+            f"ClientId: {CLIENT_ID}"
+        )
 
-                await account.deploy()
+        last_signal = None
 
-
-            await account.wait_connected()
-
-            connection = account.get_rpc_connection()
-
-            await connection.connect()
-
-            await connection.wait_synchronized()
-
-            print("✅ MT5 pripojené")
-
-
-            # =================================================
-            # SYMBOL SPECIFICATION
-            # =================================================
-
-            symbol = SYMBOL_REQUEST
-
-            specification = await connection.get_symbol_specification(
-                symbol=symbol
-            )
-
-
-            if not specification:
-
-                send_telegram(
-                    f"❌ SYMBOL {symbol} NEBOL NÁJDENÝ"
-                )
-
-                await asyncio.sleep(30)
-                continue
-
-
-            point = float(
-                specification.get("point", 0.01)
-            )
-
-            digits = int(
-                specification.get("digits", 2)
-            )
-
-
-            # Obchodné parametre symbolu
-            min_volume = specification.get(
-                "minVolume",
-                "neznáme"
-            )
-
-            max_volume = specification.get(
-                "maxVolume",
-                "neznáme"
-            )
-
-            volume_step = specification.get(
-                "volumeStep",
-                "neznáme"
-            )
-
-            min_stop_distance = specification.get(
-                "minStopDistance",
-                "neznáme"
-            )
-
-
-            print(
-                "\n===== BTCUSD SPECIFICATION ====="
-            )
-
-            print(
-                f"Point: {point}"
-            )
-
-            print(
-                f"Digits: {digits}"
-            )
-
-            print(
-                f"Min volume: {min_volume}"
-            )
-
-            print(
-                f"Max volume: {max_volume}"
-            )
-
-            print(
-                f"Volume step: {volume_step}"
-            )
-
-            print(
-                f"Min stop distance: {min_stop_distance}"
-            )
-
-            print(
-                "================================"
-            )
-
-
-            if not startup_message_sent:
-
-                send_telegram(
-                    f"🚀 RIObot PSAR ŠTART\n\n"
-                    f"Symbol: {symbol}\n"
-                    f"Lot: {LOT_SIZE}\n"
-                    f"TP: {TP_POINTS}\n"
-                    f"SL: {SL_POINTS}\n"
-                    f"BE: +{BE_TRIGGER} → +{BE_LOCK}\n\n"
-                    f"Point: {point}\n"
-                    f"Digits: {digits}\n"
-                    f"Min lot: {min_volume}\n"
-                    f"Max lot: {max_volume}\n"
-                    f"Lot step: {volume_step}\n"
-                    f"Min stop distance: {min_stop_distance}"
-                )
-
-                startup_message_sent = True
-
-
-            # =================================================
-            # HLAVNÝ CYKLUS
-            # =================================================
-
-            while True:
-
-                try:
-
-                    # -----------------------------------------
-                    # CENA
-                    # -----------------------------------------
-
-                    price = await connection.get_symbol_price(
-                        symbol=symbol
-                    )
-
-                    bid = float(price["bid"])
-                    ask = float(price["ask"])
-
-
-                    # -----------------------------------------
-                    # POZÍCIE
-                    # -----------------------------------------
-
-                    positions = await connection.get_positions()
-
-                    bot_positions = [
-                        p
-                        for p in positions
-                        if p.get("symbol") == symbol
-                        and is_bot_position(p)
-                    ]
-
-
-                    # -----------------------------------------
-                    # BE
-                    # -----------------------------------------
-
-                    if bot_positions:
-
-                        await manage_break_even(
-                            connection,
-                            bot_positions,
-                            symbol,
-                            point,
-                            digits
-                        )
-
-
-                    # -----------------------------------------
-                    # SVIEČKY
-                    # -----------------------------------------
-
-                    candles = await account.get_historical_candles(
-                        symbol=symbol,
-                        timeframe="1m",
-                        start_time=None,
-                        limit=50
-                    )
-
-
-                    if not candles or len(candles) < 10:
-
-                        await asyncio.sleep(5)
-                        continue
-
-
-                    # -----------------------------------------
-                    # PSAR
-                    # -----------------------------------------
-
-                    trend, psar = calculate_psar(candles)
-
-
-                    if trend is None:
-
-                        await asyncio.sleep(5)
-                        continue
-
-
-                    signal = (
-                        "BUY"
-                        if trend == 1
-                        else "SELL"
-                    )
-
-
-                    print(
-                        f"{symbol} | "
-                        f"Bid {bid} | "
-                        f"Ask {ask} | "
-                        f"PSAR {psar} | "
-                        f"{signal}"
-                    )
-
-
-                    # -----------------------------------------
-                    # NEOTVÁRAJ DRUHÝ OBCHOD
-                    # -----------------------------------------
-
-                    if bot_positions:
-
-                        await asyncio.sleep(15)
-                        continue
-
-
-                    # =================================================
-                    # BUY
-                    # =================================================
-
-                    if trend == 1:
-
-                        sl = round(
-                            ask - SL_POINTS * point,
-                            digits
-                        )
-
-                        tp = round(
-                            ask + TP_POINTS * point,
-                            digits
-                        )
-
-
-                        print(
-                            "\n🟢 BUY SIGNÁL"
-                        )
-
-                        print(
-                            f"Cena: {ask}"
-                        )
-
-                        print(
-                            f"SL: {sl}"
-                        )
-
-                        print(
-                            f"TP: {tp}"
-                        )
-
-                        print(
-                            f"Lot: {LOT_SIZE}"
-                        )
-
-
-                        try:
-
-                            result = await connection.create_market_buy_order(
-                                symbol=symbol,
-                                volume=LOT_SIZE,
-                                stop_loss=sl,
-                                take_profit=tp,
-                                options={
-                                    "comment": COMMENT,
-                                    "clientId": str(MAGIC)
-                                }
-                            )
-
-
-                            print(
-                                f"✅ BUY RESULT: {result}"
-                            )
-
-
-                            send_telegram(
-                                f"🟢 BUY OTVORENÝ\n\n"
-                                f"Symbol: {symbol}\n"
-                                f"Lot: {LOT_SIZE}\n"
-                                f"Cena: {ask}\n"
-                                f"SL: {sl}\n"
-                                f"TP: {tp}\n\n"
-                                f"{result}"
-                            )
-
-
-                        except Exception as error:
-
-                            # -------------------------------------
-                            # KOMPLETNÁ METAAPI CHYBA
-                            # -------------------------------------
-
-                            try:
-
-                                detailed_error = api.format_error(
-                                    error
-                                )
-
-                            except Exception:
-
-                                detailed_error = str(error)
-
-
-                            print(
-                                "\n❌ BUY NEBOL OTVORENÝ"
-                            )
-
-                            print(
-                                f"CHYBA: {error}"
-                            )
-
-                            print(
-                                f"DETAIL: {detailed_error}"
-                            )
-
-
-                            send_telegram(
-                                f"❌ BUY NEBOL OTVORENÝ\n\n"
-                                f"Symbol: {symbol}\n"
-                                f"Lot: {LOT_SIZE}\n"
-                                f"Cena: {ask}\n"
-                                f"SL: {sl}\n"
-                                f"TP: {tp}\n\n"
-                                f"CHYBA:\n"
-                                f"{error}\n\n"
-                                f"DETAIL:\n"
-                                f"{detailed_error}\n\n"
-                                f"BTCUSD PARAMETRE:\n"
-                                f"Point: {point}\n"
-                                f"Digits: {digits}\n"
-                                f"Min lot: {min_volume}\n"
-                                f"Max lot: {max_volume}\n"
-                                f"Lot step: {volume_step}\n"
-                                f"Min stop: {min_stop_distance}"
-                            )
-
-
-                    # =================================================
-                    # SELL
-                    # =================================================
-
-                    elif trend == -1:
-
-                        sl = round(
-                            bid + SL_POINTS * point,
-                            digits
-                        )
-
-                        tp = round(
-                            bid - TP_POINTS * point,
-                            digits
-                        )
-
-
-                        print(
-                            "\n🔴 SELL SIGNÁL"
-                        )
-
-                        print(
-                            f"Cena: {bid}"
-                        )
-
-                        print(
-                            f"SL: {sl}"
-                        )
-
-                        print(
-                            f"TP: {tp}"
-                        )
-
-                        print(
-                            f"Lot: {LOT_SIZE}"
-                        )
-
-
-                        try:
-
-                            result = await connection.create_market_sell_order(
-                                symbol=symbol,
-                                volume=LOT_SIZE,
-                                stop_loss=sl,
-                                take_profit=tp,
-                                options={
-                                    "comment": COMMENT,
-                                    "clientId": str(MAGIC)
-                                }
-                            )
-
-
-                            print(
-                                f"✅ SELL RESULT: {result}"
-                            )
-
-
-                            send_telegram(
-                                f"🔴 SELL OTVORENÝ\n\n"
-                                f"Symbol: {symbol}\n"
-                                f"Lot: {LOT_SIZE}\n"
-                                f"Cena: {bid}\n"
-                                f"SL: {sl}\n"
-                                f"TP: {tp}\n\n"
-                                f"{result}"
-                            )
-
-
-                        except Exception as error:
-
-                            try:
-
-                                detailed_error = api.format_error(
-                                    error
-                                )
-
-                            except Exception:
-
-                                detailed_error = str(error)
-
-
-                            print(
-                                "\n❌ SELL NEBOL OTVORENÝ"
-                            )
-
-                            print(
-                                f"CHYBA: {error}"
-                            )
-
-                            print(
-                                f"DETAIL: {detailed_error}"
-                            )
-
-
-                            send_telegram(
-                                f"❌ SELL NEBOL OTVORENÝ\n\n"
-                                f"Symbol: {symbol}\n"
-                                f"Lot: {LOT_SIZE}\n"
-                                f"Cena: {bid}\n"
-                                f"SL: {sl}\n"
-                                f"TP: {tp}\n\n"
-                                f"CHYBA:\n"
-                                f"{error}\n\n"
-                                f"DETAIL:\n"
-                                f"{detailed_error}\n\n"
-                                f"BTCUSD PARAMETRE:\n"
-                                f"Point: {point}\n"
-                                f"Digits: {digits}\n"
-                                f"Min lot: {min_volume}\n"
-                                f"Max lot: {max_volume}\n"
-                                f"Lot step: {volume_step}\n"
-                                f"Min stop: {min_stop_distance}"
-                            )
-
-
-                    await asyncio.sleep(15)
-
-
-                except Exception as inner_error:
-
-                    try:
-
-                        detailed_error = api.format_error(
-                            inner_error
-                        )
-
-                    except Exception:
-
-                        detailed_error = str(inner_error)
-
-
-                    print(
-                        f"⚠️ RIObot chyba v cykle:\n"
-                        f"{inner_error}\n"
-                        f"DETAIL:\n"
-                        f"{detailed_error}"
-                    )
-
-
-                    send_telegram(
-                        f"⚠️ RIObot chyba v cykle:\n"
-                        f"{inner_error}\n\n"
-                        f"DETAIL:\n"
-                        f"{detailed_error}"
-                    )
-
-
-                    await asyncio.sleep(5)
-
-
-        except Exception as outer_error:
+        while True:
 
             try:
 
-                detailed_error = api.format_error(
-                    outer_error
+                symbol = SYMBOL_REQUEST
+
+                # =========================================
+                # BREAK EVEN
+                # =========================================
+
+                await manage_break_even(
+                    connection,
+                    symbol
+                )
+
+                # =========================================
+                # CANDLES
+                # =========================================
+
+                candles = await account.get_historical_candles(
+                    symbol=symbol,
+                    timeframe="1m",
+                    start_time=None,
+                    limit=50
+                )
+
+                if not candles:
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                df = pd.DataFrame(candles)
+
+                if df.empty:
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                if "time" in df.columns:
+                    df = df.sort_values("time")
+
+                required = [
+                    "open",
+                    "high",
+                    "low",
+                    "close"
+                ]
+
+                if not all(
+                    col in df.columns
+                    for col in required
+                ):
+
+                    print(
+                        "Chýbajú OHLC dáta:",
+                        df.columns.tolist()
+                    )
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                for col in required:
+
+                    df[col] = pd.to_numeric(
+                        df[col],
+                        errors="coerce"
+                    )
+
+                df = df.dropna(
+                    subset=required
+                )
+
+                if len(df) < 10:
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                # =========================================
+                # PSAR
+                # =========================================
+
+                psar, bullish = calculate_psar(
+                    df,
+                    PSAR_STEP,
+                    PSAR_MAX
+                )
+
+                if psar is None:
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                last_close = float(
+                    df["close"].iloc[-1]
+                )
+
+                if bullish:
+                    signal = "BUY"
+                else:
+                    signal = "SELL"
+
+                print(
+                    f"[PSAR] {symbol} | "
+                    f"Close={last_close} | "
+                    f"PSAR={psar} | "
+                    f"Signal={signal}"
+                )
+
+                # =========================================
+                # IBA JEDNA POZÍCIA
+                # =========================================
+
+                positions = await get_positions(
+                    connection,
+                    symbol
+                )
+
+                if positions:
+
+                    print(
+                        f"[INFO] Pozícia už existuje: "
+                        f"{len(positions)}"
+                    )
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                # =========================================
+                # NOVÝ SIGNÁL
+                # =========================================
+
+                if signal == last_signal:
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                # =========================================
+                # SYMBOL PARAMETRE
+                # =========================================
+
+                spec = await get_symbol_info(
+                    connection,
+                    symbol
+                )
+
+                if not spec:
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                point = float(
+                    spec.get("point", 0.01)
+                )
+
+                digits = int(
+                    spec.get("digits", 2)
+                )
+
+                min_volume = spec.get(
+                    "minVolume",
+                    "neznáme"
+                )
+
+                max_volume = spec.get(
+                    "maxVolume",
+                    "neznáme"
+                )
+
+                volume_step = spec.get(
+                    "volumeStep",
+                    "neznáme"
+                )
+
+                min_stop = spec.get(
+                    "minStopDistance",
+                    "neznáme"
+                )
+
+                # =========================================
+                # CENA
+                # =========================================
+
+                price = await connection.get_symbol_price(
+                    symbol
+                )
+
+                if signal == "BUY":
+
+                    entry = float(
+                        price["ask"]
+                    )
+
+                else:
+
+                    entry = float(
+                        price["bid"]
+                    )
+
+                # =========================================
+                # SL / TP
+                # =========================================
+
+                if signal == "BUY":
+
+                    sl = round(
+                        entry - SL_POINTS * point,
+                        digits
+                    )
+
+                    tp = round(
+                        entry + TP_POINTS * point,
+                        digits
+                    )
+
+                else:
+
+                    sl = round(
+                        entry + SL_POINTS * point,
+                        digits
+                    )
+
+                    tp = round(
+                        entry - TP_POINTS * point,
+                        digits
+                    )
+
+                print(
+                    "\n================================"
+                )
+
+                print(f"SIGNAL: {signal}")
+                print(f"Symbol: {symbol}")
+                print(f"Lot: {LOT_SIZE}")
+                print(f"Entry: {entry}")
+                print(f"SL: {sl}")
+                print(f"TP: {tp}")
+                print(f"Point: {point}")
+                print(f"Digits: {digits}")
+                print(f"Min lot: {min_volume}")
+                print(f"Max lot: {max_volume}")
+                print(f"Lot step: {volume_step}")
+                print(f"Min stop: {min_stop}")
+                print(f"ClientId: {CLIENT_ID}")
+
+                print(
+                    "================================\n"
+                )
+
+                # =========================================
+                # BUY
+                # =========================================
+
+                if signal == "BUY":
+
+                    try:
+
+                        result = await connection.create_market_buy_order(
+                            symbol=symbol,
+                            volume=LOT_SIZE,
+                            stop_loss=sl,
+                            take_profit=tp,
+                            options={
+                                "comment": COMMENT,
+                                "clientId": CLIENT_ID
+                            }
+                        )
+
+                        print(
+                            "BUY OPENED:",
+                            result
+                        )
+
+                        telegram(
+                            "🟢 BUY OTVORENÝ\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Lot: {LOT_SIZE}\n"
+                            f"Cena: {entry}\n"
+                            f"SL: {sl}\n"
+                            f"TP: {tp}"
+                        )
+
+                        last_signal = signal
+
+                    except Exception as error:
+
+                        detailed_error = get_error_details(
+                            api,
+                            error
+                        )
+
+                        telegram(
+                            "❌ BUY NEBOL OTVORENÝ\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Lot: {LOT_SIZE}\n"
+                            f"Cena: {entry}\n"
+                            f"SL: {sl}\n"
+                            f"TP: {tp}\n\n"
+                            f"CHYBA:\n{error}\n\n"
+                            f"DETAIL:\n{detailed_error}\n\n"
+                            f"BTCUSD PARAMETRE:\n"
+                            f"Point: {point}\n"
+                            f"Digits: {digits}\n"
+                            f"Min lot: {min_volume}\n"
+                            f"Max lot: {max_volume}\n"
+                            f"Lot step: {volume_step}\n"
+                            f"Min stop: {min_stop}"
+                        )
+
+                # =========================================
+                # SELL
+                # =========================================
+
+                elif signal == "SELL":
+
+                    try:
+
+                        result = await connection.create_market_sell_order(
+                            symbol=symbol,
+                            volume=LOT_SIZE,
+                            stop_loss=sl,
+                            take_profit=tp,
+                            options={
+                                "comment": COMMENT,
+                                "clientId": CLIENT_ID
+                            }
+                        )
+
+                        print(
+                            "SELL OPENED:",
+                            result
+                        )
+
+                        telegram(
+                            "🔴 SELL OTVORENÝ\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Lot: {LOT_SIZE}\n"
+                            f"Cena: {entry}\n"
+                            f"SL: {sl}\n"
+                            f"TP: {tp}"
+                        )
+
+                        last_signal = signal
+
+                    except Exception as error:
+
+                        detailed_error = get_error_details(
+                            api,
+                            error
+                        )
+
+                        telegram(
+                            "❌ SELL NEBOL OTVORENÝ\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Lot: {LOT_SIZE}\n"
+                            f"Cena: {entry}\n"
+                            f"SL: {sl}\n"
+                            f"TP: {tp}\n\n"
+                            f"CHYBA:\n{error}\n\n"
+                            f"DETAIL:\n{detailed_error}\n\n"
+                            f"BTCUSD PARAMETRE:\n"
+                            f"Point: {point}\n"
+                            f"Digits: {digits}\n"
+                            f"Min lot: {min_volume}\n"
+                            f"Max lot: {max_volume}\n"
+                            f"Lot step: {volume_step}\n"
+                            f"Min stop: {min_stop}"
+                        )
+
+                await asyncio.sleep(
+                    LOOP_SECONDS
                 )
 
             except Exception:
 
-                detailed_error = str(outer_error)
+                error_text = traceback.format_exc()
 
+                print(
+                    "⚠️ RIObot chyba v cykle:"
+                )
 
-            print(
-                f"🔴 CHYBA PRIPOJENIA:\n"
-                f"{outer_error}\n"
-                f"DETAIL:\n"
-                f"{detailed_error}"
-            )
+                print(error_text)
 
+                telegram(
+                    "⚠️ RIObot chyba v cykle:\n\n"
+                    f"{error_text}"
+                )
 
-            send_telegram(
-                f"🔴 RIObot MetaApi problém:\n"
-                f"{outer_error}\n\n"
-                f"DETAIL:\n"
-                f"{detailed_error}"
-            )
+                await asyncio.sleep(
+                    LOOP_SECONDS
+                )
 
+    except Exception:
 
-            await asyncio.sleep(15)
+        error_text = traceback.format_exc()
+
+        print(
+            "❌ RIObot kritická chyba:"
+        )
+
+        print(error_text)
+
+        telegram(
+            "❌ RIObot kritická chyba:\n\n"
+            f"{error_text}"
+        )
+
+    finally:
+
+        try:
+
+            if connection:
+                await connection.close()
+
+        except Exception:
+            pass
 
 
 # =========================================================
@@ -885,6 +863,944 @@ async def main():
 
 if __name__ == "__main__":
 
-    keep_alive()
+    flask_thread = Thread(
+        target=run_flask,
+        daemon=True
+    )
+
+    flask_thread.start()
 
     asyncio.run(main())
+import os
+import traceback
+from flask import Flask
+from threading import Thread
+from datetime import datetime, timezone
+
+import pandas as pd
+import requests
+from metaapi_cloud_sdk import MetaApi
+
+
+# =========================================================
+# NASTAVENIA
+# =========================================================
+
+SYMBOL_REQUEST = "BTCUSD"
+
+# CENTOVÝ ÚČET – nemeníme
+LOT_SIZE = 0.30
+
+# PSAR
+PSAR_STEP = 0.02
+PSAR_MAX = 0.20
+
+# SL / TP v POINTS
+TP_POINTS = 600.0
+SL_POINTS = 1500.0
+
+# MAGIC – môže zostať
+MAGIC = 26092026
+
+COMMENT = "Riobot PSAR"
+
+# MetaApi clientId MUSÍ mať správny formát
+CLIENT_ID = "RIO_BTCUSD_PSAR"
+
+# BREAK EVEN
+BE_TRIGGER = 250.0
+BE_LOCK = 100.0
+
+# Interval kontroly
+LOOP_SECONDS = 10
+
+
+# =========================================================
+# ENV
+# =========================================================
+
+M_TOKEN = os.getenv("M_TOKEN")
+M_ACC = os.getenv("M_ACC")
+
+T_TOKEN = os.getenv("T_TOKEN")
+T_CHAT = os.getenv("T_CHAT")
+
+
+# =========================================================
+# FLASK KEEP ALIVE
+# =========================================================
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Riobot is running"
+
+
+@app.route("/health")
+def health():
+    return "OK"
+
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+
+# =========================================================
+# TELEGRAM
+# =========================================================
+
+def telegram(message):
+    if not T_TOKEN or not T_CHAT:
+        print(message)
+        return
+
+    try:
+        url = f"https://api.telegram.org/bot{T_TOKEN}/sendMessage"
+
+        requests.post(
+            url,
+            data={
+                "chat_id": T_CHAT,
+                "text": message
+            },
+            timeout=10
+        )
+
+    except Exception as e:
+        print("Telegram chyba:", e)
+
+
+# =========================================================
+# PSAR
+# =========================================================
+
+def calculate_psar(df, step=0.02, max_af=0.20):
+
+    high = df["high"].astype(float).tolist()
+    low = df["low"].astype(float).tolist()
+
+    n = len(df)
+
+    if n < 5:
+        return None, None
+
+    psar = [0.0] * n
+
+    bull = True
+    af = step
+
+    ep = high[0]
+    psar[0] = low[0]
+
+    for i in range(1, n):
+
+        prev_psar = psar[i - 1]
+
+        if bull:
+
+            psar[i] = prev_psar + af * (ep - prev_psar)
+
+            if i >= 2:
+                psar[i] = min(
+                    psar[i],
+                    low[i - 1],
+                    low[i - 2]
+                )
+            else:
+                psar[i] = min(
+                    psar[i],
+                    low[i - 1]
+                )
+
+            if low[i] < psar[i]:
+
+                bull = False
+                psar[i] = ep
+
+                ep = low[i]
+                af = step
+
+            elif high[i] > ep:
+
+                ep = high[i]
+                af = min(af + step, max_af)
+
+        else:
+
+            psar[i] = prev_psar + af * (ep - prev_psar)
+
+            if i >= 2:
+                psar[i] = max(
+                    psar[i],
+                    high[i - 1],
+                    high[i - 2]
+                )
+            else:
+                psar[i] = max(
+                    psar[i],
+                    high[i - 1]
+                )
+
+            if high[i] > psar[i]:
+
+                bull = True
+                psar[i] = ep
+
+                ep = high[i]
+                af = step
+
+            elif low[i] < ep:
+
+                ep = low[i]
+                af = min(af + step, max_af)
+
+    return psar[-1], bull
+
+
+# =========================================================
+# FORMAT ERROR
+# =========================================================
+
+def get_error_details(api, error):
+
+    try:
+        return api.format_error(error)
+
+    except Exception:
+
+        try:
+            return str(error)
+
+        except Exception:
+            return repr(error)
+
+
+# =========================================================
+# SYMBOL INFO
+# =========================================================
+
+async def get_symbol_info(connection, symbol):
+
+    try:
+
+        spec = await connection.get_symbol_specification(symbol)
+
+        return spec
+
+    except Exception as e:
+
+        print("Nepodarilo sa načítať symbol specification:", e)
+
+        return None
+
+
+# =========================================================
+# OTVORENÉ POZÍCIE
+# =========================================================
+
+async def get_positions(connection, symbol):
+
+    try:
+
+        positions = await connection.get_positions()
+
+        return [
+            p for p in positions
+            if p.get("symbol") == symbol
+        ]
+
+    except Exception as e:
+
+        print("Chyba pri načítaní pozícií:", e)
+
+        return []
+
+
+# =========================================================
+# BREAK EVEN
+# =========================================================
+
+async def manage_break_even(connection, symbol):
+
+    try:
+
+        positions = await get_positions(connection, symbol)
+
+        if not positions:
+            return
+
+        spec = await get_symbol_info(connection, symbol)
+
+        if not spec:
+            return
+
+        point = float(spec.get("point", 0.01))
+        digits = int(spec.get("digits", 2))
+
+        for position in positions:
+
+            try:
+
+                position_id = position.get("id")
+                position_type = position.get("type")
+
+                open_price = float(
+                    position.get("openPrice")
+                )
+
+                current_price = float(
+                    position.get("currentPrice")
+                )
+
+                current_sl = position.get("stopLoss")
+
+                take_profit = position.get("takeProfit")
+
+                # =========================================
+                # BUY
+                # =========================================
+
+                if position_type == "POSITION_TYPE_BUY":
+
+                    profit_points = (
+                        current_price - open_price
+                    ) / point
+
+                    if profit_points >= BE_TRIGGER:
+
+                        new_sl = round(
+                            open_price + BE_LOCK * point,
+                            digits
+                        )
+
+                        # SL posúvame iba dopredu
+                        if (
+                            current_sl is None
+                            or float(current_sl) < new_sl
+                        ):
+
+                            await connection.modify_position(
+                                position_id=position_id,
+                                stop_loss=new_sl,
+                                take_profit=take_profit
+                            )
+
+                            telegram(
+                                "🟢 BREAK EVEN – BUY\n\n"
+                                f"Symbol: {symbol}\n"
+                                f"Open: {open_price}\n"
+                                f"Nový SL: {new_sl}\n"
+                                f"Profit: {profit_points:.0f} bodov"
+                            )
+
+                # =========================================
+                # SELL
+                # =========================================
+
+                elif position_type == "POSITION_TYPE_SELL":
+
+                    profit_points = (
+                        open_price - current_price
+                    ) / point
+
+                    if profit_points >= BE_TRIGGER:
+
+                        new_sl = round(
+                            open_price - BE_LOCK * point,
+                            digits
+                        )
+
+                        # SL posúvame iba dopredu
+                        if (
+                            current_sl is None
+                            or float(current_sl) > new_sl
+                        ):
+
+                            await connection.modify_position(
+                                position_id=position_id,
+                                stop_loss=new_sl,
+                                take_profit=take_profit
+                            )
+
+                            telegram(
+                                "🔴 BREAK EVEN – SELL\n\n"
+                                f"Symbol: {symbol}\n"
+                                f"Open: {open_price}\n"
+                                f"Nový SL: {new_sl}\n"
+                                f"Profit: {profit_points:.0f} bodov"
+                            )
+
+            except Exception as e:
+
+                print(
+                    "BE chyba:",
+                    traceback.format_exc()
+                )
+
+    except Exception as e:
+
+        print(
+            "Chyba manage_break_even:",
+            traceback.format_exc()
+        )
+
+
+# =========================================================
+# HLAVNÝ BOT
+# =========================================================
+
+async def main():
+
+    if not M_TOKEN:
+        telegram("❌ Chýba M_TOKEN")
+        return
+
+    if not M_ACC:
+        telegram("❌ Chýba M_ACC")
+        return
+
+    api = MetaApi(M_TOKEN)
+
+    account = None
+    connection = None
+
+    try:
+
+        # =============================================
+        # METAAPI ACCOUNT
+        # =============================================
+
+        account = await api.metatrader_account_api.get_account(
+            M_ACC
+        )
+
+        await account.wait_connected()
+
+        connection = account.get_rpc_connection()
+
+        await connection.connect()
+
+        await connection.wait_synchronized()
+
+        telegram(
+            "🟢 RIObot spustený\n\n"
+            f"Symbol: {SYMBOL_REQUEST}\n"
+            f"Lot: {LOT_SIZE}\n"
+            f"TP: {TP_POINTS} bodov\n"
+            f"SL: {SL_POINTS} bodov\n"
+            f"BE trigger: {BE_TRIGGER} bodov\n"
+            f"BE lock: {BE_LOCK} bodov\n\n"
+            f"PSAR: ON\n"
+            f"ClientId: {CLIENT_ID}"
+        )
+
+        # =============================================
+        # POSLEDNÝ SIGNAL
+        # =============================================
+
+        last_signal = None
+
+        # =============================================
+        # LOOP
+        # =============================================
+
+        while True:
+
+            try:
+
+                symbol = SYMBOL_REQUEST
+
+                # =========================================
+                # BREAK EVEN
+                # =========================================
+
+                await manage_break_even(
+                    connection,
+                    symbol
+                )
+
+                # =========================================
+                # HISTORICKÉ CANDLE
+                # =========================================
+
+                candles = await account.get_historical_candles(
+                    symbol=symbol,
+                    timeframe="1m",
+                    start_time=None,
+                    limit=50
+                )
+
+                if not candles:
+
+                    await asyncio.sleep(LOOP_SECONDS)
+                    continue
+
+                df = pd.DataFrame(candles)
+
+                if df.empty:
+
+                    await asyncio.sleep(LOOP_SECONDS)
+                    continue
+
+                # =========================================
+                # PREVOD STĹPCOV
+                # =========================================
+
+                if "time" in df.columns:
+                    df = df.sort_values("time")
+
+                required = [
+                    "open",
+                    "high",
+                    "low",
+                    "close"
+                ]
+
+                if not all(
+                    col in df.columns
+                    for col in required
+                ):
+
+                    print(
+                        "Chýbajú OHLC dáta:",
+                        df.columns.tolist()
+                    )
+
+                    await asyncio.sleep(LOOP_SECONDS)
+                    continue
+
+                for col in required:
+                    df[col] = pd.to_numeric(
+                        df[col],
+                        errors="coerce"
+                    )
+
+                df = df.dropna(
+                    subset=required
+                )
+
+                if len(df) < 10:
+
+                    await asyncio.sleep(LOOP_SECONDS)
+                    continue
+
+                # =========================================
+                # PSAR
+                # =========================================
+
+                psar, bullish = calculate_psar(
+                    df,
+                    PSAR_STEP,
+                    PSAR_MAX
+                )
+
+                if psar is None:
+
+                    await asyncio.sleep(LOOP_SECONDS)
+                    continue
+
+                last_close = float(
+                    df["close"].iloc[-1]
+                )
+
+                # =========================================
+                # SIGNAL
+                # =========================================
+
+                if bullish:
+
+                    signal = "BUY"
+
+                else:
+
+                    signal = "SELL"
+
+                print(
+                    f"[PSAR] "
+                    f"{symbol} | "
+                    f"Close={last_close} | "
+                    f"PSAR={psar} | "
+                    f"Signal={signal}"
+                )
+
+                # =========================================
+                # IBA JEDNA POZÍCIA
+                # =========================================
+
+                positions = await get_positions(
+                    connection,
+                    symbol
+                )
+
+                if positions:
+
+                    print(
+                        f"[INFO] Pozícia už existuje: "
+                        f"{len(positions)}"
+                    )
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                # =========================================
+                # OTVORENIE IBA PRI NOVOM SIGNÁLE
+                # =========================================
+
+                if signal == last_signal:
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                # =========================================
+                # SYMBOL SPECIFICATION
+                # =========================================
+
+                spec = await get_symbol_info(
+                    connection,
+                    symbol
+                )
+
+                if not spec:
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                point = float(
+                    spec.get("point", 0.01)
+                )
+
+                digits = int(
+                    spec.get("digits", 2)
+                )
+
+                min_volume = spec.get(
+                    "minVolume",
+                    "neznáme"
+                )
+
+                max_volume = spec.get(
+                    "maxVolume",
+                    "neznáme"
+                )
+
+                volume_step = spec.get(
+                    "volumeStep",
+                    "neznáme"
+                )
+
+                min_stop = spec.get(
+                    "minStopDistance",
+                    "neznáme"
+                )
+
+                # =========================================
+                # AKTUÁLNA CENA
+                # =========================================
+
+                price = await connection.get_symbol_price(
+                    symbol
+                )
+
+                if signal == "BUY":
+
+                    entry = float(
+                        price["ask"]
+                    )
+
+                else:
+
+                    entry = float(
+                        price["bid"]
+                    )
+
+                # =========================================
+                # SL / TP
+                # =========================================
+
+                if signal == "BUY":
+
+                    sl = round(
+                        entry - SL_POINTS * point,
+                        digits
+                    )
+
+                    tp = round(
+                        entry + TP_POINTS * point,
+                        digits
+                    )
+
+                else:
+
+                    sl = round(
+                        entry + SL_POINTS * point,
+                        digits
+                    )
+
+                    tp = round(
+                        entry - TP_POINTS * point,
+                        digits
+                    )
+
+                # =========================================
+                # INFO
+                # =========================================
+
+                print(
+                    "\n================================"
+                )
+
+                print(
+                    f"SIGNAL: {signal}"
+                )
+
+                print(
+                    f"Symbol: {symbol}"
+                )
+
+                print(
+                    f"Lot: {LOT_SIZE}"
+                )
+
+                print(
+                    f"Entry: {entry}"
+                )
+
+                print(
+                    f"SL: {sl}"
+                )
+
+                print(
+                    f"TP: {tp}"
+                )
+
+                print(
+                    f"Point: {point}"
+                )
+
+                print(
+                    f"Digits: {digits}"
+                )
+
+                print(
+                    f"Min lot: {min_volume}"
+                )
+
+                print(
+                    f"Max lot: {max_volume}"
+                )
+
+                print(
+                    f"Lot step: {volume_step}"
+                )
+
+                print(
+                    f"Min stop: {min_stop}"
+                )
+
+                print(
+                    f"ClientId: {CLIENT_ID}"
+                )
+
+                print(
+                    "================================\n"
+                )
+
+                # =========================================
+                # BUY
+                # =========================================
+
+                if signal == "BUY":
+
+                    try:
+
+                        result = await connection.create_market_buy_order(
+                            symbol=symbol,
+                            volume=LOT_SIZE,
+                            stop_loss=sl,
+                            take_profit=tp,
+                            options={
+                                "comment": COMMENT,
+                                "clientId": CLIENT_ID
+                            }
+                        )
+
+                        print(
+                            "BUY OPENED:",
+                            result
+                        )
+
+                        telegram(
+                            "🟢 BUY OTVORENÝ\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Lot: {LOT_SIZE}\n"
+                            f"Cena: {entry}\n"
+                            f"SL: {sl}\n"
+                            f"TP: {tp}"
+                        )
+
+                        last_signal = signal
+
+                    except Exception as error:
+
+                        detailed_error = get_error_details(
+                            api,
+                            error
+                        )
+
+                        telegram(
+                            "❌ BUY NEBOL OTVORENÝ\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Lot: {LOT_SIZE}\n"
+                            f"Cena: {entry}\n"
+                            f"SL: {sl}\n"
+                            f"TP: {tp}\n\n"
+                            f"CHYBA:\n{error}\n\n"
+                            f"DETAIL:\n{detailed_error}\n\n"
+                            f"BTCUSD PARAMETRE:\n"
+                            f"Point: {point}\n"
+                            f"Digits: {digits}\n"
+                            f"Min lot: {min_volume}\n"
+                            f"Max lot: {max_volume}\n"
+                            f"Lot step: {volume_step}\n"
+                            f"Min stop: {min_stop}"
+                        )
+
+                # =========================================
+                # SELL
+                # =========================================
+
+                elif signal == "SELL":
+
+                    try:
+
+                        result = await connection.create_market_sell_order(
+                            symbol=symbol,
+                            volume=LOT_SIZE,
+                            stop_loss=sl,
+                            take_profit=tp,
+                            options={
+                                "comment": COMMENT,
+                                "clientId": CLIENT_ID
+                            }
+                        )
+
+                        print(
+                            "SELL OPENED:",
+                            result
+                        )
+
+                        telegram(
+                            "🔴 SELL OTVORENÝ\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Lot: {LOT_SIZE}\n"
+                            f"Cena: {entry}\n"
+                            f"SL: {sl}\n"
+                            f"TP: {tp}"
+                        )
+
+                        last_signal = signal
+
+                    except Exception as error:
+
+                        detailed_error = get_error_details(
+                            api,
+                            error
+                        )
+
+                        telegram(
+                            "❌ SELL NEBOL OTVORENÝ\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Lot: {LOT_SIZE}\n"
+                            f"Cena: {entry}\n"
+                            f"SL: {sl}\n"
+                            f"TP: {tp}\n\n"
+                            f"CHYBA:\n{error}\n\n"
+                            f"DETAIL:\n{detailed_error}\n\n"
+                            f"BTCUSD PARAMETRE:\n"
+                            f"Point: {point}\n"
+                            f"Digits: {digits}\n"
+                            f"Min lot: {min_volume}\n"
+                            f"Max lot: {max_volume}\n"
+                            f"Lot step: {volume_step}\n"
+                            f"Min stop: {min_stop}"
+                        )
+
+                await asyncio.sleep(
+                    LOOP_SECONDS
+                )
+
+            except Exception:
+
+                error_text = traceback.format_exc()
+
+                print(
+                    "⚠️ RIObot chyba v cykle:"
+                )
+
+                print(error_text)
+
+                telegram(
+                    "⚠️ RIObot chyba v cykle:\n\n"
+                    f"{error_text}"
+                )
+
+                await asyncio.sleep(
+                    LOOP_SECONDS
+                )
+
+    except Exception:
+
+        error_text = traceback.format_exc()
+
+        print(
+            "❌ RIObot kritická chyba:"
+        )
+
+        print(error_text)
+
+        telegram(
+            "❌ RIObot kritická chyba:\n\n"
+            f"{error_text}"
+        )
+
+    finally:
+
+        try:
+
+            if connection:
+                await connection.close()
+
+        except Exception:
+            pass
+
+
+# =========================================================
+# START
+# =========================================================
+
+if __name__ == "__main__":
+
+    flask_thread = Thread(
+        target=run_flask,
+        daemon=True
+    )
+
+    flask_thread.start()
+
+    asyncio.run(main())
+
+Dôležité: "LOT_SIZE = 0.30" som nechal presne tak, ako si chcel pre centový účet. BE tiež zostáva aktívny.
+
+V Renderi teda nahraď celý "main.py" týmto kódom a redeployni. Tentoraz už "clientId" nebude "26092026", ale "RIO_BTCUSD_PSAR".
