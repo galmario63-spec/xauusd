@@ -12,7 +12,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot ProCent M15 Pure Active"
+    return "Riobot ProCent M1 Pure Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -29,7 +29,7 @@ METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 SYMBOL = "BTCUSD"
 LOT_SIZE = 0.02
-TIMEFRAME = "15m"
+TIMEFRAME = "1m"  # Zmenené na M1
 
 TP_POINTS = 600.0       
 BE_TRIGGER = 400.0      
@@ -64,8 +64,8 @@ async def main():
     await connection.wait_synchronized()
     
     if not startup_message_sent:
-        send_telegram("🚀 Riobot beží s časovou kontrolou sviečok.")
-        print("Riobot je online a pripojený.")
+        send_telegram("🚀 Riobot beží na M1 reaktívnom móde.")
+        print("Riobot je online a pripojený na M1.")
         startup_message_sent = True
 
     while True:
@@ -102,7 +102,7 @@ async def main():
                 candles = await connection.get_historical_candles(SYMBOL, TIMEFRAME, None, 3)
                 
                 if candles and len(candles) >= 2:
-                    prev_candle = candles[-2] # Predchádzajúca uzavretá sviečka
+                    prev_candle = candles[-2] 
                     candle_time = prev_candle['time']
                     
                     if last_checked_candle_time != candle_time:
@@ -116,20 +116,20 @@ async def main():
                                 tp = ask + TP_POINTS
                                 await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                                 last_checked_candle_time = candle_time
-                                send_telegram("🟢 BTCUSD BUY otvorený.")
+                                send_telegram("🟢 M1 BTCUSD BUY otvorený.")
 
                             elif prev_candle['close'] < prev_candle['open']:
                                 sl = bid + SL_POINTS
                                 tp = bid - TP_POINTS
                                 await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                                 last_checked_candle_time = candle_time
-                                send_telegram("🔴 BTCUSD SELL otvorený.")
+                                send_telegram("🔴 M1 BTCUSD SELL otvorený.")
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
         except Exception as inner_e:
             print(f"Chyba v slučke: {inner_e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
 if __name__ == "__main__":
     keep_alive()
