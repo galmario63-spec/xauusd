@@ -1,6 +1,7 @@
 import asyncio
 import os
 import traceback
+from datetime import datetime
 from flask import Flask
 from threading import Thread
 
@@ -18,45 +19,22 @@ SYMBOL_REQUEST = "BTCUSD"
 # CENTOVÝ ÚČET
 LOT_SIZE = 0.30
 
-
-# =========================================================
 # PSAR
-# =========================================================
-
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
-
-# =========================================================
-# EMA FILTER - 5M SMER
-# =========================================================
-
+# EMA FILTER - M5
 EMA_PERIOD = 50
 
-
-# =========================================================
 # SL / TP - 1:1
-# =========================================================
-
 TP_POINTS = 1500.0
 SL_POINTS = 1500.0
 
-
-# =========================================================
 # BREAK EVEN
-# =========================================================
-
-# Pri +500 bodoch aktivujeme ochranu zisku.
 BE_TRIGGER = 500.0
-
-# SL sa posunie 100 bodov do zisku.
 BE_LOCK = 100.0
 
-
-# =========================================================
 # OSTATNÉ
-# =========================================================
-
 MAGIC = 26092026
 COMMENT = "Riobot 5M+1M BE+PSAR"
 
@@ -72,6 +50,18 @@ M_ACC = os.getenv("M_ACC")
 
 T_TOKEN = os.getenv("T_TOKEN")
 T_CHAT = os.getenv("T_CHAT")
+
+
+# =========================================================
+# LOG
+# =========================================================
+
+def log(message):
+    """
+    Print s flush=True, aby Render zobrazil log okamžite.
+    """
+    now = datetime.now().strftime("%H:%M:%S")
+    print(f"[{now}] {message}", flush=True)
 
 
 # =========================================================
@@ -102,7 +92,8 @@ def run_flask():
 
     app.run(
         host="0.0.0.0",
-        port=port
+        port=port,
+        use_reloader=False
     )
 
 
@@ -113,8 +104,7 @@ def run_flask():
 def telegram(message):
 
     if not T_TOKEN or not T_CHAT:
-
-        print(message)
+        log(message)
         return
 
     try:
@@ -134,11 +124,7 @@ def telegram(message):
         )
 
     except Exception as e:
-
-        print(
-            "Telegram chyba:",
-            e
-        )
+        log(f"Telegram chyba: {e}")
 
 
 # =========================================================
@@ -180,10 +166,7 @@ def calculate_psar(
 
         previous_psar = psar[i - 1]
 
-        # =================================================
         # BULL
-        # =================================================
-
         if bull:
 
             psar[i] = (
@@ -211,11 +194,8 @@ def calculate_psar(
             if low[i] < psar[i]:
 
                 bull = False
-
                 psar[i] = ep
-
                 ep = low[i]
-
                 af = step
 
             elif high[i] > ep:
@@ -227,10 +207,7 @@ def calculate_psar(
                     max_af
                 )
 
-        # =================================================
         # BEAR
-        # =================================================
-
         else:
 
             psar[i] = (
@@ -258,11 +235,8 @@ def calculate_psar(
             if high[i] > psar[i]:
 
                 bull = True
-
                 psar[i] = ep
-
                 ep = high[i]
-
                 af = step
 
             elif low[i] < ep:
@@ -306,13 +280,9 @@ def get_error_details(
 ):
 
     try:
-
-        return api.format_error(
-            error
-        )
+        return api.format_error(error)
 
     except Exception:
-
         return str(error)
 
 
@@ -336,9 +306,8 @@ async def get_symbol_info(
 
     except Exception as e:
 
-        print(
-            "Symbol specification chyba:",
-            e
+        log(
+            f"Symbol specification chyba: {e}"
         )
 
         return None
@@ -368,9 +337,8 @@ async def get_positions(
 
     except Exception as e:
 
-        print(
-            "Chyba pri načítaní pozícií:",
-            e
+        log(
+            f"Chyba pri načítaní pozícií: {e}"
         )
 
         return []
@@ -400,11 +368,14 @@ async def get_closed_candles(
         )
 
         if not candles:
+
+            log(
+                f"{timeframe}: žiadne candles"
+            )
+
             return None
 
-        df = pd.DataFrame(
-            candles
-        )
+        df = pd.DataFrame(candles)
 
         if df.empty:
             return None
@@ -426,6 +397,11 @@ async def get_closed_candles(
             col in df.columns
             for col in required
         ):
+
+            log(
+                f"{timeframe}: chýbajú OHLC dáta"
+            )
+
             return None
 
         for col in required:
@@ -440,9 +416,15 @@ async def get_closed_candles(
         )
 
         if len(df) < minimum + 1:
+
+            log(
+                f"{timeframe}: málo dát "
+                f"({len(df)})"
+            )
+
             return None
 
-        # POSLEDNÁ SVIEČKA SA EŠTE TVORÍ
+        # Posledná sviečka sa ešte tvorí
         closed_df = df.iloc[:-1].copy()
 
         if len(closed_df) < minimum:
@@ -452,9 +434,9 @@ async def get_closed_candles(
 
     except Exception:
 
-        print(
-            f"Chyba dát {timeframe}:",
-            traceback.format_exc()
+        log(
+            f"Chyba dát {timeframe}:\n"
+            f"{traceback.format_exc()}"
         )
 
         return None
@@ -505,38 +487,21 @@ async def manage_break_even(
 
             try:
 
-                position_id = position.get(
-                    "id"
-                )
-
-                position_type = position.get(
-                    "type"
-                )
+                position_id = position.get("id")
+                position_type = position.get("type")
 
                 open_price = float(
-                    position.get(
-                        "openPrice"
-                    )
+                    position.get("openPrice")
                 )
 
                 current_price = float(
-                    position.get(
-                        "currentPrice"
-                    )
+                    position.get("currentPrice")
                 )
 
-                current_sl = position.get(
-                    "stopLoss"
-                )
+                current_sl = position.get("stopLoss")
+                take_profit = position.get("takeProfit")
 
-                take_profit = position.get(
-                    "takeProfit"
-                )
-
-                # =========================================
                 # BUY
-                # =========================================
-
                 if (
                     position_type
                     == "POSITION_TYPE_BUY"
@@ -547,10 +512,7 @@ async def manage_break_even(
                         - open_price
                     ) / point
 
-                    if (
-                        profit_points
-                        >= BE_TRIGGER
-                    ):
+                    if profit_points >= BE_TRIGGER:
 
                         new_sl = round(
                             open_price
@@ -581,10 +543,7 @@ async def manage_break_even(
                                 f"Zamknuté: +{BE_LOCK:.0f} bodov"
                             )
 
-                # =========================================
                 # SELL
-                # =========================================
-
                 elif (
                     position_type
                     == "POSITION_TYPE_SELL"
@@ -595,10 +554,7 @@ async def manage_break_even(
                         - current_price
                     ) / point
 
-                    if (
-                        profit_points
-                        >= BE_TRIGGER
-                    ):
+                    if profit_points >= BE_TRIGGER:
 
                         new_sl = round(
                             open_price
@@ -631,25 +587,21 @@ async def manage_break_even(
 
             except Exception:
 
-                print(
-                    "BE chyba:",
-                    traceback.format_exc()
+                log(
+                    "BE chyba:\n"
+                    + traceback.format_exc()
                 )
 
     except Exception:
 
-        print(
-            "BE systém chyba:",
-            traceback.format_exc()
+        log(
+            "BE systém chyba:\n"
+            + traceback.format_exc()
         )
 
 
 # =========================================================
 # PSAR TRAILING
-#
-# DÔLEŽITÉ:
-# TRAILING SA AKTIVUJE AŽ KEĎ OBCHOD DOSIAHNE
-# MINIMÁLNE +500 BODOV.
 # =========================================================
 
 async def manage_psar_stop(
@@ -695,22 +647,14 @@ async def manage_psar_stop(
         )
 
         try:
-
-            min_stop_points = float(
-                min_stop_raw
-            )
+            min_stop_points = float(min_stop_raw)
 
         except Exception:
-
             min_stop_points = 0.0
 
         min_distance = (
             min_stop_points * point
         )
-
-        # =================================================
-        # 5M PSAR PRE TRAILING
-        # =========================================================
 
         closed_df = await get_closed_candles(
             account,
@@ -732,13 +676,7 @@ async def manage_psar_stop(
         if psar is None:
             return
 
-        psar = float(
-            psar
-        )
-
-        # =================================================
-        # AKTUÁLNA CENA
-        # =========================================================
+        psar = float(psar)
 
         price = await (
             connection.get_symbol_price(
@@ -746,66 +684,34 @@ async def manage_psar_stop(
             )
         )
 
-        bid = float(
-            price["bid"]
-        )
-
-        ask = float(
-            price["ask"]
-        )
-
-        # =================================================
-        # POZÍCIE
-        # =========================================================
+        bid = float(price["bid"])
+        ask = float(price["ask"])
 
         for position in positions:
 
             try:
 
-                position_id = position.get(
-                    "id"
-                )
-
-                position_type = position.get(
-                    "type"
-                )
+                position_id = position.get("id")
+                position_type = position.get("type")
 
                 open_price = float(
-                    position.get(
-                        "openPrice"
-                    )
+                    position.get("openPrice")
                 )
 
-                current_sl = position.get(
-                    "stopLoss"
-                )
+                current_sl = position.get("stopLoss")
+                take_profit = position.get("takeProfit")
 
-                take_profit = position.get(
-                    "takeProfit"
-                )
-
-                # =================================================
                 # BUY
-                # =========================================================
-
                 if (
                     position_type
                     == "POSITION_TYPE_BUY"
                 ):
 
-                    # Aktuálny profit v bodoch
                     profit_points = (
                         bid - open_price
                     ) / point
 
-                    # =============================================
-                    # TRAILING NESMIE ÍSŤ PRED BE TRIGGEROM
-                    # =============================================
-
-                    if (
-                        profit_points
-                        < BE_TRIGGER
-                    ):
+                    if profit_points < BE_TRIGGER:
                         continue
 
                     candidate_sl = round(
@@ -813,22 +719,14 @@ async def manage_psar_stop(
                         digits
                     )
 
-                    # PSAR musí byť pod aktuálnou cenou
                     if candidate_sl >= bid:
                         continue
 
-                    # Minimálna broker vzdialenosť
-                    if min_distance > 0:
-
-                        if (
-                            bid - candidate_sl
-                            < min_distance
-                        ):
-                            continue
-
-                    # =============================================
-                    # PSAR NESMIE ZHORŠIŤ BE +100
-                    # =============================================
+                    if (
+                        min_distance > 0
+                        and bid - candidate_sl < min_distance
+                    ):
+                        continue
 
                     minimum_be_sl = round(
                         open_price
@@ -846,7 +744,6 @@ async def manage_psar_stop(
                         digits
                     )
 
-                    # SL môže ísť iba vyššie
                     if current_sl is not None:
 
                         if (
@@ -855,17 +752,14 @@ async def manage_psar_stop(
                         ):
                             continue
 
-                    # Po max() znovu skontrolujeme vzdialenosť
                     if candidate_sl >= bid:
                         continue
 
-                    if min_distance > 0:
-
-                        if (
-                            bid - candidate_sl
-                            < min_distance
-                        ):
-                            continue
+                    if (
+                        min_distance > 0
+                        and bid - candidate_sl < min_distance
+                    ):
+                        continue
 
                     await (
                         connection
@@ -881,14 +775,10 @@ async def manage_psar_stop(
                         f"Symbol: {symbol}\n"
                         f"Profit: {profit_points:.0f} bodov\n"
                         f"5M PSAR: {psar:.2f}\n"
-                        f"Nový SL: {candidate_sl}\n"
-                        "Trailing aktivovaný po BE"
+                        f"Nový SL: {candidate_sl}"
                     )
 
-                # =================================================
                 # SELL
-                # =========================================================
-
                 elif (
                     position_type
                     == "POSITION_TYPE_SELL"
@@ -898,14 +788,7 @@ async def manage_psar_stop(
                         open_price - ask
                     ) / point
 
-                    # =============================================
-                    # TRAILING NESMIE ÍSŤ PRED BE TRIGGEROM
-                    # =============================================
-
-                    if (
-                        profit_points
-                        < BE_TRIGGER
-                    ):
+                    if profit_points < BE_TRIGGER:
                         continue
 
                     candidate_sl = round(
@@ -913,21 +796,14 @@ async def manage_psar_stop(
                         digits
                     )
 
-                    # PSAR musí byť nad aktuálnou cenou
                     if candidate_sl <= ask:
                         continue
 
-                    if min_distance > 0:
-
-                        if (
-                            candidate_sl - ask
-                            < min_distance
-                        ):
-                            continue
-
-                    # =============================================
-                    # PSAR NESMIE ZHORŠIŤ BE +100
-                    # =============================================
+                    if (
+                        min_distance > 0
+                        and candidate_sl - ask < min_distance
+                    ):
+                        continue
 
                     minimum_be_sl = round(
                         open_price
@@ -945,7 +821,6 @@ async def manage_psar_stop(
                         digits
                     )
 
-                    # SL môže ísť iba nižšie
                     if current_sl is not None:
 
                         if (
@@ -957,13 +832,11 @@ async def manage_psar_stop(
                     if candidate_sl <= ask:
                         continue
 
-                    if min_distance > 0:
-
-                        if (
-                            candidate_sl - ask
-                            < min_distance
-                        ):
-                            continue
+                    if (
+                        min_distance > 0
+                        and candidate_sl - ask < min_distance
+                    ):
+                        continue
 
                     await (
                         connection
@@ -979,22 +852,21 @@ async def manage_psar_stop(
                         f"Symbol: {symbol}\n"
                         f"Profit: {profit_points:.0f} bodov\n"
                         f"5M PSAR: {psar:.2f}\n"
-                        f"Nový SL: {candidate_sl}\n"
-                        "Trailing aktivovaný po BE"
+                        f"Nový SL: {candidate_sl}"
                     )
 
             except Exception:
 
-                print(
-                    "PSAR trailing chyba:",
-                    traceback.format_exc()
+                log(
+                    "PSAR trailing chyba:\n"
+                    + traceback.format_exc()
                 )
 
     except Exception:
 
-        print(
-            "PSAR trailing systém chyba:",
-            traceback.format_exc()
+        log(
+            "PSAR trailing systém chyba:\n"
+            + traceback.format_exc()
         )
 
 
@@ -1005,41 +877,31 @@ async def manage_psar_stop(
 async def main():
 
     if not M_TOKEN:
-
-        telegram(
-            "❌ Chýba M_TOKEN"
-        )
-
+        telegram("❌ Chýba M_TOKEN")
         return
 
     if not M_ACC:
-
-        telegram(
-            "❌ Chýba M_ACC"
-        )
-
+        telegram("❌ Chýba M_ACC")
         return
 
-    api = MetaApi(
-        M_TOKEN
-    )
+    api = MetaApi(M_TOKEN)
 
     connection = None
 
     try:
 
-        # =================================================
-        # METAAPI
-        # =========================================================
+        log("Pripájam RIObot k MetaApi...")
 
         account = await (
             api.metatrader_account_api
-            .get_account(
-                M_ACC
-            )
+            .get_account(M_ACC)
         )
 
+        log("Čakám na MetaApi účet...")
+
         await account.wait_connected()
+
+        log("MetaApi účet pripojený.")
 
         connection = (
             account.get_rpc_connection()
@@ -1047,29 +909,27 @@ async def main():
 
         await connection.connect()
 
+        log("RPC pripojené. Čakám na synchronizáciu...")
+
         await connection.wait_synchronized()
 
+        log("✅ MetaApi synchronizované.")
+
         telegram(
-            "🟢 RIObot spustený – TEST 1:1\n\n"
+            "🟢 RIObot SPUSTENÝ\n\n"
             f"Symbol: {SYMBOL_REQUEST}\n"
             f"Lot: {LOT_SIZE}\n\n"
-            "Smer: 5M PSAR + EMA50\n"
-            "Vstup: 1M PSAR FLIP\n\n"
+            "Smer: M5 PSAR + EMA50\n"
+            "Vstup: M1 PSAR FLIP\n\n"
             f"TP: {TP_POINTS} bodov\n"
             f"SL: {SL_POINTS} bodov\n"
-            f"BE trigger: +{BE_TRIGGER} bodov\n"
-            f"BE lock: +{BE_LOCK} bodov\n\n"
-            "PSAR trailing: až po BE\n"
-            "1 pozícia: ON\n"
-            "clientId: VYPNUTÝ"
+            f"BE: +{BE_TRIGGER} → +{BE_LOCK}\n\n"
+            "PSAR trailing po BE\n"
+            "Max. 1 otvorená pozícia"
         )
 
-        # Bráni opakovanému vstupu z tej istej M1 sviečky
         last_processed_m1 = None
-
-        # =================================================
-        # LOOP
-        # =========================================================
+        last_log_candle = None
 
         while True:
 
@@ -1077,29 +937,20 @@ async def main():
 
                 symbol = SYMBOL_REQUEST
 
-                # =================================================
-                # NAJPRV BE
-                # =========================================================
-
+                # BE
                 await manage_break_even(
                     connection,
                     symbol
                 )
 
-                # =================================================
-                # POTOM PSAR TRAILING
-                # =========================================================
-
+                # PSAR trailing
                 await manage_psar_stop(
                     connection,
                     account,
                     symbol
                 )
 
-                # =================================================
-                # 5M DÁTA - SMER
-                # =========================================================
-
+                # M5
                 df_5m = await get_closed_candles(
                     account,
                     symbol,
@@ -1108,10 +959,7 @@ async def main():
                     minimum=55
                 )
 
-                # =================================================
-                # 1M DÁTA - VSTUP
-                # =========================================================
-
+                # M1
                 df_1m = await get_closed_candles(
                     account,
                     symbol,
@@ -1125,16 +973,17 @@ async def main():
                     or df_1m is None
                 ):
 
+                    log(
+                        "⏳ Čakám na dostatok M1/M5 dát..."
+                    )
+
                     await asyncio.sleep(
                         LOOP_SECONDS
                     )
 
                     continue
 
-                # =================================================
-                # 5M EMA50
-                # =========================================================
-
+                # M5 EMA
                 ema_series = calculate_ema(
                     df_5m,
                     EMA_PERIOD
@@ -1148,10 +997,7 @@ async def main():
                     df_5m["close"].iloc[-1]
                 )
 
-                # =================================================
-                # 5M PSAR
-                # =========================================================
-
+                # M5 PSAR
                 psar_5m, bull_5m = calculate_psar(
                     df_5m,
                     PSAR_STEP,
@@ -1166,13 +1012,7 @@ async def main():
 
                     continue
 
-                psar_5m = float(
-                    psar_5m
-                )
-
-                # =================================================
-                # 5M TREND FILTER
-                # =========================================================
+                psar_5m = float(psar_5m)
 
                 trend_buy = (
                     bull_5m is True
@@ -1184,9 +1024,9 @@ async def main():
                     and close_5m < ema50_5m
                 )
 
-                # =================================================
-                # 1M PSAR FLIP
-                # =========================================================
+                # =============================================
+                # M1 PSAR FLIP
+                # =============================================
 
                 previous_1m = (
                     df_1m.iloc[:-1].copy()
@@ -1239,10 +1079,7 @@ async def main():
                     and current_bull_1m is False
                 )
 
-                # =================================================
                 # FINÁLNY SIGNÁL
-                # =========================================================
-
                 if (
                     trend_buy
                     and psar_flip_buy_1m
@@ -1258,13 +1095,9 @@ async def main():
                     signal = "SELL"
 
                 else:
-
                     signal = None
 
-                # =================================================
-                # ID POSLEDNEJ UZAVRETEJ M1 SVIEČKY
-                # =========================================================
-
+                # ID M1 SVIEČKY
                 if "time" in df_1m.columns:
 
                     m1_candle_id = str(
@@ -1277,73 +1110,58 @@ async def main():
                         df_1m.index[-1]
                     )
 
-                print(
-                    "\n================================"
-                )
+                # =============================================
+                # DIAGNOSTIKA
+                # =============================================
 
-                print(
-                    f"[5M TREND] {symbol}"
-                )
+                if m1_candle_id != last_log_candle:
 
-                print(
-                    f"5M Close: {close_5m}"
-                )
+                    last_log_candle = m1_candle_id
 
-                print(
-                    f"5M EMA50: {ema50_5m}"
-                )
+                    if trend_buy:
+                        trend_text = "BUY"
+                    elif trend_sell:
+                        trend_text = "SELL"
+                    else:
+                        trend_text = "NEUTRAL"
 
-                print(
-                    f"5M PSAR: {psar_5m}"
-                )
+                    m1_text = (
+                        "BUY"
+                        if current_bull_1m
+                        else "SELL"
+                    )
 
-                print(
-                    f"5M Bullish: {bull_5m}"
-                )
+                    if psar_flip_buy_1m:
+                        flip_text = "BUY FLIP"
+                    elif psar_flip_sell_1m:
+                        flip_text = "SELL FLIP"
+                    else:
+                        flip_text = "NO FLIP"
 
-                print(
-                    f"BUY trend: {trend_buy}"
-                )
+                    log(
+                        "\n"
+                        "====================================\n"
+                        "❤️ RIObot ACTIVE\n"
+                        f"Symbol: {symbol}\n"
+                        f"M1 candle: {m1_candle_id}\n"
+                        "------------------------------------\n"
+                        f"M5 Close: {close_5m:.2f}\n"
+                        f"M5 EMA50: {ema50_5m:.2f}\n"
+                        f"M5 PSAR: {psar_5m:.2f}\n"
+                        f"M5 trend: {trend_text}\n"
+                        "------------------------------------\n"
+                        f"M1 PSAR: {current_psar_1m:.2f}\n"
+                        f"M1 direction: {m1_text}\n"
+                        f"M1 flip: {flip_text}\n"
+                        "------------------------------------\n"
+                        f"FINAL SIGNAL: "
+                        f"{signal if signal else 'WAITING'}\n"
+                        "===================================="
+                    )
 
-                print(
-                    f"SELL trend: {trend_sell}"
-                )
-
-                print(
-                    "--------------------------------"
-                )
-
-                print(
-                    "[1M ENTRY]"
-                )
-
-                print(
-                    f"1M PSAR: {current_psar_1m}"
-                )
-
-                print(
-                    f"1M Bullish: {current_bull_1m}"
-                )
-
-                print(
-                    f"1M BUY flip: {psar_flip_buy_1m}"
-                )
-
-                print(
-                    f"1M SELL flip: {psar_flip_sell_1m}"
-                )
-
-                print(
-                    f"FINAL SIGNAL: {signal}"
-                )
-
-                print(
-                    "================================"
-                )
-
-                # =================================================
+                # =============================================
                 # IBA JEDNA POZÍCIA
-                # =========================================================
+                # =============================================
 
                 positions = await get_positions(
                     connection,
@@ -1352,16 +1170,18 @@ async def main():
 
                 if positions:
 
+                    log(
+                        f"📌 {symbol}: otvorená pozícia "
+                        f"({len(positions)}) – nový vstup blokovaný."
+                    )
+
                     await asyncio.sleep(
                         LOOP_SECONDS
                     )
 
                     continue
 
-                # =================================================
                 # BEZ SIGNÁLU
-                # =========================================================
-
                 if signal is None:
 
                     await asyncio.sleep(
@@ -1370,14 +1190,15 @@ async def main():
 
                     continue
 
-                # =================================================
-                # NEOBCHODUJ TEN ISTÝ M1 FLIP DVAKRÁT
-                # =========================================================
-
+                # TEN ISTÝ FLIP NIE DVAKRÁT
                 if (
                     m1_candle_id
                     == last_processed_m1
                 ):
+
+                    log(
+                        "⏸️ Tento M1 signál už bol spracovaný."
+                    )
 
                     await asyncio.sleep(
                         LOOP_SECONDS
@@ -1385,13 +1206,16 @@ async def main():
 
                     continue
 
-                last_processed_m1 = (
-                    m1_candle_id
+                last_processed_m1 = m1_candle_id
+
+                log(
+                    f"🚨 NOVÝ {signal} SIGNÁL – "
+                    f"pripravujem objednávku."
                 )
 
-                # =================================================
-                # SYMBOL PARAMETRE
-                # =========================================================
+                # =============================================
+                # SYMBOL INFO
+                # =============================================
 
                 spec = await get_symbol_info(
                     connection,
@@ -1440,9 +1264,9 @@ async def main():
                     "neznáme"
                 )
 
-                # =================================================
-                # ČERSTVÁ CENA
-                # =========================================================
+                # =============================================
+                # CENA + SL + TP
+                # =============================================
 
                 async def get_order_prices():
 
@@ -1495,54 +1319,24 @@ async def main():
                         order_tp
                     )
 
-                entry, sl, tp = (
-                    await get_order_prices()
+                entry, sl, tp = await get_order_prices()
+
+                log(
+                    "\n"
+                    "========== ORDER ==========\n"
+                    f"Signal: {signal}\n"
+                    f"Lot: {LOT_SIZE}\n"
+                    f"Entry: {entry}\n"
+                    f"SL: {sl}\n"
+                    f"TP: {tp}\n"
+                    "R:R = 1:1\n"
+                    f"BE: +{BE_TRIGGER} → +{BE_LOCK}\n"
+                    "==========================="
                 )
 
-                print(
-                    "\n========== ORDER =========="
-                )
-
-                print(
-                    f"Signal: {signal}"
-                )
-
-                print(
-                    f"Lot: {LOT_SIZE}"
-                )
-
-                print(
-                    f"Entry: {entry}"
-                )
-
-                print(
-                    f"SL: {sl}"
-                )
-
-                print(
-                    f"TP: {tp}"
-                )
-
-                print(
-                    "R:R = 1:1"
-                )
-
-                print(
-                    f"BE: +{BE_TRIGGER} -> "
-                    f"lock +{BE_LOCK}"
-                )
-
-                print(
-                    "PSAR trailing: až po BE"
-                )
-
-                print(
-                    "===========================\n"
-                )
-
-                # =================================================
+                # =============================================
                 # MAX 2 POKUSY
-                # =========================================================
+                # =============================================
 
                 for attempt in range(2):
 
@@ -1558,14 +1352,11 @@ async def main():
                                 tp
                             ) = await get_order_prices()
 
-                            print(
-                                "🔄 Nová cena - retry objednávky"
+                            log(
+                                "🔄 Retry s čerstvou cenou."
                             )
 
-                        # =========================================
                         # BUY
-                        # =========================================
-
                         if signal == "BUY":
 
                             result = await (
@@ -1581,32 +1372,27 @@ async def main():
                                 )
                             )
 
-                            print(
-                                "BUY OPENED:",
-                                result
+                            log(
+                                f"✅ BUY OPENED: {result}"
                             )
 
                             telegram(
-                                "🟢 BUY OTVORENÝ – TEST 1:1\n\n"
+                                "🟢 BUY OTVORENÝ\n\n"
                                 f"Symbol: {symbol}\n"
                                 f"Lot: {LOT_SIZE}\n"
                                 f"Cena: {entry}\n"
                                 f"SL: {sl}\n"
                                 f"TP: {tp}\n\n"
-                                f"5M EMA50: {ema50_5m:.2f}\n"
-                                f"5M PSAR: {psar_5m:.2f}\n"
-                                f"1M PSAR: {current_psar_1m:.2f}\n\n"
+                                f"M5 EMA50: {ema50_5m:.2f}\n"
+                                f"M5 PSAR: {psar_5m:.2f}\n"
+                                f"M1 PSAR: {current_psar_1m:.2f}\n\n"
                                 f"BE: +{BE_TRIGGER:.0f} → "
-                                f"+{BE_LOCK:.0f}\n"
-                                "PSAR trailing: až po BE"
+                                f"+{BE_LOCK:.0f}"
                             )
 
                             break
 
-                        # =========================================
                         # SELL
-                        # =========================================
-
                         elif signal == "SELL":
 
                             result = await (
@@ -1622,56 +1408,44 @@ async def main():
                                 )
                             )
 
-                            print(
-                                "SELL OPENED:",
-                                result
+                            log(
+                                f"✅ SELL OPENED: {result}"
                             )
 
                             telegram(
-                                "🔴 SELL OTVORENÝ – TEST 1:1\n\n"
+                                "🔴 SELL OTVORENÝ\n\n"
                                 f"Symbol: {symbol}\n"
                                 f"Lot: {LOT_SIZE}\n"
                                 f"Cena: {entry}\n"
                                 f"SL: {sl}\n"
                                 f"TP: {tp}\n\n"
-                                f"5M EMA50: {ema50_5m:.2f}\n"
-                                f"5M PSAR: {psar_5m:.2f}\n"
-                                f"1M PSAR: {current_psar_1m:.2f}\n\n"
+                                f"M5 EMA50: {ema50_5m:.2f}\n"
+                                f"M5 PSAR: {psar_5m:.2f}\n"
+                                f"M1 PSAR: {current_psar_1m:.2f}\n\n"
                                 f"BE: +{BE_TRIGGER:.0f} → "
-                                f"+{BE_LOCK:.0f}\n"
-                                "PSAR trailing: až po BE"
+                                f"+{BE_LOCK:.0f}"
                             )
 
                             break
 
                     except Exception as error:
 
-                        error_text = str(
-                            error
-                        )
+                        error_text = str(error)
 
-                        print(
-                            "Obchodná chyba:",
-                            error_text
+                        log(
+                            f"❌ Obchodná chyba: {error_text}"
                         )
-
-                        # =========================================
-                        # RETRY INVALID STOPS
-                        # =========================================
 
                         if (
-                            "INVALID_STOPS"
-                            in error_text
-                            or
-                            "Invalid stops"
-                            in error_text
+                            "INVALID_STOPS" in error_text
+                            or "Invalid stops" in error_text
                         ):
 
                             if attempt == 0:
 
-                                print(
-                                    "⚠️ Invalid stops - "
-                                    "obnovujem cenu..."
+                                log(
+                                    "⚠️ INVALID_STOPS – "
+                                    "obnovujem cenu a skúšam znova."
                                 )
 
                                 continue
@@ -1690,10 +1464,8 @@ async def main():
                             f"Cena: {entry}\n"
                             f"SL: {sl}\n"
                             f"TP: {tp}\n\n"
-                            f"CHYBA:\n"
-                            f"{error}\n\n"
-                            f"DETAIL:\n"
-                            f"{detailed_error}\n\n"
+                            f"CHYBA:\n{error}\n\n"
+                            f"DETAIL:\n{detailed_error}\n\n"
                             f"Point: {point}\n"
                             f"Digits: {digits}\n"
                             f"Min lot: {min_volume}\n"
@@ -1710,16 +1482,11 @@ async def main():
 
             except Exception:
 
-                error_text = (
-                    traceback.format_exc()
-                )
+                error_text = traceback.format_exc()
 
-                print(
-                    "⚠️ RIObot chyba v cykle:"
-                )
-
-                print(
-                    error_text
+                log(
+                    "⚠️ RIObot chyba v cykle:\n"
+                    + error_text
                 )
 
                 telegram(
@@ -1733,16 +1500,11 @@ async def main():
 
     except Exception:
 
-        error_text = (
-            traceback.format_exc()
-        )
+        error_text = traceback.format_exc()
 
-        print(
-            "❌ RIObot kritická chyba:"
-        )
-
-        print(
-            error_text
+        log(
+            "❌ RIObot kritická chyba:\n"
+            + error_text
         )
 
         telegram(
@@ -1767,6 +1529,8 @@ async def main():
 
 if __name__ == "__main__":
 
+    log("🚀 Štartujem RIObot...")
+
     flask_thread = Thread(
         target=run_flask,
         daemon=True
@@ -1776,4 +1540,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-                    )
+)
