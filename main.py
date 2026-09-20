@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Smart Active"
+    return "Riobot Tick Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -32,6 +32,7 @@ BE_TRIGGER = 400.0
 BE_LOCK = 150.0         
 SL_POINTS = 2000.0      
 
+last_price = None
 startup_message_sent = False
 
 def send_telegram(msg):
@@ -44,7 +45,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def main():
-    global startup_message_sent
+    global last_price, startup_message_sent
     
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
@@ -59,7 +60,7 @@ async def main():
     await connection.wait_synchronized()
     
     if not startup_message_sent:
-        send_telegram("🚀 Riobot beží s vyhodnotením smeru.")
+        send_telegram("🚀 Riobot beží v tickovom režime.")
         startup_message_sent = True
 
     while True:
@@ -93,30 +94,32 @@ async def main():
                             )
                             send_telegram("🔒 BE aktívne (SELL)")
 
-            # 2. Vyhodnotenie smeru a vstup
+            # 2. Tickový vstup
             if len(btc_positions) == 0:
-                candles = await connection.get_historical_candles(SYMBOL, "1h", None, 2)
                 price_info = await connection.get_symbol_price(SYMBOL)
                 ask = price_info.get('ask')
                 bid = price_info.get('bid')
                 
-                if candles and len(candles) >= 1 and ask and bid:
-                    last_c = candles[-1]
+                if ask and bid:
+                    current_mid = (ask + bid) / 2
                     
-                    if last_c['close'] >= last_c['open']:
-                        sl = ask - SL_POINTS
-                        tp = ask + TP_POINTS
-                        await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                        send_telegram("🟢 BTCUSD BUY otvorený na základe trendu.")
-                    else:
-                        sl = bid + SL_POINTS
-                        tp = bid - TP_POINTS
-                        await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                        send_telegram("🔴 BTCUSD SELL otvorený na základe trendu.")
-                        
-                    await asyncio.sleep(60)
+                    if last_price is not None:
+                        if current_mid > last_price:
+                            sl = ask - SL_POINTS
+                            tp = ask + TP_POINTS
+                            await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                            send_telegram("🟢 BTCUSD TICK BUY otvorený.")
+                            await asyncio.sleep(60)
+                        elif current_mid < last_price:
+                            sl = bid + SL_POINTS
+                            tp = bid - TP_POINTS
+                            await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                            send_telegram("🔴 BTCUSD TICK SELL otvorený.")
+                            await asyncio.sleep(60)
+                            
+                    last_price = current_mid
 
-            await asyncio.sleep(10)
+            await asyncio.sleep(3)
 
         except Exception as inner_e:
             print(f"Chyba: {inner_e}")
