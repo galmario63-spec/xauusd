@@ -240,12 +240,12 @@ def calculate_psar(candles, step, maximum):
 # FIND BTC SYMBOL
 # =========================================================
 
-async def find_symbol(connection):
+async def find_symbol(account):
 
     try:
 
         specifications = (
-            await connection.get_symbol_specifications()
+            await account.get_symbol_specifications()
         )
 
         # Presný BTCUSD
@@ -343,7 +343,7 @@ async def main():
             # SYMBOL
             # -------------------------------------------------
 
-            symbol = await find_symbol(connection)
+            symbol = await find_symbol(account)
 
             print(f"₿ Obchodovaný symbol: {symbol}")
 
@@ -352,7 +352,7 @@ async def main():
             # -------------------------------------------------
 
             specifications = (
-                await connection.get_symbol_specifications()
+                await account.get_symbol_specifications()
             )
 
             specification = None
