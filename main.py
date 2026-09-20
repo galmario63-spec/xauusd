@@ -135,7 +135,7 @@ async def main():
             digits = int(specification.get("digits", 2))
 
             if not startup_message_sent:
-                send_telegram(f"🚀 RIObot FIX OPRAVENÝ\nSymbol: {symbol} | Lot: {LOT_SIZE}")
+                send_telegram(f"🚀 RIObot DEBUG ŠTART\nSymbol: {symbol}")
                 startup_message_sent = True
 
             while True:
@@ -159,28 +159,6 @@ async def main():
                     positions = await connection.get_positions()
                     bot_positions = [p for p in positions if p.get("symbol") == symbol and is_bot_position(p)]
 
-                    for pos in bot_positions:
-                        open_price = float(pos["openPrice"])
-                        current_sl = float(pos.get("stopLoss") or 0)
-                        current_tp = pos.get("takeProfit")
-
-                        if pos["type"] == "POSITION_TYPE_BUY":
-                            if (bid - open_price) / point >= BE_TRIGGER:
-                                target_sl = round(open_price + BE_LOCK * point, digits)
-                                if current_sl == 0 or current_sl < target_sl:
-                                    try:
-                                        await connection.modify_position(positionId=pos["id"], stopLoss=target_sl, takeProfit=current_tp)
-                                    except Exception:
-                                        pass
-                        elif pos["type"] == "POSITION_TYPE_SELL":
-                            if (open_price - ask) / point >= BE_TRIGGER:
-                                target_sl = round(open_price - BE_LOCK * point, digits)
-                                if current_sl == 0 or current_sl > target_sl:
-                                    try:
-                                        await connection.modify_position(positionId=pos["id"], stopLoss=target_sl, takeProfit=current_tp)
-                                    except Exception:
-                                        pass
-
                     if not bot_positions:
                         if current_direction is True:
                             sl = round(ask - SL_POINTS * point, digits)
@@ -196,9 +174,9 @@ async def main():
                                         "magic": MAGIC
                                     }
                                 )
-                                send_telegram(f"🟢 BUY OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
+                                send_telegram(f"🟢 BUY OK\nSL: {sl} | TP: {tp}")
                             except Exception as e:
-                                send_telegram(f"❌ BUY ERROR: {e}")
+                                send_telegram(f"❌ BUY CHYBA: {str(e)}")
 
                         elif current_direction is False:
                             sl = round(bid + SL_POINTS * point, digits)
@@ -214,9 +192,9 @@ async def main():
                                         "magic": MAGIC
                                     }
                                 )
-                                send_telegram(f"🔴 SELL OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
+                                send_telegram(f"🔴 SELL OK\nSL: {sl} | TP: {tp}")
                             except Exception as e:
-                                send_telegram(f"❌ SELL ERROR: {e}")
+                                send_telegram(f"❌ SELL CHYBA: {str(e)}")
 
                     await asyncio.sleep(2)
 
