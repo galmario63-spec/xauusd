@@ -21,7 +21,7 @@ LOT_SIZE = 0.30
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
-# SL / TP V BODOCH
+# TP / POČIATOČNÝ SL V BODOCH
 TP_POINTS = 600.0
 SL_POINTS = 1500.0
 
@@ -32,6 +32,7 @@ COMMENT = "Riobot PSAR"
 BE_TRIGGER = 250.0
 BE_LOCK = 100.0
 
+# HLAVNÝ INTERVAL
 LOOP_SECONDS = 10
 
 
@@ -64,8 +65,18 @@ def health():
 
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
 
 
 # =========================================================
@@ -75,12 +86,17 @@ def run_flask():
 def telegram(message):
 
     if not T_TOKEN or not T_CHAT:
+
         print(message)
+
         return
 
     try:
 
-        url = f"https://api.telegram.org/bot{T_TOKEN}/sendMessage"
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{T_TOKEN}/sendMessage"
+        )
 
         requests.post(
             url,
@@ -93,40 +109,66 @@ def telegram(message):
 
     except Exception as e:
 
-        print("Telegram chyba:", e)
+        print(
+            "Telegram chyba:",
+            e
+        )
 
 
 # =========================================================
 # PSAR
 # =========================================================
 
-def calculate_psar(df, step=0.02, max_af=0.20):
+def calculate_psar(
+    df,
+    step=0.02,
+    max_af=0.20
+):
 
-    high = df["high"].astype(float).tolist()
-    low = df["low"].astype(float).tolist()
+    high = (
+        df["high"]
+        .astype(float)
+        .tolist()
+    )
+
+    low = (
+        df["low"]
+        .astype(float)
+        .tolist()
+    )
 
     n = len(df)
 
     if n < 5:
+
         return None, None
 
     psar = [0.0] * n
 
     bull = True
+
     af = step
 
     ep = high[0]
+
     psar[0] = low[0]
 
     for i in range(1, n):
 
         previous_psar = psar[i - 1]
 
+        # =================================================
+        # BULL
+        # =================================================
+
         if bull:
 
             psar[i] = (
                 previous_psar
-                + af * (ep - previous_psar)
+                + af * (
+                    ep
+                    - previous_psar
+                )
             )
 
             if i >= 2:
@@ -147,24 +189,34 @@ def calculate_psar(df, step=0.02, max_af=0.20):
             if low[i] < psar[i]:
 
                 bull = False
+
                 psar[i] = ep
 
                 ep = low[i]
+
                 af = step
 
             elif high[i] > ep:
 
                 ep = high[i]
+
                 af = min(
                     af + step,
                     max_af
                 )
 
+        # =================================================
+        # BEAR
+        # =================================================
+
         else:
 
             psar[i] = (
                 previous_psar
-                + af * (ep - previous_psar)
+                + af * (
+                    ep
+                    - previous_psar
+                )
             )
 
             if i >= 2:
@@ -185,14 +237,17 @@ def calculate_psar(df, step=0.02, max_af=0.20):
             if high[i] > psar[i]:
 
                 bull = True
+
                 psar[i] = ep
 
                 ep = high[i]
+
                 af = step
 
             elif low[i] < ep:
 
                 ep = low[i]
+
                 af = min(
                     af + step,
                     max_af
@@ -205,10 +260,16 @@ def calculate_psar(df, step=0.02, max_af=0.20):
 # ERROR
 # =========================================================
 
-def get_error_details(api, error):
+def get_error_details(
+    api,
+    error
+):
 
     try:
-        return api.format_error(error)
+
+        return api.format_error(
+            error
+        )
 
     except Exception:
 
@@ -219,12 +280,18 @@ def get_error_details(api, error):
 # SYMBOL INFO
 # =========================================================
 
-async def get_symbol_info(connection, symbol):
+async def get_symbol_info(
+    connection,
+    symbol
+):
 
     try:
 
-        return await connection.get_symbol_specification(
-            symbol
+        return await (
+            connection
+            .get_symbol_specification(
+                symbol
+            )
         )
 
     except Exception as e:
@@ -241,11 +308,17 @@ async def get_symbol_info(connection, symbol):
 # POZÍCIE
 # =========================================================
 
-async def get_positions(connection, symbol):
+async def get_positions(
+    connection,
+    symbol
+):
 
     try:
 
-        positions = await connection.get_positions()
+        positions = (
+            await connection
+            .get_positions()
+        )
 
         return [
             p for p in positions
@@ -266,7 +339,10 @@ async def get_positions(connection, symbol):
 # BREAK EVEN
 # =========================================================
 
-async def manage_break_even(connection, symbol):
+async def manage_break_even(
+    connection,
+    symbol
+):
 
     try:
 
@@ -276,6 +352,7 @@ async def manage_break_even(connection, symbol):
         )
 
         if not positions:
+
             return
 
         spec = await get_symbol_info(
@@ -284,29 +361,45 @@ async def manage_break_even(connection, symbol):
         )
 
         if not spec:
+
             return
 
         point = float(
-            spec.get("point", 0.01)
+            spec.get(
+                "point",
+                0.01
+            )
         )
 
         digits = int(
-            spec.get("digits", 2)
+            spec.get(
+                "digits",
+                2
+            )
         )
 
         for position in positions:
 
             try:
 
-                position_id = position.get("id")
-                position_type = position.get("type")
+                position_id = position.get(
+                    "id"
+                )
+
+                position_type = position.get(
+                    "type"
+                )
 
                 open_price = float(
-                    position.get("openPrice")
+                    position.get(
+                        "openPrice"
+                    )
                 )
 
                 current_price = float(
-                    position.get("currentPrice")
+                    position.get(
+                        "currentPrice"
+                    )
                 )
 
                 current_sl = position.get(
@@ -321,13 +414,20 @@ async def manage_break_even(connection, symbol):
                 # BUY BE
                 # =========================================
 
-                if position_type == "POSITION_TYPE_BUY":
+                if (
+                    position_type
+                    == "POSITION_TYPE_BUY"
+                ):
 
                     profit_points = (
-                        current_price - open_price
+                        current_price
+                        - open_price
                     ) / point
 
-                    if profit_points >= BE_TRIGGER:
+                    if (
+                        profit_points
+                        >= BE_TRIGGER
+                    ):
 
                         new_sl = round(
                             open_price
@@ -337,13 +437,17 @@ async def manage_break_even(connection, symbol):
 
                         if (
                             current_sl is None
-                            or float(current_sl) < new_sl
+                            or float(current_sl)
+                            < new_sl
                         ):
 
-                            await connection.modify_position(
-                                position_id=position_id,
-                                stop_loss=new_sl,
-                                take_profit=take_profit
+                            await (
+                                connection
+                                .modify_position(
+                                    position_id=position_id,
+                                    stop_loss=new_sl,
+                                    take_profit=take_profit
+                                )
                             )
 
                             telegram(
@@ -359,13 +463,20 @@ async def manage_break_even(connection, symbol):
                 # SELL BE
                 # =========================================
 
-                elif position_type == "POSITION_TYPE_SELL":
+                elif (
+                    position_type
+                    == "POSITION_TYPE_SELL"
+                ):
 
                     profit_points = (
-                        open_price - current_price
+                        open_price
+                        - current_price
                     ) / point
 
-                    if profit_points >= BE_TRIGGER:
+                    if (
+                        profit_points
+                        >= BE_TRIGGER
+                    ):
 
                         new_sl = round(
                             open_price
@@ -375,13 +486,17 @@ async def manage_break_even(connection, symbol):
 
                         if (
                             current_sl is None
-                            or float(current_sl) > new_sl
+                            or float(current_sl)
+                            > new_sl
                         ):
 
-                            await connection.modify_position(
-                                position_id=position_id,
-                                stop_loss=new_sl,
-                                take_profit=take_profit
+                            await (
+                                connection
+                                .modify_position(
+                                    position_id=position_id,
+                                    stop_loss=new_sl,
+                                    take_profit=take_profit
+                                )
                             )
 
                             telegram(
@@ -409,6 +524,339 @@ async def manage_break_even(connection, symbol):
 
 
 # =========================================================
+# PSAR TRAILING STOP
+# =========================================================
+
+async def manage_psar_stop(
+    connection,
+    account,
+    symbol
+):
+
+    try:
+
+        positions = await get_positions(
+            connection,
+            symbol
+        )
+
+        if not positions:
+
+            return
+
+        spec = await get_symbol_info(
+            connection,
+            symbol
+        )
+
+        if not spec:
+
+            return
+
+        point = float(
+            spec.get(
+                "point",
+                0.01
+            )
+        )
+
+        digits = int(
+            spec.get(
+                "digits",
+                2
+            )
+        )
+
+        # =================================================
+        # MIN STOP DISTANCE
+        # =================================================
+
+        min_stop_raw = spec.get(
+            "minStopDistance"
+        )
+
+        try:
+
+            min_stop_points = float(
+                min_stop_raw
+            )
+
+        except Exception:
+
+            min_stop_points = 0.0
+
+        min_distance = (
+            min_stop_points * point
+        )
+
+        # =================================================
+        # HISTORICKÉ CANDLES
+        # =================================================
+
+        candles = await (
+            account.get_historical_candles(
+                symbol=symbol,
+                timeframe="1m",
+                start_time=None,
+                limit=50
+            )
+        )
+
+        if not candles:
+
+            return
+
+        df = pd.DataFrame(
+            candles
+        )
+
+        if df.empty:
+
+            return
+
+        if "time" in df.columns:
+
+            df = df.sort_values(
+                "time"
+            )
+
+        required = [
+            "open",
+            "high",
+            "low",
+            "close"
+        ]
+
+        if not all(
+            col in df.columns
+            for col in required
+        ):
+
+            return
+
+        for col in required:
+
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce"
+            )
+
+        df = df.dropna(
+            subset=required
+        )
+
+        if len(df) < 10:
+
+            return
+
+        # =================================================
+        # PSAR
+        # =================================================
+
+        psar, bullish = calculate_psar(
+            df,
+            PSAR_STEP,
+            PSAR_MAX
+        )
+
+        if psar is None:
+
+            return
+
+        psar = float(psar)
+
+        # =================================================
+        # AKTUÁLNA CENA
+        # =================================================
+
+        price = await (
+            connection.get_symbol_price(
+                symbol
+            )
+        )
+
+        bid = float(
+            price["bid"]
+        )
+
+        ask = float(
+            price["ask"]
+        )
+
+        # =================================================
+        # KAŽDÁ POZÍCIA
+        # =================================================
+
+        for position in positions:
+
+            try:
+
+                position_id = position.get(
+                    "id"
+                )
+
+                position_type = position.get(
+                    "type"
+                )
+
+                current_sl = position.get(
+                    "stopLoss"
+                )
+
+                take_profit = position.get(
+                    "takeProfit"
+                )
+
+                # =================================================
+                # BUY
+                # PSAR SL MUSÍ BYŤ POD AKTUÁLNOU CENOU
+                # =================================================
+
+                if (
+                    position_type
+                    == "POSITION_TYPE_BUY"
+                ):
+
+                    candidate_sl = round(
+                        psar,
+                        digits
+                    )
+
+                    # PSAR musí byť pod BID
+                    if candidate_sl >= bid:
+
+                        continue
+
+                    # rešpektovanie min. vzdialenosti
+                    if min_distance > 0:
+
+                        if (
+                            bid - candidate_sl
+                            < min_distance
+                        ):
+
+                            continue
+
+                    # ak už máme SL,
+                    # nový musí byť vyššie
+                    if current_sl is not None:
+
+                        current_sl_float = float(
+                            current_sl
+                        )
+
+                        if (
+                            candidate_sl
+                            <= current_sl_float
+                        ):
+
+                            continue
+
+                    await (
+                        connection
+                        .modify_position(
+                            position_id=position_id,
+                            stop_loss=candidate_sl,
+                            take_profit=take_profit
+                        )
+                    )
+
+                    telegram(
+                        "📈 PSAR SL POSUN – BUY\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"PSAR: {candidate_sl}\n"
+                        f"Nový SL: {candidate_sl}\n"
+                        f"Bid: {bid}"
+                    )
+
+                    print(
+                        f"[PSAR SL] BUY "
+                        f"→ {candidate_sl}"
+                    )
+
+                # =================================================
+                # SELL
+                # PSAR SL MUSÍ BYŤ NAD AKTUÁLNOU CENOU
+                # =================================================
+
+                elif (
+                    position_type
+                    == "POSITION_TYPE_SELL"
+                ):
+
+                    candidate_sl = round(
+                        psar,
+                        digits
+                    )
+
+                    # PSAR musí byť nad ASK
+                    if candidate_sl <= ask:
+
+                        continue
+
+                    # rešpektovanie min. vzdialenosti
+                    if min_distance > 0:
+
+                        if (
+                            candidate_sl - ask
+                            < min_distance
+                        ):
+
+                            continue
+
+                    # ak už máme SL,
+                    # nový musí byť nižšie
+                    if current_sl is not None:
+
+                        current_sl_float = float(
+                            current_sl
+                        )
+
+                        if (
+                            candidate_sl
+                            >= current_sl_float
+                        ):
+
+                            continue
+
+                    await (
+                        connection
+                        .modify_position(
+                            position_id=position_id,
+                            stop_loss=candidate_sl,
+                            take_profit=take_profit
+                        )
+                    )
+
+                    telegram(
+                        "📉 PSAR SL POSUN – SELL\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"PSAR: {candidate_sl}\n"
+                        f"Nový SL: {candidate_sl}\n"
+                        f"Ask: {ask}"
+                    )
+
+                    print(
+                        f"[PSAR SL] SELL "
+                        f"→ {candidate_sl}"
+                    )
+
+            except Exception:
+
+                print(
+                    "PSAR SL chyba:",
+                    traceback.format_exc()
+                )
+
+    except Exception:
+
+        print(
+            "PSAR trailing systém chyba:",
+            traceback.format_exc()
+        )
+
+
+# =========================================================
 # HLAVNÝ BOT
 # =========================================================
 
@@ -430,24 +878,30 @@ async def main():
 
         return
 
-    api = MetaApi(M_TOKEN)
+    api = MetaApi(
+        M_TOKEN
+    )
 
     connection = None
 
     try:
 
-        # =============================================
+        # =================================================
         # METAAPI
-        # =============================================
+        # =================================================
 
         account = await (
             api.metatrader_account_api
-            .get_account(M_ACC)
+            .get_account(
+                M_ACC
+            )
         )
 
         await account.wait_connected()
 
-        connection = account.get_rpc_connection()
+        connection = (
+            account.get_rpc_connection()
+        )
 
         await connection.connect()
 
@@ -458,18 +912,19 @@ async def main():
             f"Symbol: {SYMBOL_REQUEST}\n"
             f"Lot: {LOT_SIZE}\n"
             f"TP: {TP_POINTS} bodov\n"
-            f"SL: {SL_POINTS} bodov\n"
+            f"Počiatočný SL: {SL_POINTS} bodov\n"
             f"BE trigger: {BE_TRIGGER} bodov\n"
             f"BE lock: {BE_LOCK} bodov\n\n"
             "PSAR: ON\n"
+            "PSAR TRAILING SL: ON\n"
             "clientId: VYPNUTÝ"
         )
 
         last_signal = None
 
-        # =============================================
+        # =================================================
         # HLAVNÝ LOOP
-        # =============================================
+        # =================================================
 
         while True:
 
@@ -477,18 +932,28 @@ async def main():
 
                 symbol = SYMBOL_REQUEST
 
-                # =====================================
+                # =================================================
+                # PSAR TRAILING STOP
+                # =================================================
+
+                await manage_psar_stop(
+                    connection,
+                    account,
+                    symbol
+                )
+
+                # =================================================
                 # BREAK EVEN
-                # =====================================
+                # =================================================
 
                 await manage_break_even(
                     connection,
                     symbol
                 )
 
-                # =====================================
+                # =================================================
                 # HISTORICKÉ CANDLES
-                # =====================================
+                # =================================================
 
                 candles = await (
                     account.get_historical_candles(
@@ -507,7 +972,9 @@ async def main():
 
                     continue
 
-                df = pd.DataFrame(candles)
+                df = pd.DataFrame(
+                    candles
+                )
 
                 if df.empty:
 
@@ -519,7 +986,9 @@ async def main():
 
                 if "time" in df.columns:
 
-                    df = df.sort_values("time")
+                    df = df.sort_values(
+                        "time"
+                    )
 
                 required = [
                     "open",
@@ -563,9 +1032,9 @@ async def main():
 
                     continue
 
-                # =====================================
+                # =================================================
                 # PSAR
-                # =====================================
+                # =================================================
 
                 psar, bullish = calculate_psar(
                     df,
@@ -600,9 +1069,9 @@ async def main():
                     f"Signal={signal}"
                 )
 
-                # =====================================
+                # =================================================
                 # IBA JEDNA POZÍCIA
-                # =====================================
+                # =================================================
 
                 positions = await get_positions(
                     connection,
@@ -622,9 +1091,9 @@ async def main():
 
                     continue
 
-                # =====================================
-                # ROVNAKÝ SIGNÁL – NEOTVÁRAŤ ZNOVA
-                # =====================================
+                # =================================================
+                # ROVNAKÝ SIGNÁL
+                # =================================================
 
                 if signal == last_signal:
 
@@ -634,9 +1103,9 @@ async def main():
 
                     continue
 
-                # =====================================
+                # =================================================
                 # SYMBOL PARAMETRE
-                # =====================================
+                # =================================================
 
                 spec = await get_symbol_info(
                     connection,
@@ -685,9 +1154,9 @@ async def main():
                     "neznáme"
                 )
 
-                # =====================================
+                # =================================================
                 # AKTUÁLNA CENA
-                # =====================================
+                # =================================================
 
                 price = await (
                     connection.get_symbol_price(
@@ -707,9 +1176,9 @@ async def main():
                         price["bid"]
                     )
 
-                # =====================================
-                # SL / TP
-                # =====================================
+                # =================================================
+                # POČIATOČNÝ SL / TP
+                # =================================================
 
                 if signal == "BUY":
 
@@ -792,6 +1261,14 @@ async def main():
                 )
 
                 print(
+                    f"PSAR: {psar}"
+                )
+
+                print(
+                    "PSAR TRAILING: ON"
+                )
+
+                print(
                     "clientId: VYPNUTÝ"
                 )
 
@@ -799,9 +1276,9 @@ async def main():
                     "================================\n"
                 )
 
-                # =====================================
+                # =================================================
                 # BUY
-                # =====================================
+                # =================================================
 
                 if signal == "BUY":
 
@@ -831,7 +1308,9 @@ async def main():
                             f"Lot: {LOT_SIZE}\n"
                             f"Cena: {entry}\n"
                             f"SL: {sl}\n"
-                            f"TP: {tp}"
+                            f"TP: {tp}\n"
+                            f"PSAR: {psar}\n"
+                            "PSAR trailing: ON"
                         )
 
                         last_signal = signal
@@ -864,9 +1343,9 @@ async def main():
                             f"Min stop: {min_stop}"
                         )
 
-                # =====================================
+                # =================================================
                 # SELL
-                # =====================================
+                # =================================================
 
                 elif signal == "SELL":
 
@@ -896,7 +1375,9 @@ async def main():
                             f"Lot: {LOT_SIZE}\n"
                             f"Cena: {entry}\n"
                             f"SL: {sl}\n"
-                            f"TP: {tp}"
+                            f"TP: {tp}\n"
+                            f"PSAR: {psar}\n"
+                            "PSAR trailing: ON"
                         )
 
                         last_signal = signal
@@ -935,13 +1416,17 @@ async def main():
 
             except Exception:
 
-                error_text = traceback.format_exc()
+                error_text = (
+                    traceback.format_exc()
+                )
 
                 print(
                     "⚠️ RIObot chyba v cykle:"
                 )
 
-                print(error_text)
+                print(
+                    error_text
+                )
 
                 telegram(
                     "⚠️ RIObot chyba v cykle:\n\n"
@@ -954,13 +1439,17 @@ async def main():
 
     except Exception:
 
-        error_text = traceback.format_exc()
+        error_text = (
+            traceback.format_exc()
+        )
 
         print(
             "❌ RIObot kritická chyba:"
         )
 
-        print(error_text)
+        print(
+            error_text
+        )
 
         telegram(
             "❌ RIObot kritická chyba:\n\n"
@@ -972,9 +1461,11 @@ async def main():
         try:
 
             if connection:
+
                 await connection.close()
 
         except Exception:
+
             pass
 
 
@@ -991,4 +1482,6 @@ if __name__ == "__main__":
 
     flask_thread.start()
 
-    asyncio.run(main())
+    asyncio.run(
+        main()
+            )
