@@ -3,7 +3,7 @@ import asyncio
 from flask import Flask
 from threading import Thread
 from metaapi_cloud_sdk import MetaApi
-import requests
+requests_lib = __import__('requests')
 import time
 
 app = Flask(__name__)
@@ -45,9 +45,20 @@ def send_telegram(message):
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=5)
+        requests_lib.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=5)
     except Exception as e:
         print(f"Telegram error: {e}")
+
+def get_rest_candles(account_id, token, symbol):
+    try:
+        url = f"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{account_id}/historical-candles/{symbol}/1m"
+        headers = {"auth-token": token}
+        response = requests_lib.get(url, headers=headers, params={"limit": 150}, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"REST candles error: {e}")
+    return []
 
 def calculate_psar(candles, step, maximum):
     if len(candles) < 3:
@@ -137,7 +148,7 @@ async def main():
             digits = int(specification.get("digits", 2))
 
             if not startup_message_sent:
-                send_telegram(f"🚀 RIObot FINÁLNY BEŽIACI ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
+                send_telegram(f"🚀 RIOmot REST ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
                 startup_message_sent = True
 
             while True:
@@ -145,7 +156,7 @@ async def main():
                     price = await connection.get_symbol_price(symbol)
                     bid, ask = float(price["bid"]), float(price["ask"])
 
-                    candles = await connection.get_historical_candles(symbol, TIMEFRAME, None, 150)
+                    candles = get_rest_candles(METAAPI_ACCOUNT_ID, METAAPI_TOKEN, symbol)
                     if not candles or len(candles) < 10:
                         await asyncio.sleep(3)
                         continue
