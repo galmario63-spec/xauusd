@@ -30,11 +30,10 @@ SYMBOL = "BTCUSD"
 LOT_SIZE = 0.02
 TIMEFRAME = "15m"
 
-# Parametre precentového účtu (v bodoch)
-TP_POINTS = 600.0       # Take Profit +6 €
-BE_TRIGGER = 400.0      # BE aktivácia pri +4 €
-BE_LOCK = 150.0         # Posun SL na +1.5 €
-SL_POINTS = 2000.0      # Široký Stop Loss
+TP_POINTS = 600.0       
+BE_TRIGGER = 400.0      
+BE_LOCK = 150.0         
+SL_POINTS = 2000.0      
 
 last_trade_time = 0
 COOLDOWN_SECONDS = 60
@@ -64,19 +63,23 @@ async def run_bot():
             await connection.connect()
             await connection.wait_synchronized()
             
-            send_telegram("🚀 Riobot pripojený na ProCent účet (Lot 0.02, TP 6€, BE pri 4€)!")
+            send_telegram("🚀 Riobot je pripojený a stráži ProCent účet (Lot 0.02)!")
 
             while True:
                 try:
                     account_info = await connection.get_account_information()
                     balance = account_info.get('balance', 0)
-                    equity = account_info.get('equity', 0)
+                    
+                    # Ignorujeme chybne načítané nulové stavy
+                    if balance > 100:
+                        real_balance = balance / 100
+                    else:
+                        await asyncio.sleep(10)
+                        continue
 
                     positions = await connection.get_positions()
                     current_time = time.time()
                     btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
-
-                    send_telegram(f"🛡️ Stav účtu ProCent - Balance: {balance/100:.2f} €, Equity: {equity/100:.2f} €. Bot pripravený.")
 
                     # Break-Even manažment
                     for pos in btc_positions:
@@ -110,7 +113,7 @@ async def run_bot():
                         
                         if candles and len(candles) >= 3:
                             df = pd.DataFrame(candles)
-                            prev_candle = df.iloc[-2] # Posledná uzavretá sviečka
+                            prev_candle = df.iloc[-2] 
                             c_open = prev_candle['open']
                             c_close = prev_candle['close']
                             
@@ -124,14 +127,14 @@ async def run_bot():
                                     tp = ask + TP_POINTS
                                     await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                                     last_trade_time = current_time
-                                    send_telegram("🟢 BTCUSD BUY (0.02) - M15 sviečka otvorená.")
+                                    send_telegram(f"🟢 BTCUSD BUY (0.02) otvorený. Balance: {real_balance:.2f} €")
 
                                 elif c_close < c_open: # Červená sviečka -> SELL
                                     sl = bid + SL_POINTS
                                     tp = bid - TP_POINTS
                                     await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                                     last_trade_time = current_time
-                                    send_telegram("🔴 BTCUSD SELL (0.02) - M15 sviečka otvorená.")
+                                    send_telegram(f"🔴 BTCUSD SELL (0.02) otvorený. Balance: {real_balance:.2f} €")
 
                 except Exception as inner_e:
                     print(f"Chyba v slučke: {inner_e}")
