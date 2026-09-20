@@ -4,6 +4,7 @@ from flask import Flask
 from threading import Thread
 from metaapi_cloud_sdk import MetaApi
 import requests
+import time
 
 app = Flask(__name__)
 
@@ -37,6 +38,7 @@ MAGIC = 26092026
 COMMENT = "Riobot PSAR M1"
 
 startup_message_sent = False
+last_status_time = 0
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -99,7 +101,7 @@ def is_bot_position(position):
     return position.get("comment") == COMMENT
 
 async def main():
-    global startup_message_sent
+    global startup_message_sent, last_status_time
     if not METAAPI_TOKEN or not METAAPI_ACCOUNT_ID:
         return
 
@@ -135,7 +137,7 @@ async def main():
             digits = int(specification.get("digits", 2))
 
             if not startup_message_sent:
-                send_telegram(f"🚀 RIObot DEBUG ŠTART\nSymbol: {symbol}")
+                send_telegram(f"🚀 RIObot STATUS AKTÍVNY\nSymbol: {symbol} | Lot: {LOT_SIZE}")
                 startup_message_sent = True
 
             while True:
@@ -159,6 +161,13 @@ async def main():
                     positions = await connection.get_positions()
                     bot_positions = [p for p in positions if p.get("symbol") == symbol and is_bot_position(p)]
 
+                    # Stavová správa na Telegram každých 60 sekúnd, aby si videl, že bot žije
+                    current_time = time.time()
+                    if current_time - last_status_time > 60:
+                        trend_name = "BUY (rast)" if current_direction is True else "SELL (pokles)"
+                        send_telegram(f"📊 BOT STATUS:\nCena: {ask}\nPSAR Smer: {trend_name}\nPozície: {len(bot_positions)}")
+                        last_status_time = current_time
+
                     if not bot_positions:
                         if current_direction is True:
                             sl = round(ask - SL_POINTS * point, digits)
@@ -174,7 +183,7 @@ async def main():
                                         "magic": MAGIC
                                     }
                                 )
-                                send_telegram(f"🟢 BUY OK\nSL: {sl} | TP: {tp}")
+                                send_telegram(f"🟢 BUY OTVORENÝ!\nCena: {ask}\nSL: {sl} | TP: {tp}")
                             except Exception as e:
                                 send_telegram(f"❌ BUY CHYBA: {str(e)}")
 
@@ -192,7 +201,7 @@ async def main():
                                         "magic": MAGIC
                                     }
                                 )
-                                send_telegram(f"🔴 SELL OK\nSL: {sl} | TP: {tp}")
+                                send_telegram(f"🔴 SELL OTVORENÝ!\nCena: {bid}\nSL: {sl} | TP: {tp}")
                             except Exception as e:
                                 send_telegram(f"❌ SELL CHYBA: {str(e)}")
 
@@ -200,6 +209,7 @@ async def main():
 
                 except Exception as inner_error:
                     print(f"Chyba v cykle: {inner_error}")
+                    send_telegram(f"⚠️ Bot Inner Error: {str(inner_error)}")
                     await asyncio.sleep(5)
                     break
 
