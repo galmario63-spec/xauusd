@@ -3,6 +3,7 @@ import os
 import traceback
 from flask import Flask
 from threading import Thread
+
 import pandas as pd
 import requests
 from metaapi_cloud_sdk import MetaApi
@@ -17,6 +18,7 @@ SYMBOL_REQUEST = "BTCUSD"
 # CENTOVÝ ÚČET
 LOT_SIZE = 0.30
 
+
 # =========================================================
 # PSAR
 # =========================================================
@@ -24,32 +26,39 @@ LOT_SIZE = 0.30
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
+
 # =========================================================
 # EMA FILTER - 5M SMER
 # =========================================================
 
 EMA_PERIOD = 50
 
+
 # =========================================================
-# SL / TP V BODOCH
+# SL / TP - 1:1
 # =========================================================
 
-TP_POINTS = 600.0
+TP_POINTS = 1500.0
 SL_POINTS = 1500.0
 
-MAGIC = 26092026
-COMMENT = "Riobot 5M trend 1M PSAR"
 
 # =========================================================
 # BREAK EVEN
 # =========================================================
 
-BE_TRIGGER = 250.0
+# Pri +500 bodoch aktivujeme ochranu zisku.
+BE_TRIGGER = 500.0
+
+# SL sa posunie 100 bodov do zisku.
 BE_LOCK = 100.0
 
+
 # =========================================================
-# LOOP
+# OSTATNÉ
 # =========================================================
+
+MAGIC = 26092026
+COMMENT = "Riobot 5M+1M BE+PSAR"
 
 LOOP_SECONDS = 10
 
@@ -74,7 +83,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Riobot is running"
+    return "RIObot is running"
 
 
 @app.route("/health")
@@ -83,6 +92,7 @@ def health():
 
 
 def run_flask():
+
     port = int(
         os.environ.get(
             "PORT",
@@ -103,10 +113,12 @@ def run_flask():
 def telegram(message):
 
     if not T_TOKEN or not T_CHAT:
+
         print(message)
         return
 
     try:
+
         url = (
             f"https://api.telegram.org/"
             f"bot{T_TOKEN}/sendMessage"
@@ -122,6 +134,7 @@ def telegram(message):
         )
 
     except Exception as e:
+
         print(
             "Telegram chyba:",
             e
@@ -181,12 +194,15 @@ def calculate_psar(
             )
 
             if i >= 2:
+
                 psar[i] = min(
                     psar[i],
                     low[i - 1],
                     low[i - 2]
                 )
+
             else:
+
                 psar[i] = min(
                     psar[i],
                     low[i - 1]
@@ -195,8 +211,11 @@ def calculate_psar(
             if low[i] < psar[i]:
 
                 bull = False
+
                 psar[i] = ep
+
                 ep = low[i]
+
                 af = step
 
             elif high[i] > ep:
@@ -222,12 +241,15 @@ def calculate_psar(
             )
 
             if i >= 2:
+
                 psar[i] = max(
                     psar[i],
                     high[i - 1],
                     high[i - 2]
                 )
+
             else:
+
                 psar[i] = max(
                     psar[i],
                     high[i - 1]
@@ -236,8 +258,11 @@ def calculate_psar(
             if high[i] > psar[i]:
 
                 bull = True
+
                 psar[i] = ep
+
                 ep = high[i]
+
                 af = step
 
             elif low[i] < ep:
@@ -281,11 +306,13 @@ def get_error_details(
 ):
 
     try:
+
         return api.format_error(
             error
         )
 
     except Exception:
+
         return str(error)
 
 
@@ -299,6 +326,7 @@ async def get_symbol_info(
 ):
 
     try:
+
         return await (
             connection
             .get_symbol_specification(
@@ -333,7 +361,8 @@ async def get_positions(
         )
 
         return [
-            p for p in positions
+            p
+            for p in positions
             if p.get("symbol") == symbol
         ]
 
@@ -348,7 +377,7 @@ async def get_positions(
 
 
 # =========================================================
-# NAČÍTANIE SVIEČOK
+# UZAVRETÉ SVIEČKY
 # =========================================================
 
 async def get_closed_candles(
@@ -413,10 +442,7 @@ async def get_closed_candles(
         if len(df) < minimum + 1:
             return None
 
-        # =============================================
         # POSLEDNÁ SVIEČKA SA EŠTE TVORÍ
-        # =============================================
-
         closed_df = df.iloc[:-1].copy()
 
         if len(closed_df) < minimum:
@@ -551,7 +577,8 @@ async def manage_break_even(
                                 f"Symbol: {symbol}\n"
                                 f"Open: {open_price}\n"
                                 f"Nový SL: {new_sl}\n"
-                                f"Profit: {profit_points:.0f} bodov"
+                                f"Trigger: +{BE_TRIGGER:.0f} bodov\n"
+                                f"Zamknuté: +{BE_LOCK:.0f} bodov"
                             )
 
                 # =========================================
@@ -598,7 +625,8 @@ async def manage_break_even(
                                 f"Symbol: {symbol}\n"
                                 f"Open: {open_price}\n"
                                 f"Nový SL: {new_sl}\n"
-                                f"Profit: {profit_points:.0f} bodov"
+                                f"Trigger: +{BE_TRIGGER:.0f} bodov\n"
+                                f"Zamknuté: +{BE_LOCK:.0f} bodov"
                             )
 
             except Exception:
@@ -617,7 +645,11 @@ async def manage_break_even(
 
 
 # =========================================================
-# PSAR TRAILING STOP - 5M
+# PSAR TRAILING
+#
+# DÔLEŽITÉ:
+# TRAILING SA AKTIVUJE AŽ KEĎ OBCHOD DOSIAHNE
+# MINIMÁLNE +500 BODOV.
 # =========================================================
 
 async def manage_psar_stop(
@@ -663,19 +695,22 @@ async def manage_psar_stop(
         )
 
         try:
+
             min_stop_points = float(
                 min_stop_raw
             )
+
         except Exception:
+
             min_stop_points = 0.0
 
         min_distance = (
             min_stop_points * point
         )
 
-        # =============================================
-        # PSAR TRAILING ZOSTÁVA NA 5M
-        # =============================================
+        # =================================================
+        # 5M PSAR PRE TRAILING
+        # =========================================================
 
         closed_df = await get_closed_candles(
             account,
@@ -701,6 +736,10 @@ async def manage_psar_stop(
             psar
         )
 
+        # =================================================
+        # AKTUÁLNA CENA
+        # =========================================================
+
         price = await (
             connection.get_symbol_price(
                 symbol
@@ -715,6 +754,10 @@ async def manage_psar_stop(
             price["ask"]
         )
 
+        # =================================================
+        # POZÍCIE
+        # =========================================================
+
         for position in positions:
 
             try:
@@ -727,6 +770,12 @@ async def manage_psar_stop(
                     "type"
                 )
 
+                open_price = float(
+                    position.get(
+                        "openPrice"
+                    )
+                )
+
                 current_sl = position.get(
                     "stopLoss"
                 )
@@ -735,23 +784,40 @@ async def manage_psar_stop(
                     "takeProfit"
                 )
 
-                # =========================================
+                # =================================================
                 # BUY
-                # =========================================
+                # =========================================================
 
                 if (
                     position_type
                     == "POSITION_TYPE_BUY"
                 ):
 
+                    # Aktuálny profit v bodoch
+                    profit_points = (
+                        bid - open_price
+                    ) / point
+
+                    # =============================================
+                    # TRAILING NESMIE ÍSŤ PRED BE TRIGGEROM
+                    # =============================================
+
+                    if (
+                        profit_points
+                        < BE_TRIGGER
+                    ):
+                        continue
+
                     candidate_sl = round(
                         psar,
                         digits
                     )
 
+                    # PSAR musí byť pod aktuálnou cenou
                     if candidate_sl >= bid:
                         continue
 
+                    # Minimálna broker vzdialenosť
                     if min_distance > 0:
 
                         if (
@@ -760,11 +826,44 @@ async def manage_psar_stop(
                         ):
                             continue
 
+                    # =============================================
+                    # PSAR NESMIE ZHORŠIŤ BE +100
+                    # =============================================
+
+                    minimum_be_sl = round(
+                        open_price
+                        + BE_LOCK * point,
+                        digits
+                    )
+
+                    candidate_sl = max(
+                        candidate_sl,
+                        minimum_be_sl
+                    )
+
+                    candidate_sl = round(
+                        candidate_sl,
+                        digits
+                    )
+
+                    # SL môže ísť iba vyššie
                     if current_sl is not None:
 
                         if (
                             candidate_sl
                             <= float(current_sl)
+                        ):
+                            continue
+
+                    # Po max() znovu skontrolujeme vzdialenosť
+                    if candidate_sl >= bid:
+                        continue
+
+                    if min_distance > 0:
+
+                        if (
+                            bid - candidate_sl
+                            < min_distance
                         ):
                             continue
 
@@ -778,26 +877,82 @@ async def manage_psar_stop(
                     )
 
                     telegram(
-                        "📈 PSAR SL POSUN – BUY\n\n"
+                        "📈 PSAR TRAILING – BUY\n\n"
                         f"Symbol: {symbol}\n"
-                        f"5M PSAR: {candidate_sl}\n"
+                        f"Profit: {profit_points:.0f} bodov\n"
+                        f"5M PSAR: {psar:.2f}\n"
                         f"Nový SL: {candidate_sl}\n"
-                        f"Bid: {bid}"
+                        "Trailing aktivovaný po BE"
                     )
 
-                # =========================================
+                # =================================================
                 # SELL
-                # =========================================
+                # =========================================================
 
                 elif (
                     position_type
                     == "POSITION_TYPE_SELL"
                 ):
 
+                    profit_points = (
+                        open_price - ask
+                    ) / point
+
+                    # =============================================
+                    # TRAILING NESMIE ÍSŤ PRED BE TRIGGEROM
+                    # =============================================
+
+                    if (
+                        profit_points
+                        < BE_TRIGGER
+                    ):
+                        continue
+
                     candidate_sl = round(
                         psar,
                         digits
                     )
+
+                    # PSAR musí byť nad aktuálnou cenou
+                    if candidate_sl <= ask:
+                        continue
+
+                    if min_distance > 0:
+
+                        if (
+                            candidate_sl - ask
+                            < min_distance
+                        ):
+                            continue
+
+                    # =============================================
+                    # PSAR NESMIE ZHORŠIŤ BE +100
+                    # =============================================
+
+                    minimum_be_sl = round(
+                        open_price
+                        - BE_LOCK * point,
+                        digits
+                    )
+
+                    candidate_sl = min(
+                        candidate_sl,
+                        minimum_be_sl
+                    )
+
+                    candidate_sl = round(
+                        candidate_sl,
+                        digits
+                    )
+
+                    # SL môže ísť iba nižšie
+                    if current_sl is not None:
+
+                        if (
+                            candidate_sl
+                            >= float(current_sl)
+                        ):
+                            continue
 
                     if candidate_sl <= ask:
                         continue
@@ -810,14 +965,6 @@ async def manage_psar_stop(
                         ):
                             continue
 
-                    if current_sl is not None:
-
-                        if (
-                            candidate_sl
-                            >= float(current_sl)
-                        ):
-                            continue
-
                     await (
                         connection
                         .modify_position(
@@ -828,17 +975,18 @@ async def manage_psar_stop(
                     )
 
                     telegram(
-                        "📉 PSAR SL POSUN – SELL\n\n"
+                        "📉 PSAR TRAILING – SELL\n\n"
                         f"Symbol: {symbol}\n"
-                        f"5M PSAR: {candidate_sl}\n"
+                        f"Profit: {profit_points:.0f} bodov\n"
+                        f"5M PSAR: {psar:.2f}\n"
                         f"Nový SL: {candidate_sl}\n"
-                        f"Ask: {ask}"
+                        "Trailing aktivovaný po BE"
                     )
 
             except Exception:
 
                 print(
-                    "PSAR SL chyba:",
+                    "PSAR trailing chyba:",
                     traceback.format_exc()
                 )
 
@@ -882,7 +1030,7 @@ async def main():
 
         # =================================================
         # METAAPI
-        # =================================================
+        # =========================================================
 
         account = await (
             api.metatrader_account_api
@@ -902,25 +1050,26 @@ async def main():
         await connection.wait_synchronized()
 
         telegram(
-            "🟢 RIObot spustený\n\n"
+            "🟢 RIObot spustený – TEST 1:1\n\n"
             f"Symbol: {SYMBOL_REQUEST}\n"
-            f"Lot: {LOT_SIZE}\n"
+            f"Lot: {LOT_SIZE}\n\n"
             "Smer: 5M PSAR + EMA50\n"
-            "Vstup: 1M PSAR FLIP\n"
+            "Vstup: 1M PSAR FLIP\n\n"
             f"TP: {TP_POINTS} bodov\n"
-            f"Počiatočný SL: {SL_POINTS} bodov\n"
-            f"BE trigger: {BE_TRIGGER} bodov\n"
-            f"BE lock: {BE_LOCK} bodov\n\n"
-            "5M EMA50 FILTER: ON\n"
-            "5M PSAR FILTER: ON\n"
-            "1M PSAR FLIP: ON\n"
-            "PSAR TRAILING SL: ON\n"
+            f"SL: {SL_POINTS} bodov\n"
+            f"BE trigger: +{BE_TRIGGER} bodov\n"
+            f"BE lock: +{BE_LOCK} bodov\n\n"
+            "PSAR trailing: až po BE\n"
+            "1 pozícia: ON\n"
             "clientId: VYPNUTÝ"
         )
 
-        # Posledná už spracovaná M1 sviečka.
-        # Bráni opakovanému vstupu z rovnakého flipu.
+        # Bráni opakovanému vstupu z tej istej M1 sviečky
         last_processed_m1 = None
+
+        # =================================================
+        # LOOP
+        # =========================================================
 
         while True:
 
@@ -929,14 +1078,8 @@ async def main():
                 symbol = SYMBOL_REQUEST
 
                 # =================================================
-                # SPRÁVA OTVORENEJ POZÍCIE
-                # =================================================
-
-                await manage_psar_stop(
-                    connection,
-                    account,
-                    symbol
-                )
+                # NAJPRV BE
+                # =========================================================
 
                 await manage_break_even(
                     connection,
@@ -944,8 +1087,18 @@ async def main():
                 )
 
                 # =================================================
-                # 5M DÁTA - URČUJÚ SMER
+                # POTOM PSAR TRAILING
+                # =========================================================
+
+                await manage_psar_stop(
+                    connection,
+                    account,
+                    symbol
+                )
+
                 # =================================================
+                # 5M DÁTA - SMER
+                # =========================================================
 
                 df_5m = await get_closed_candles(
                     account,
@@ -956,8 +1109,8 @@ async def main():
                 )
 
                 # =================================================
-                # 1M DÁTA - URČUJÚ VSTUP
-                # =================================================
+                # 1M DÁTA - VSTUP
+                # =========================================================
 
                 df_1m = await get_closed_candles(
                     account,
@@ -980,7 +1133,7 @@ async def main():
 
                 # =================================================
                 # 5M EMA50
-                # =================================================
+                # =========================================================
 
                 ema_series = calculate_ema(
                     df_5m,
@@ -996,8 +1149,8 @@ async def main():
                 )
 
                 # =================================================
-                # 5M PSAR - TREND FILTER
-                # =================================================
+                # 5M PSAR
+                # =========================================================
 
                 psar_5m, bull_5m = calculate_psar(
                     df_5m,
@@ -1017,15 +1170,15 @@ async def main():
                     psar_5m
                 )
 
-                # BUY smer:
-                # cena nad EMA50 + PSAR bullish
+                # =================================================
+                # 5M TREND FILTER
+                # =========================================================
+
                 trend_buy = (
                     bull_5m is True
                     and close_5m > ema50_5m
                 )
 
-                # SELL smer:
-                # cena pod EMA50 + PSAR bearish
                 trend_sell = (
                     bull_5m is False
                     and close_5m < ema50_5m
@@ -1033,7 +1186,7 @@ async def main():
 
                 # =================================================
                 # 1M PSAR FLIP
-                # =================================================
+                # =========================================================
 
                 previous_1m = (
                     df_1m.iloc[:-1].copy()
@@ -1088,26 +1241,29 @@ async def main():
 
                 # =================================================
                 # FINÁLNY SIGNÁL
-                # =================================================
+                # =========================================================
 
                 if (
                     trend_buy
                     and psar_flip_buy_1m
                 ):
+
                     signal = "BUY"
 
                 elif (
                     trend_sell
                     and psar_flip_sell_1m
                 ):
+
                     signal = "SELL"
 
                 else:
+
                     signal = None
 
                 # =================================================
                 # ID POSLEDNEJ UZAVRETEJ M1 SVIEČKY
-                # =================================================
+                # =========================================================
 
                 if "time" in df_1m.columns:
 
@@ -1187,7 +1343,7 @@ async def main():
 
                 # =================================================
                 # IBA JEDNA POZÍCIA
-                # =================================================
+                # =========================================================
 
                 positions = await get_positions(
                     connection,
@@ -1204,7 +1360,7 @@ async def main():
 
                 # =================================================
                 # BEZ SIGNÁLU
-                # =================================================
+                # =========================================================
 
                 if signal is None:
 
@@ -1216,7 +1372,7 @@ async def main():
 
                 # =================================================
                 # NEOBCHODUJ TEN ISTÝ M1 FLIP DVAKRÁT
-                # =================================================
+                # =========================================================
 
                 if (
                     m1_candle_id
@@ -1229,14 +1385,13 @@ async def main():
 
                     continue
 
-                # Označíme flip ako spracovaný.
-                # Aj keby order zlyhal, robot ho nebude
-                # každých 10 sekúnd naháňať.
-                last_processed_m1 = m1_candle_id
+                last_processed_m1 = (
+                    m1_candle_id
+                )
 
                 # =================================================
                 # SYMBOL PARAMETRE
-                # =================================================
+                # =========================================================
 
                 spec = await get_symbol_info(
                     connection,
@@ -1286,8 +1441,8 @@ async def main():
                 )
 
                 # =================================================
-                # ČERSTVÁ CENA PRE OBJEDNÁVKU
-                # =================================================
+                # ČERSTVÁ CENA
+                # =========================================================
 
                 async def get_order_prices():
 
@@ -1369,15 +1524,16 @@ async def main():
                 )
 
                 print(
-                    f"5M EMA50: {ema50_5m}"
+                    "R:R = 1:1"
                 )
 
                 print(
-                    f"5M PSAR: {psar_5m}"
+                    f"BE: +{BE_TRIGGER} -> "
+                    f"lock +{BE_LOCK}"
                 )
 
                 print(
-                    f"1M PSAR: {current_psar_1m}"
+                    "PSAR trailing: až po BE"
                 )
 
                 print(
@@ -1386,7 +1542,7 @@ async def main():
 
                 # =================================================
                 # MAX 2 POKUSY
-                # =================================================
+                # =========================================================
 
                 for attempt in range(2):
 
@@ -1431,7 +1587,7 @@ async def main():
                             )
 
                             telegram(
-                                "🟢 BUY OTVORENÝ\n\n"
+                                "🟢 BUY OTVORENÝ – TEST 1:1\n\n"
                                 f"Symbol: {symbol}\n"
                                 f"Lot: {LOT_SIZE}\n"
                                 f"Cena: {entry}\n"
@@ -1440,10 +1596,9 @@ async def main():
                                 f"5M EMA50: {ema50_5m:.2f}\n"
                                 f"5M PSAR: {psar_5m:.2f}\n"
                                 f"1M PSAR: {current_psar_1m:.2f}\n\n"
-                                "5M trend: BUY ✅\n"
-                                "1M PSAR flip: BUY ✅\n"
-                                "BE: ON\n"
-                                "PSAR trailing: ON"
+                                f"BE: +{BE_TRIGGER:.0f} → "
+                                f"+{BE_LOCK:.0f}\n"
+                                "PSAR trailing: až po BE"
                             )
 
                             break
@@ -1473,7 +1628,7 @@ async def main():
                             )
 
                             telegram(
-                                "🔴 SELL OTVORENÝ\n\n"
+                                "🔴 SELL OTVORENÝ – TEST 1:1\n\n"
                                 f"Symbol: {symbol}\n"
                                 f"Lot: {LOT_SIZE}\n"
                                 f"Cena: {entry}\n"
@@ -1482,10 +1637,9 @@ async def main():
                                 f"5M EMA50: {ema50_5m:.2f}\n"
                                 f"5M PSAR: {psar_5m:.2f}\n"
                                 f"1M PSAR: {current_psar_1m:.2f}\n\n"
-                                "5M trend: SELL ✅\n"
-                                "1M PSAR flip: SELL ✅\n"
-                                "BE: ON\n"
-                                "PSAR trailing: ON"
+                                f"BE: +{BE_TRIGGER:.0f} → "
+                                f"+{BE_LOCK:.0f}\n"
+                                "PSAR trailing: až po BE"
                             )
 
                             break
@@ -1622,4 +1776,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-)
+                    )
