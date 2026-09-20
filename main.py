@@ -5,12 +5,13 @@ from flask import Flask
 from threading import Thread
 from metaapi_cloud_sdk import MetaApi
 import requests
+import pandas as pd
 
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Stopped"
+    return "Riobot ProCent M15 Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -25,18 +26,30 @@ TELEGRAM_CHAT_ID = os.getenv("T_CHAT")
 METAAPI_TOKEN = os.getenv("M_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
+SYMBOL = "BTCUSD"
+LOT_SIZE = 0.02
+TIMEFRAME = "15m"
+
+# Parametre precentového účtu (v bodoch)
+TP_POINTS = 600.0       # Take Profit +6 €
+BE_TRIGGER = 400.0      # BE aktivácia pri +4 €
+BE_LOCK = 150.0         # Posun SL na +1.5 €
+SL_POINTS = 2000.0      # Široký Stop Loss
+
+last_trade_time = 0
+COOLDOWN_SECONDS = 60
+
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
     except Exception as e:
         print(f"Telegram error: {e}")
 
 async def run_bot():
-    send_telegram("🛑 Riobot je ÚPLNE ZASTAVENÝ. Žiadne obchody sa neotvárajú.")
-    
+    global last_trade_time
     while True:
         try:
             api = MetaApi(METAAPI_TOKEN)
@@ -44,25 +57,90 @@ async def run_bot():
             
             if account.state != 'DEPLOYED':
                 await account.deploy()
-                
+            
             await account.wait_connected()
             connection = account.get_rpc_connection()
+            
             await connection.connect()
             await connection.wait_synchronized()
-                
-            # Zistíme aktuálny stav účtu
-            account_info = await connection.get_account_information()
-            balance = account_info.get('balance', 0)
-            equity = account_info.get('equity', 0)
             
-            send_telegram(f"🛡️ Stav účtu – Balance: {balance} €, Equity: {equity} €. Bot nič nerobí.")
-            
+            send_telegram("🚀 Riobot pripojený na ProCent účet (Lot 0.02, TP 6€, BE pri 4€)!")
+
             while True:
-                await asyncio.sleep(300) # Len spí a nič nevykonáva
-                
+                try:
+                    account_info = await connection.get_account_information()
+                    balance = account_info.get('balance', 0)
+                    equity = account_info.get('equity', 0)
+
+                    positions = await connection.get_positions()
+                    current_time = time.time()
+                    btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
+
+                    send_telegram(f"🛡️ Stav účtu ProCent - Balance: {balance/100:.2f} €, Equity: {equity/100:.2f} €. Bot pripravený.")
+
+                    # Break-Even manažment
+                    for pos in btc_positions:
+                        open_price = pos['openPrice']
+                        current_sl = pos.get('stopLoss', 0)
+                        price_info = await connection.get_symbol_price(SYMBOL)
+                        
+                        if pos['type'] == 'POSITION_TYPE_BUY':
+                            bid = price_info.get('bid')
+                            if bid and (bid - open_price) >= BE_TRIGGER:
+                                target_sl = open_price + BE_LOCK
+                                if current_sl < target_sl:
+                                    await connection.modify_position(
+                                        positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price + TP_POINTS)
+                                    )
+                                    send_telegram("🔒 BE aktívne (BUY): SL posunutý do zisku!")
+                                    
+                        elif pos['type'] == 'POSITION_TYPE_SELL':
+                            ask = price_info.get('ask')
+                            if ask and (open_price - ask) >= BE_TRIGGER:
+                                target_sl = open_price - BE_LOCK
+                                if current_sl > target_sl or current_sl == 0:
+                                    await connection.modify_position(
+                                        positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price - TP_POINTS)
+                                    )
+                                    send_telegram("🔒 BE aktívne (SELL): SL posunutý do zisku!")
+
+                    # Vstupná logika na základe 1 sviečky M15
+                    if len(btc_positions) == 0 and (current_time - last_trade_time) > COOLDOWN_SECONDS:
+                        candles = await connection.get_historical_candles(SYMBOL, TIMEFRAME, None, 5)
+                        
+                        if candles and len(candles) >= 3:
+                            df = pd.DataFrame(candles)
+                            prev_candle = df.iloc[-2] # Posledná uzavretá sviečka
+                            c_open = prev_candle['open']
+                            c_close = prev_candle['close']
+                            
+                            price_info = await connection.get_symbol_price(SYMBOL)
+                            ask = price_info.get('ask')
+                            bid = price_info.get('bid')
+
+                            if ask and bid:
+                                if c_close > c_open: # Zelená sviečka -> BUY
+                                    sl = ask - SL_POINTS
+                                    tp = ask + TP_POINTS
+                                    await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                                    last_trade_time = current_time
+                                    send_telegram("🟢 BTCUSD BUY (0.02) - M15 sviečka otvorená.")
+
+                                elif c_close < c_open: # Červená sviečka -> SELL
+                                    sl = bid + SL_POINTS
+                                    tp = bid - TP_POINTS
+                                    await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                                    last_trade_time = current_time
+                                    send_telegram("🔴 BTCUSD SELL (0.02) - M15 sviečka otvorená.")
+
+                except Exception as inner_e:
+                    print(f"Chyba v slučke: {inner_e}")
+
+                await asyncio.sleep(30)
+
         except Exception as e:
-            send_telegram(f"⚠️ Výpadok pripojenia: {str(e)[:80]}")
-            await asyncio.sleep(10)
+            print(f"MetaAPI chyba: {e}")
+            await asyncio.sleep(15)
 
 if __name__ == "__main__":
     keep_alive()
