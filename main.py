@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Exact SAR Active"
+    return "Riobot BTCUSD Exact SAR Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -25,7 +25,7 @@ TELEGRAM_CHAT_ID = os.getenv("T_CHAT")
 METAAPI_TOKEN = os.getenv("M_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
-SYMBOL = "BTC"
+SYMBOL = "BTCUSD"       # Natvrdo BTCUSD pre istotu
 LOT_SIZE = 0.30         
 TP_POINTS = 600.0       # 3 € cieľ
 BE_TRIGGER = 250.0      
@@ -103,7 +103,6 @@ def get_exact_sar_signal(candles):
                 bullish = False
                 sar[i] = temp_sar
 
-    # Vráti signál hneď, ako je trend v stave BUY alebo SELL
     return "BUY" if bullish else "SELL"
 
 async def main():
@@ -121,24 +120,16 @@ async def main():
     await connection.connect()
     await connection.wait_synchronized()
     
-    active_symbol = SYMBOL
-    try:
-        prices = await connection.get_symbol_price(SYMBOL)
-        if not prices:
-            active_symbol = "BTCUSD"
-    except Exception:
-        active_symbol = "BTCUSD"
-
     if not startup_message_sent:
-        send_telegram("🚀 Riobot Exact SAR pripravený na bodky.")
+        send_telegram("🚀 Riobot BTCUSD SAR pripravený.")
         startup_message_sent = True
 
     while True:
         try:
             positions = await connection.get_positions()
-            btc_positions = [p for p in positions if p['symbol'] in [active_symbol, "BTC", "BTCUSD"]]
+            btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
-            price_info = await connection.get_symbol_price(active_symbol)
+            price_info = await connection.get_symbol_price(SYMBOL)
             ask = price_info.get('ask')
             bid = price_info.get('bid')
 
@@ -165,10 +156,10 @@ async def main():
                             )
                             send_telegram("🔒 BE aktívne (SELL)")
 
-            # Vstupy hneď pri detekcii bodky
+            # Vstupy na základe bodiek pre BTCUSD
             if len(btc_positions) == 0 and ask and bid:
                 try:
-                    candles = await connection.get_historical_candles(active_symbol, "1m", None, 30)
+                    candles = await connection.get_historical_candles(SYMBOL, "1m", None, 30)
                 except Exception:
                     candles = None
                 
@@ -181,17 +172,17 @@ async def main():
                         if signal == "BUY":
                             sl = ask - SL_POINTS
                             tp = ask + TP_POINTS
-                            await connection.create_market_buy_order(active_symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                            await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                             last_signal_candle = current_candle_time
-                            send_telegram("🟢 Exact SAR BUY (0.30 Lot) otvorený.")
+                            send_telegram("🟢 BTCUSD SAR BUY (0.30 Lot) otvorený.")
                             await asyncio.sleep(10)
                             
                         elif signal == "SELL":
                             sl = bid + SL_POINTS
                             tp = bid - TP_POINTS
-                            await connection.create_market_sell_order(active_symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                            await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                             last_signal_candle = current_candle_time
-                            send_telegram("🔴 Exact SAR SELL (0.30 Lot) otvorený.")
+                            send_telegram("🔴 BTCUSD SAR SELL (0.30 Lot) otvorený.")
                             await asyncio.sleep(10)
 
             await asyncio.sleep(2)
