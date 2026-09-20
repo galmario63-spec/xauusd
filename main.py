@@ -108,7 +108,6 @@ async def main():
     await connection.connect()
     await connection.wait_synchronized()
     
-    # Automatické nájdenie správneho symbolu pre BTC
     symbol = "BTCUSD"
     try:
         specifications = await connection.get_symbol_specifications()
@@ -120,7 +119,7 @@ async def main():
     except Exception:
         pass
 
-    print(Použitý symbol: {symbol})
+    print(f"Použitý symbol: {symbol}")
 
     if not startup_message_sent:
         send_telegram(f"🚀 Riobot beží na symbol: {symbol}")
