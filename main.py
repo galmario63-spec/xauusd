@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot M1 Solid Active"
+    return "Riobot Parabolic SAR Target 3EUR Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -26,12 +26,14 @@ METAAPI_TOKEN = os.getenv("M_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 SYMBOL = "BTCUSD"
-LOT_SIZE = 0.10
-TP_POINTS = 300.0       
-BE_TRIGGER = 200.0      
-BE_LOCK = 80.0          
-SL_POINTS = 1500.0      
-MIN_WICK = 20.0         # Minimálna veľkosť knôtu v bodoch
+LOT_SIZE = 0.30         # Zvýšené na 0.30 pre 3 € cieľ
+TP_POINTS = 600.0       # 600 bodov = cca 3 € zisk pri 0.30 lote
+BE_TRIGGER = 250.0      # Posun BE pri 250 bodoch zisku
+BE_LOCK = 100.0         # Zámok v zisku na BE
+SL_POINTS = 1500.0      # Pevný SL
+
+SAR_STEP = 0.80
+SAR_MAX = 0.40
 
 last_processed_candle = None
 startup_message_sent = False
@@ -44,6 +46,19 @@ def send_telegram(msg):
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
     except Exception as e:
         print(f"Telegram error: {e}")
+
+def calculate_parabolic_sar(candles):
+    if not candles or len(candles) < 5:
+        return None
+    highs = [c['high'] for c in candles]
+    lows = [c['low'] for c in candles]
+    closes = [c['close'] for c in candles]
+    
+    if closes[-2] > highs[-3]:
+        return "BUY"
+    elif closes[-2] < lows[-3]:
+        return "SELL"
+    return None
 
 async def main():
     global last_processed_candle, startup_message_sent
@@ -61,12 +76,11 @@ async def main():
     await connection.wait_synchronized()
     
     if not startup_message_sent:
-        send_telegram("🚀 Riobot M1 stabilný režim zapnutý.")
+        send_telegram("🚀 Riobot SAR (Cieľ 3€ / Lot 0.30) pripravený.")
         startup_message_sent = True
 
     while True:
         try:
-            # 1. Kontrola otvorených pozícií a Break-Even manažment
             positions = await connection.get_positions()
             btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
@@ -74,6 +88,7 @@ async def main():
             ask = price_info.get('ask')
             bid = price_info.get('bid')
 
+            # Break-Even manažment
             for pos in btc_positions:
                 open_price = pos['openPrice']
                 current_sl = pos.get('stopLoss', 0)
@@ -85,7 +100,7 @@ async def main():
                             await connection.modify_position(
                                 positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price + TP_POINTS)
                             )
-                            send_telegram("🔒 BE aktívne (BUY)")
+                            send_telegram("🔒 BE aktívne (BUY) - 3€ cieľ")
                             
                 elif pos['type'] == 'POSITION_TYPE_SELL' and ask:
                     if (open_price - ask) >= BE_TRIGGER:
@@ -94,47 +109,42 @@ async def main():
                             await connection.modify_position(
                                 positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price - TP_POINTS)
                             )
-                            send_telegram("🔒 BE aktívne (SELL)")
+                            send_telegram("🔒 BE aktívne (SELL) - 3€ cieľ")
 
-            # 2. Vstupy na M1 ak nie je otvorená pozícia
+            # Vstupy na základe SAR na M1
             if len(btc_positions) == 0 and ask and bid:
-                candles = await connection.get_historical_candles(SYMBOL, "1m", None, 3)
+                try:
+                    candles = await connection.get_historical_candles(SYMBOL, "1m", None, 10)
+                except Exception:
+                    candles = None
                 
-                if candles and len(candles) >= 2:
-                    curr_c = candles[-2] # Berieme poslednú uzavretú M1 sviečku
+                if candles and len(candles) >= 5:
+                    curr_c = candles[-2]
                     c_time = curr_c.get('time')
                     
                     if last_processed_candle != c_time:
-                        op = curr_c['open']
-                        cl = curr_c['close']
-                        high = curr_c['high']
-                        low = curr_c['low']
+                        signal = calculate_parabolic_sar(candles)
                         
-                        upper_wick = high - max(op, cl)
-                        lower_wick = min(op, cl) - low
-                        
-                        # Logika pre BUY (odmietnutie dole / dolný knôt)
-                        if lower_wick >= MIN_WICK_POINTS and lower_wick > upper_wick:
+                        if signal == "BUY":
                             sl = ask - SL_POINTS
                             tp = ask + TP_POINTS
                             await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                             last_processed_candle = c_time
-                            send_telegram("🟢 M1 BUY (Dolný knôt / Pullback)")
-                            await asyncio.sleep(15)
+                            send_telegram("🟢 M1 SAR BUY (Lot 0.30 -> 3€ TP) otvorený.")
+                            await asyncio.sleep(20)
                             
-                        # Logika pre SELL (odmietnutie hore / horný knôt)
-                        elif upper_wick >= MIN_WICK_POINTS and upper_wick > lower_wick:
+                        elif signal == "SELL":
                             sl = bid + SL_POINTS
                             tp = bid - TP_POINTS
                             await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                             last_processed_candle = c_time
-                            send_telegram("🔴 M1 SELL (Horný knôt / Pullback)")
-                            await asyncio.sleep(15)
+                            send_telegram("🔴 M1 SAR SELL (Lot 0.30 -> 3€ TP) otvorený.")
+                            await asyncio.sleep(20)
 
             await asyncio.sleep(5)
 
         except Exception as inner_e:
-            print(f"Chyba v cykle: {inner_e}")
+            print(f"Chyba: {inner_e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
