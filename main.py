@@ -137,7 +137,7 @@ async def main():
             digits = int(specification.get("digits", 2))
 
             if not startup_message_sent:
-                send_telegram(f"🚀 RIObot STATUS AKTÍVNY\nSymbol: {symbol} | Lot: {LOT_SIZE}")
+                send_telegram(f"🚀 RIObot OPRAVENÝ ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
                 startup_message_sent = True
 
             while True:
@@ -145,7 +145,8 @@ async def main():
                     price = await connection.get_symbol_price(symbol)
                     bid, ask = float(price["bid"]), float(price["ask"])
 
-                    candles = await connection.get_historical_candles(symbol, TIMEFRAME, None, 150)
+                    # Opravená metóda get_candles namiesto get_historical_candles
+                    candles = await connection.get_candles(symbol, TIMEFRAME, None, 150)
                     if not candles or len(candles) < 10:
                         await asyncio.sleep(3)
                         continue
@@ -161,7 +162,6 @@ async def main():
                     positions = await connection.get_positions()
                     bot_positions = [p for p in positions if p.get("symbol") == symbol and is_bot_position(p)]
 
-                    # Stavová správa na Telegram každých 60 sekúnd, aby si videl, že bot žije
                     current_time = time.time()
                     if current_time - last_status_time > 60:
                         trend_name = "BUY (rast)" if current_direction is True else "SELL (pokles)"
