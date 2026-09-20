@@ -107,9 +107,11 @@ async def main():
 
     while True:
         try:
+            print("🔌 Pripájam k MetaApi...")
             account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
             if account.state != "DEPLOYED":
                 await account.deploy()
+            
             await account.wait_connected()
             connection = account.get_rpc_connection()
             await connection.connect()
@@ -133,7 +135,7 @@ async def main():
             digits = int(specification.get("digits", 2))
 
             if not startup_message_sent:
-                send_telegram(f"🚀 RIObot LIVE FIX SPUSTENÝ\nSymbol: {symbol} | Lot: {LOT_SIZE}")
+                send_telegram(f"🚀 RIObot BEZPEČNÝ ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
                 startup_message_sent = True
 
             while True:
@@ -188,7 +190,7 @@ async def main():
                                     symbol, LOT_SIZE, stop_loss=sl, take_profit=tp,
                                     options={"comment": COMMENT, "magic": MAGIC}
                                 )
-                                send_telegram(f"🟢 LIVE BUY OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
+                                send_telegram(f"🟢 BUY OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
                             except Exception as e:
                                 send_telegram(f"❌ BUY ERROR: {e}")
 
@@ -200,20 +202,20 @@ async def main():
                                     symbol, LOT_SIZE, stop_loss=sl, take_profit=tp,
                                     options={"comment": COMMENT, "magic": MAGIC}
                                 )
-                                send_telegram(f"🔴 LIVE SELL OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
+                                send_telegram(f"🔴 SELL OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
                             except Exception as e:
                                 send_telegram(f"❌ SELL ERROR: {e}")
 
                     await asyncio.sleep(2)
 
                 except Exception as inner_error:
-                    print(f"Chyba: {inner_error}")
+                    print(f"Chyba v cykle: {inner_error}")
                     await asyncio.sleep(5)
                     break
 
         except Exception as outer_error:
-            print(f"Pripojenie: {outer_error}")
-            await asyncio.sleep(10)
+            print(f"Chyba pripojenia (limit/sieť): {outer_error}")
+            await asyncio.sleep(20) # Dlhšia pauza, aby sa uvoľnila relácia v MetaApi
 
 if __name__ == "__main__":
     keep_alive()
