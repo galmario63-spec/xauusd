@@ -240,29 +240,13 @@ def calculate_psar(candles, step, maximum):
 # FIND BTC SYMBOL
 # =========================================================
 
-async def find_symbol(account):
+async def find_symbol(connection):
 
     try:
 
-        specifications = (
-            await account.get_symbol_specifications()
-        )
-
-        # Presný BTCUSD
-        for spec in specifications:
-
-            name = spec.get("symbol", "")
-
-            if name.upper() == SYMBOL_REQUEST.upper():
-                return name
-
-        # Napr. BTCUSDm / BTCUSD.a / BTCUSD.pro
-        for spec in specifications:
-
-            name = spec.get("symbol", "")
-
-            if "BTCUSD" in name.upper():
-                return name
+        spec = await connection.get_symbol_specification(SYMBOL_REQUEST)
+        if spec and spec.get("symbol"):
+            return spec.get("symbol")
 
     except Exception as e:
 
@@ -343,7 +327,7 @@ async def main():
             # SYMBOL
             # -------------------------------------------------
 
-            symbol = await find_symbol(account)
+            symbol = await find_symbol(connection)
 
             print(f"₿ Obchodovaný symbol: {symbol}")
 
@@ -351,18 +335,7 @@ async def main():
             # SYMBOL SPECIFICATION
             # -------------------------------------------------
 
-            specifications = (
-                await account.get_symbol_specifications()
-            )
-
-            specification = None
-
-            for spec in specifications:
-
-                if spec.get("symbol") == symbol:
-
-                    specification = spec
-                    break
+            specification = await connection.get_symbol_specification(symbol)
 
             if not specification:
 
