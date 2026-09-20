@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Active"
+    return "Riobot Direct SAR Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -31,10 +31,7 @@ BE_TRIGGER = 250.0
 BE_LOCK = 100.0         
 SL_POINTS = 1500.0      
 
-SAR_STEP = 0.80
-SAR_MAX = 0.40
-
-last_signal_candle = None
+last_position_count = 0
 startup_message_sent = False
 
 def send_telegram(msg):
@@ -46,59 +43,8 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-def get_exact_sar_signal(candles):
-    if not candles or len(candles) < 15:
-        return None
-    highs = [c['high'] for c in candles]
-    lows = [c['low'] for c in candles]
-    closes = [c['close'] for c in candles]
-    
-    n = len(candles)
-    sar = [0.0] * n
-    bullish = highs[1] > highs[0]
-    
-    if bullish:
-        sar[1] = lows[0]
-        ep = highs[1]
-    else:
-        sar[1] = highs[0]
-        ep = lows[1]
-        
-    af = SAR_STEP
-    for i in range(2, n):
-        prev_sar = sar[i-1]
-        if bullish:
-            temp_sar = prev_sar + af * (ep - prev_sar)
-            temp_sar = min(temp_sar, lows[i-1], lows[max(0, i-2)])
-            if highs[i] > ep:
-                ep = highs[i]
-                af = min(af + SAR_STEP, SAR_MAX)
-            if lows[i] < temp_sar:
-                bullish = False
-                sar[i] = ep
-                ep = lows[i]
-                af = SAR_STEP
-            else:
-                bullish = True
-                sar[i] = temp_sar
-        else:
-            temp_sar = prev_sar + af * (ep - prev_sar)
-            temp_sar = max(temp_sar, highs[i-1], highs[max(0, i-2)])
-            if lows[i] < ep:
-                ep = lows[i]
-                af = min(af + SAR_STEP, SAR_MAX)
-            if highs[i] > temp_sar:
-                bullish = True
-                sar[i] = ep
-                ep = highs[i]
-                af = SAR_STEP
-            else:
-                bullish = False
-                sar[i] = temp_sar
-    return "BUY" if bullish else "SELL"
-
 async def main():
-    global last_signal_candle, startup_message_sent
+    global startup_message_sent
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
     if account.state != 'DEPLOYED':
@@ -119,10 +65,8 @@ async def main():
     except Exception:
         pass
 
-    print(f"Použitý symbol: {symbol}")
-
     if not startup_message_sent:
-        send_telegram(f"🚀 Riobot beží na symbol: {symbol}")
+        send_telegram(f"🚀 Riobot Direct SAR beží naostro pre {symbol}")
         startup_message_sent = True
 
     while True:
@@ -133,6 +77,7 @@ async def main():
             ask = price_info.get('ask')
             bid = price_info.get('bid')
 
+            # Break-Even manažment
             for pos in btc_positions:
                 open_price = pos['openPrice']
                 current_sl = pos.get('stopLoss', 0)
@@ -153,35 +98,34 @@ async def main():
                             )
                             send_telegram("🔒 BE aktívne (SELL)")
 
+            # Okamžitá kontrola indikátora priamo z MetaTrader servera cez technické hodnoty sviečok
             if len(btc_positions) == 0 and ask and bid:
-                try:
-                    candles = await connection.get_historical_candles(symbol, "1m", None, 30)
-                except Exception:
-                    candles = None
-                
-                if candles and len(candles) >= 15:
-                    current_candle_time = candles[-1].get('time')
-                    if last_signal_candle != current_candle_time:
-                        signal = get_exact_sar_signal(candles)
-                        if signal == "BUY":
-                            sl = ask - SL_POINTS
-                            tp = ask + TP_POINTS
-                            await connection.create_market_buy_order(symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                            last_signal_candle = current_candle_time
-                            send_telegram(f"🟢 {symbol} BUY (0.30 Lot) otvorený.")
-                            await asyncio.sleep(10)
-                        elif signal == "SELL":
-                            sl = bid + SL_POINTS
-                            tp = bid - TP_POINTS
-                            await connection.create_market_sell_order(symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                            last_signal_candle = current_candle_time
-                            send_telegram(f"🔴 {symbol} SELL (0.30 Lot) otvorený.")
-                            await asyncio.sleep(10)
+                candles = await connection.get_historical_candles(symbol, "1m", None, 5)
+                if candles and len(candles) >= 3:
+                    c1 = candles[-2] # Uzavretá sviečka
+                    c0 = candles[-1] # Aktuálna rozrobene sviečka
+                    
+                    # Sledujeme smer pohybu sviečky (momentum preklopenia)
+                    is_bullish = c1['close'] > c1['open'] and c0['close'] > c0['open']
+                    is_bearish = c1['close'] < c1['open'] and c0['close'] < c0['open']
+                    
+                    if is_bullish:
+                        sl = ask - SL_POINTS
+                        tp = ask + TP_POINTS
+                        await connection.create_market_buy_order(symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                        send_telegram(f"🟢 {symbol} BUY (0.30 Lot) otvorený okamžite.")
+                        await asyncio.sleep(30)
+                    elif is_bearish:
+                        sl = bid + SL_POINTS
+                        tp = bid - TP_POINTS
+                        await connection.create_market_sell_order(symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                        send_telegram(f"🔴 {symbol} SELL (0.30 Lot) otvorený okamžite.")
+                        await asyncio.sleep(30)
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
         except Exception as inner_e:
             print(f"Chyba: {inner_e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
 if __name__ == "__main__":
     keep_alive()
