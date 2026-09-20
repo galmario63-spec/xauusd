@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot True Parabolic SAR Active"
+    return "Riobot BTCUSD True SAR Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -25,14 +25,13 @@ TELEGRAM_CHAT_ID = os.getenv("T_CHAT")
 METAAPI_TOKEN = os.getenv("M_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
-SYMBOL = "BTCUSD"
+SYMBOL = "BTCUSD"       # Opravené natvrdo na BTCUSD
 LOT_SIZE = 0.30         
 TP_POINTS = 600.0       # 3 € cieľ
 BE_TRIGGER = 250.0      
 BE_LOCK = 100.0         
 SL_POINTS = 1500.0      
 
-# Parametre Parabolic SAR
 SAR_STEP = 0.80
 SAR_MAX = 0.40
 
@@ -49,23 +48,18 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 def get_parabolic_sar_signal(candles):
-    """
-    Konečne reálny výpočet Parabolic SAR pre M1
-    """
     if not candles or len(candles) < 10:
         return None
     
     highs = [c['high'] for c in candles]
-        lows = [c['low'] for c in candles]
+    lows = [c['low'] for c in candles]
     closes = [c['close'] for c in candles]
     
-    # Inicializácia trendu podľa prvých sviečok
     is_bullish = closes[-1] > closes[-5]
     af = SAR_STEP
     ep = highs[-1] if is_bullish else lows[-1]
     sar = lows[0] if is_bullish else highs[0]
     
-    # Prebehneme historické sviečky na simuláciu aktuálneho SAR bodu
     for i in range(1, len(candles) - 1):
         if is_bullish:
             sar = sar + af * (ep - sar)
@@ -74,7 +68,6 @@ def get_parabolic_sar_signal(candles):
                 ep = highs[i]
                 af = min(af + SAR_STEP, SAR_MAX)
             if lows[i] < sar:
-                # Preklopenie do BEARISH (SELL)
                 is_bullish = False
                 sar = ep
                 ep = lows[i]
@@ -86,13 +79,11 @@ def get_parabolic_sar_signal(candles):
                 ep = lows[i]
                 af = min(af + SAR_STEP, SAR_MAX)
             if highs[i] > sar:
-                # Preklopenie do BULLISH (BUY)
                 is_bullish = True
                 sar = ep
                 ep = highs[i]
                 af = SAR_STEP
 
-    # Vráti aktuálny smer trendu na základe pozície bodky voči poslednej cene
     current_close = closes[-1]
     if current_close > sar:
         return "BUY"
@@ -116,7 +107,7 @@ async def main():
     await connection.wait_synchronized()
     
     if not startup_message_sent:
-        send_telegram("🚀 Riobot True Parabolic SAR pripravený.")
+        send_telegram("🚀 Riobot BTCUSD SAR pripravený naostro.")
         startup_message_sent = True
 
     while True:
@@ -151,7 +142,7 @@ async def main():
                             )
                             send_telegram("🔒 BE aktívne (SELL)")
 
-            # Vstupy na základe reálneho SAR na M1
+            # Vstupy na základe SAR na M1 pre BTCUSD
             if len(btc_positions) == 0 and ask and bid:
                 try:
                     candles = await connection.get_historical_candles(SYMBOL, "1m", None, 20)
@@ -169,7 +160,7 @@ async def main():
                             tp = ask + TP_POINTS
                             await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                             last_signal_time = curr_candle_time
-                            send_telegram("🟢 True SAR M1 BUY (Lot 0.30) otvorený.")
+                            send_telegram("🟢 BTCUSD M1 BUY (0.30 Lot) otvorený.")
                             await asyncio.sleep(15)
                             
                         elif signal == "SELL":
@@ -177,7 +168,7 @@ async def main():
                             tp = bid - TP_POINTS
                             await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                             last_signal_time = curr_candle_time
-                            send_telegram("🔴 True SAR M1 SELL (Lot 0.30) otvorený.")
+                            send_telegram("🔴 BTCUSD M1 SELL (0.30 Lot) otvorený.")
                             await asyncio.sleep(15)
 
             await asyncio.sleep(3)
