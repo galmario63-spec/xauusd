@@ -12,7 +12,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot ProCent M15 Active"
+    return "Riobot ProCent M15+M5 Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -29,14 +29,13 @@ METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 SYMBOL = "BTCUSD"
 LOT_SIZE = 0.02
-TIMEFRAME = "15m"
 
 TP_POINTS = 600.0       
 BE_TRIGGER = 400.0      
 BE_LOCK = 150.0         
 SL_POINTS = 2000.0      
 
-last_checked_candle_time = None
+last_checked_m5_time = None
 startup_message_sent = False
 
 def send_telegram(msg):
@@ -49,7 +48,7 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def main():
-    global last_checked_candle_time, startup_message_sent
+    global last_checked_m5_time, startup_message_sent
     
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
@@ -64,7 +63,7 @@ async def main():
     await connection.wait_synchronized()
     
     if not startup_message_sent:
-        send_telegram("🚀 Riobot je pripojený, má aktívny agresívny časový filter a stráži M15 pre BTCUSD.")
+        send_telegram("🚀 Riobot je online: M15 trend + M5 konfirmácia pre BTCUSD aktívna.")
         startup_message_sent = True
 
     while True:
@@ -72,7 +71,7 @@ async def main():
             positions = await connection.get_positions()
             btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
-            # 1. Manažment Break-Even pre otvorené pozície
+            # 1. Break-Even manažment
             for pos in btc_positions:
                 open_price = pos['openPrice']
                 current_sl = pos.get('stopLoss', 0)
@@ -86,7 +85,7 @@ async def main():
                             await connection.modify_position(
                                 positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price + TP_POINTS)
                             )
-                            send_telegram("🔒 BE aktívne (BUY): SL posunutý do zisku!")
+                            send_telegram("🔒 BE aktívne (BUY)")
                             
                 elif pos['type'] == 'POSITION_TYPE_SELL':
                     ask = price_info.get('ask')
@@ -96,57 +95,48 @@ async def main():
                             await connection.modify_position(
                                 positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price - TP_POINTS)
                             )
-                            send_telegram("🔒 BE aktívne (SELL): SL posunutý do zisku!")
+                            send_telegram("🔒 BE aktívne (SELL)")
 
-            # 2. Vstupná logika s agresívnym časovým filtrom
+            # 2. Vstupná logika: M15 smer + M5 potvrdenie
             if len(btc_positions) == 0:
-                candles = await connection.get_historical_candles(SYMBOL, TIMEFRAME, None, 3)
+                candles_m15 = await connection.get_historical_candles(SYMBOL, "15m", None, 3)
+                candles_m5 = await connection.get_historical_candles(SYMBOL, "5m", None, 3)
                 
-                if candles and len(candles) >= 2:
-                    df = pd.DataFrame(candles)
-                    prev_candle = df.iloc[-2] # Posledná uzavretá sviečka
-                    candle_time = prev_candle['time']
+                if candles_m15 and len(candles_m15) >= 2 and candles_m5 and len(candles_m5) >= 2:
+                    df_m15 = pd.DataFrame(candles_m15)
+                    m15_prev = df_m15.iloc[-2]
+                    m15_bullish = m15_prev['close'] > m15_prev['open']
                     
-                    if last_checked_candle_time != candle_time:
-                        c_open = prev_candle['open']
-                        c_close = prev_candle['close']
-                        
+                    df_m5 = pd.DataFrame(candles_m5)
+                    m5_prev = df_m5.iloc[-2]
+                    m5_time = m5_prev['time']
+                    m5_bullish = m5_prev['close'] > m5_prev['open']
+                    
+                    # Obchodujeme iba pri novej M5 sviečke a ak M5 súhlasí s M15 smerom
+                    if last_checked_m5_time != m5_time:
                         price_info = await connection.get_symbol_price(SYMBOL)
                         ask = price_info.get('ask')
                         bid = price_info.get('bid')
 
                         if ask and bid:
-                            if c_close > c_open: # Zelená -> BUY
+                            if m15_bullish and m5_bullish: # Obidva timeframy zelené -> BUY
                                 sl = ask - SL_POINTS
                                 tp = ask + TP_POINTS
                                 await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                                last_checked_candle_time = candle_time
-                                send_telegram("🟢 BTCUSD BUY (0.02) otvorený.")
+                                last_checked_m5_time = m5_time
+                                send_telegram("🟢 BTCUSD BUY (M15+M5 zhoda) otvorený.")
 
-                            elif c_close < c_open: # Červená -> SELL
+                            elif not m15_bullish and not m5_bullish: # Obidva červené -> SELL
                                 sl = bid + SL_POINTS
                                 tp = bid - TP_POINTS
                                 await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                                last_checked_candle_time = candle_time
-                                send_telegram("🔴 BTCUSD SELL (0.02) otvorený.")
+                                last_checked_m5_time = m5_time
+                                send_telegram("🔴 BTCUSD SELL (M15+M5 zhoda) otvorený.")
 
-            # 3. Agresívny časový filter: Zistíme, koľko sekúnd zostáva do konca 15-minútovej sviečky
-            now = datetime.utcnow()
-            current_minute = now.minute
-            current_second = now.second
-            
-            # Koľko minút ubehlo v rámci aktuálneho 15-minútového bloku (0, 15, 30, 45)
-            minute_in_quarter = current_minute % 15
-            seconds_to_next_candle = ((14 - minute_in_quarter) * 60) + (60 - current_second)
-
-            # Ak sme v posledných 30 sekundách pred uzavretím sviečky, spíme iba 1 sekundu pre maximálnu presnosť
-            if seconds_to_next_candle <= 30:
-                await asyncio.sleep(1)
-            else:
-                await asyncio.sleep(10)
+            await asyncio.sleep(15)
 
         except Exception as inner_e:
-            print(f"Chyba v slučke: {inner_e}")
+            print(f"Chyba: {inner_e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
