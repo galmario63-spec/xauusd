@@ -5,73 +5,38 @@ from threading import Thread
 from metaapi_cloud_sdk import MetaApi
 import requests
 
-
-# =========================================================
-# WEB SERVER
-# =========================================================
-
 app = Flask(__name__)
-
 
 @app.route("/")
 def home():
     return "Riobot PSAR M1 Active"
 
-
 def run_server():
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
-
 
 def keep_alive():
     t = Thread(target=run_server, daemon=True)
     t.start()
 
-
-# =========================================================
-# ENVIRONMENT
-# =========================================================
-
 TELEGRAM_TOKEN = os.getenv("T_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("T_CHAT")
-
 METAAPI_TOKEN = os.getenv("M_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
-
-# =========================================================
-# BOT SETTINGS
-# =========================================================
-
 SYMBOL_REQUEST = "BTCUSD"
 TIMEFRAME = "1m"
-
 PSAR_STEP = 0.80
 PSAR_MAXIMUM = 0.40
-
 LOT_SIZE = 0.30
-
 TP_POINTS = 600.0
 SL_POINTS = 1500.0
-
 BE_TRIGGER = 250.0
 BE_LOCK = 100.0
-
 MAGIC = 26092026
 COMMENT = "Riobot PSAR M1"
 
-
-# =========================================================
-# STATE
-# =========================================================
-
-last_processed_candle = None
 startup_message_sent = False
-
-
-# =========================================================
-# TELEGRAM
-# =========================================================
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -82,22 +47,14 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-
-# =========================================================
-# PARABOLIC SAR
-# =========================================================
-
 def calculate_psar(candles, step, maximum):
     if len(candles) < 3:
         return [], []
-
     highs = [float(c["high"]) for c in candles]
     lows = [float(c["low"]) for c in candles]
     closes = [float(c["close"]) for c in candles]
-
     sar = [None] * len(candles)
     direction = [None] * len(candles)
-
     uptrend = closes[1] >= closes[0]
     sar[0] = lows[0] if uptrend else highs[0]
     extreme_point = highs[0] if uptrend else lows[0]
@@ -107,7 +64,6 @@ def calculate_psar(candles, step, maximum):
     for i in range(1, len(candles)):
         previous_sar = sar[i - 1]
         current_sar = previous_sar + acceleration * (extreme_point - previous_sar)
-
         if uptrend:
             current_sar = min(current_sar, lows[i - 1], lows[i - 2] if i >= 2 else lows[i - 1])
             if lows[i] < current_sar:
@@ -130,12 +86,9 @@ def calculate_psar(candles, step, maximum):
                 if lows[i] < extreme_point:
                     extreme_point = lows[i]
                     acceleration = min(maximum, acceleration + step)
-
         sar[i] = current_sar
         direction[i] = uptrend
-
     return sar, direction
-
 
 def is_bot_position(position):
     try:
@@ -145,29 +98,18 @@ def is_bot_position(position):
         pass
     return position.get("comment") == COMMENT
 
-
-# =========================================================
-# MAIN
-# =========================================================
-
 async def main():
-    global last_processed_candle, startup_message_sent
-
+    global startup_message_sent
     if not METAAPI_TOKEN or not METAAPI_ACCOUNT_ID:
-        print("❌ Chýbajú MetaApi premenné")
         return
 
     api = MetaApi(METAAPI_TOKEN)
 
     while True:
         try:
-            print("🔌 Pripájam MetaApi...")
             account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
-
             if account.state != "DEPLOYED":
-                print("🚀 Deploy účtu...")
                 await account.deploy()
-
             await account.wait_connected()
             connection = account.get_rpc_connection()
             await connection.connect()
@@ -175,7 +117,6 @@ async def main():
 
             symbol = SYMBOL_REQUEST
             specification = None
-
             for _ in range(5):
                 try:
                     specification = await connection.get_symbol_specification(symbol)
@@ -185,18 +126,14 @@ async def main():
                     await asyncio.sleep(2)
 
             if not specification:
-                print("⚠️ Nepodarilo sa načítať špecifikáciu, opakujem pripojenie...")
                 await asyncio.sleep(5)
                 continue
 
             point = float(specification.get("point", 0.01))
             digits = int(specification.get("digits", 2))
-            print(f"⚙️ {symbol} pripravený | point={point}")
 
             if not startup_message_sent:
-                send_telegram(
-                    f"🚀 RIObot PSAR M1 SPUSTENÝ (Bez reverzu)\n\nSymbol: {symbol}\nLot: {LOT_SIZE}\nTP: {TP_POINTS} | SL: {SL_POINTS}"
-                )
+                send_telegram(f"🚀 RIObot OKAMŽITÝ ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
                 startup_message_sent = True
 
             while True:
@@ -211,19 +148,12 @@ async def main():
 
                     candles = sorted(candles, key=lambda x: x["time"])
                     closed = candles[:-1]
-                    if len(closed) < 5:
-                        await asyncio.sleep(2)
-                        continue
-
                     sar_values, directions = calculate_psar(closed, PSAR_STEP, PSAR_MAXIMUM)
                     if not sar_values:
                         await asyncio.sleep(2)
                         continue
 
-                    current_sar = float(sar_values[-1])
                     current_direction = directions[-1]
-                    previous_direction = directions[-2]
-                    candle_time = closed[-1]["time"]
 
                     positions = await connection.get_positions()
                     bot_positions = [p for p in positions if p.get("symbol") == symbol and is_bot_position(p)]
@@ -253,50 +183,42 @@ async def main():
                                     except Exception:
                                         pass
 
-                    # Signál na novej sviečke
-                    if candle_time != last_processed_candle:
-                        last_processed_candle = candle_time
+                    # Okamžitý vstup, ak nič nie je otvorené
+                    if not bot_positions:
+                        if current_direction is True:
+                            sl = round(ask - SL_POINTS * point, digits)
+                            tp = round(ask + TP_POINTS * point, digits)
+                            try:
+                                await connection.create_market_buy_order(
+                                    symbol, LOT_SIZE, stop_loss=sl, take_profit=tp,
+                                    options={"comment": COMMENT, "magic": MAGIC}
+                                )
+                                send_telegram(f"🟢 OKAMŽITÝ BUY OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
+                            except Exception as e:
+                                send_telegram(f"❌ BUY ERROR: {e}")
 
-                        buy_signal = (previous_direction is False and current_direction is True)
-                        sell_signal = (previous_direction is True and current_direction is False)
-
-                        # Otvárame nový obchod IBA vtedy, ak už ŽIADNY iný bot pozíciu nemá otvorenú
-                        if not bot_positions:
-                            if buy_signal:
-                                sl = round(ask - SL_POINTS * point, digits)
-                                tp = round(ask + TP_POINTS * point, digits)
-                                try:
-                                    await connection.create_market_buy_order(
-                                        symbol, LOT_SIZE, stop_loss=sl, take_profit=tp,
-                                        options={"comment": COMMENT, "magic": MAGIC}
-                                    )
-                                    send_telegram(f"🟢 BUY OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
-                                except Exception as e:
-                                    send_telegram(f"❌ BUY ERROR: {e}")
-
-                            elif sell_signal:
-                                sl = round(bid + SL_POINTS * point, digits)
-                                tp = round(bid - TP_POINTS * point, digits)
-                                try:
-                                    await connection.create_market_sell_order(
-                                        symbol, LOT_SIZE, stop_loss=sl, take_profit=tp,
-                                        options={"comment": COMMENT, "magic": MAGIC}
-                                    )
-                                    send_telegram(f"🔴 SELL OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
-                                except Exception as e:
-                                    send_telegram(f"❌ SELL ERROR: {e}")
+                        elif current_direction is False:
+                            sl = round(bid + SL_POINTS * point, digits)
+                            tp = round(bid - TP_POINTS * point, digits)
+                            try:
+                                await connection.create_market_sell_order(
+                                    symbol, LOT_SIZE, stop_loss=sl, take_profit=tp,
+                                    options={"comment": COMMENT, "magic": MAGIC}
+                                )
+                                send_telegram(f"🔴 OKAMŽITÝ SELL OTVORENÝ\n{symbol}\nSL: {sl} | TP: {tp}")
+                            except Exception as e:
+                                send_telegram(f"❌ SELL ERROR: {e}")
 
                     await asyncio.sleep(2)
 
                 except Exception as inner_error:
-                    print(f"Chyba v cykle: {inner_error}")
+                    print(f"Chyba: {inner_error}")
                     await asyncio.sleep(5)
                     break
 
         except Exception as outer_error:
-            print(f"Chyba spojenia: {outer_error}")
+            print(f"Pripojenie: {outer_error}")
             await asyncio.sleep(10)
-
 
 if __name__ == "__main__":
     keep_alive()
