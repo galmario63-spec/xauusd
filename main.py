@@ -24,7 +24,7 @@ def keep_alive():
 
 
 # =========================================================
-# METAAPI / TELEGRAM
+# TELEGRAM / METAAPI
 # =========================================================
 
 TELEGRAM_TOKEN = os.getenv("T_TOKEN")
@@ -35,7 +35,7 @@ METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 
 # =========================================================
-# NASTAVENIA ROBOTA
+# NASTAVENIA
 # =========================================================
 
 SYMBOL_REQUEST = "BTCUSD"
@@ -43,11 +43,9 @@ SYMBOL_REQUEST = "BTCUSD"
 # CENTOVÝ ÚČET
 LOT_SIZE = 0.30
 
-# TAKE PROFIT / STOP LOSS
 TP_POINTS = 600.0
 SL_POINTS = 1500.0
 
-# MAGIC / COMMENT
 MAGIC = 26092026
 COMMENT = "Riobot PSAR"
 
@@ -56,10 +54,7 @@ COMMENT = "Riobot PSAR"
 # BREAK EVEN
 # =========================================================
 
-# BE sa aktivuje pri +250 bodoch
 BE_TRIGGER = 250.0
-
-# Po aktivácii BE nechá +100 bodov
 BE_LOCK = 100.0
 
 
@@ -94,7 +89,7 @@ def send_telegram(message):
 
 
 # =========================================================
-# KONTROLA POZÍCIE ROBOTA
+# ROBOT POSITION
 # =========================================================
 
 def is_bot_position(position):
@@ -111,7 +106,7 @@ def is_bot_position(position):
 
 
 # =========================================================
-# PARABOLIC SAR
+# PSAR
 # =========================================================
 
 def calculate_psar(candles):
@@ -135,10 +130,6 @@ def calculate_psar(candles):
 
         prev_psar = psar
 
-        # -------------------------------------------------
-        # UPTREND
-        # -------------------------------------------------
-
         if trend == 1:
 
             psar = prev_psar + af * (ep - prev_psar)
@@ -152,10 +143,8 @@ def calculate_psar(candles):
             if lows[i] < psar:
 
                 trend = -1
-
                 psar = ep
                 ep = lows[i]
-
                 af = 0.02
 
             else:
@@ -163,15 +152,10 @@ def calculate_psar(candles):
                 if highs[i] > ep:
 
                     ep = highs[i]
-
                     af = min(
                         af + 0.02,
                         max_af
                     )
-
-        # -------------------------------------------------
-        # DOWNTREND
-        # -------------------------------------------------
 
         else:
 
@@ -186,10 +170,8 @@ def calculate_psar(candles):
             if highs[i] > psar:
 
                 trend = 1
-
                 psar = ep
                 ep = highs[i]
-
                 af = 0.02
 
             else:
@@ -197,7 +179,6 @@ def calculate_psar(candles):
                 if lows[i] < ep:
 
                     ep = lows[i]
-
                     af = min(
                         af + 0.02,
                         max_af
@@ -245,15 +226,14 @@ async def manage_break_even(
                 position.get("stopLoss", 0) or 0
             )
 
+            take_profit = position.get("takeProfit")
+
             position_type = str(
                 position.get("type", "")
             ).lower()
 
 
-            # =================================================
             # BUY
-            # =================================================
-
             if "buy" in position_type:
 
                 profit_points = (
@@ -271,41 +251,29 @@ async def manage_break_even(
 
                         try:
 
-                            result = await connection.modify_position(
+                            await connection.modify_position(
                                 position_id=position_id,
                                 stop_loss=new_sl,
-                                take_profit=position.get("takeProfit")
-                            )
-
-                            print(
-                                f"🟢 BE BUY AKTIVOVANÝ | "
-                                f"Profit: {profit_points:.1f} | "
-                                f"Nový SL: {new_sl}"
+                                take_profit=take_profit
                             )
 
                             send_telegram(
                                 f"🛡️ BE BUY AKTIVOVANÝ\n\n"
                                 f"Symbol: {symbol}\n"
                                 f"Profit: {profit_points:.1f} bodov\n"
-                                f"Nový SL: {new_sl}\n"
-                                f"BE lock: +{BE_LOCK} bodov"
+                                f"Nový SL: {new_sl}"
                             )
 
-                        except Exception as be_error:
+                        except Exception as e:
 
-                            print(
-                                f"❌ BE BUY ERROR: {be_error}"
-                            )
+                            print(f"❌ BE BUY ERROR: {e}")
 
                             send_telegram(
-                                f"❌ BE BUY ERROR\n{be_error}"
+                                f"❌ BE BUY ERROR\n{e}"
                             )
 
 
-            # =================================================
             # SELL
-            # =================================================
-
             elif "sell" in position_type:
 
                 profit_points = (
@@ -323,39 +291,30 @@ async def manage_break_even(
 
                         try:
 
-                            result = await connection.modify_position(
+                            await connection.modify_position(
                                 position_id=position_id,
                                 stop_loss=new_sl,
-                                take_profit=position.get("takeProfit")
-                            )
-
-                            print(
-                                f"🔴 BE SELL AKTIVOVANÝ | "
-                                f"Profit: {profit_points:.1f} | "
-                                f"Nový SL: {new_sl}"
+                                take_profit=take_profit
                             )
 
                             send_telegram(
                                 f"🛡️ BE SELL AKTIVOVANÝ\n\n"
                                 f"Symbol: {symbol}\n"
                                 f"Profit: {profit_points:.1f} bodov\n"
-                                f"Nový SL: {new_sl}\n"
-                                f"BE lock: +{BE_LOCK} bodov"
+                                f"Nový SL: {new_sl}"
                             )
 
-                        except Exception as be_error:
+                        except Exception as e:
 
-                            print(
-                                f"❌ BE SELL ERROR: {be_error}"
-                            )
+                            print(f"❌ BE SELL ERROR: {e}")
 
                             send_telegram(
-                                f"❌ BE SELL ERROR\n{be_error}"
+                                f"❌ BE SELL ERROR\n{e}"
                             )
 
-        except Exception as error:
+        except Exception as e:
 
-            print(f"❌ Chyba BE: {error}")
+            print(f"❌ BE chyba: {e}")
 
 
 # =========================================================
@@ -369,22 +328,11 @@ async def main():
     if not METAAPI_TOKEN:
 
         print("❌ Chýba M_TOKEN")
-
-        send_telegram(
-            "❌ RIObot ERROR\nChýba M_TOKEN"
-        )
-
         return
-
 
     if not METAAPI_ACCOUNT_ID:
 
         print("❌ Chýba M_ACC")
-
-        send_telegram(
-            "❌ RIObot ERROR\nChýba M_ACC"
-        )
-
         return
 
 
@@ -403,23 +351,10 @@ async def main():
                 METAAPI_ACCOUNT_ID
             )
 
-
-            # -------------------------------------------------
-            # DEPLOY
-            # -------------------------------------------------
-
             if account.state != "DEPLOYED":
-
-                print("🚀 Deployujem účet...")
 
                 await account.deploy()
 
-
-            # -------------------------------------------------
-            # CONNECTION
-            # -------------------------------------------------
-
-            print("⏳ Čakám na MT5...")
 
             await account.wait_connected()
 
@@ -432,9 +367,9 @@ async def main():
             print("✅ MT5 pripojené")
 
 
-            # -------------------------------------------------
-            # SYMBOL
-            # -------------------------------------------------
+            # =================================================
+            # SYMBOL SPECIFICATION
+            # =================================================
 
             symbol = SYMBOL_REQUEST
 
@@ -446,11 +381,10 @@ async def main():
             if not specification:
 
                 send_telegram(
-                    f"❌ Symbol {symbol} nebol nájdený."
+                    f"❌ SYMBOL {symbol} NEBOL NÁJDENÝ"
                 )
 
                 await asyncio.sleep(30)
-
                 continue
 
 
@@ -463,10 +397,58 @@ async def main():
             )
 
 
+            # Obchodné parametre symbolu
+            min_volume = specification.get(
+                "minVolume",
+                "neznáme"
+            )
+
+            max_volume = specification.get(
+                "maxVolume",
+                "neznáme"
+            )
+
+            volume_step = specification.get(
+                "volumeStep",
+                "neznáme"
+            )
+
+            min_stop_distance = specification.get(
+                "minStopDistance",
+                "neznáme"
+            )
+
+
             print(
-                f"📊 SYMBOL: {symbol}\n"
-                f"Point: {point}\n"
+                "\n===== BTCUSD SPECIFICATION ====="
+            )
+
+            print(
+                f"Point: {point}"
+            )
+
+            print(
                 f"Digits: {digits}"
+            )
+
+            print(
+                f"Min volume: {min_volume}"
+            )
+
+            print(
+                f"Max volume: {max_volume}"
+            )
+
+            print(
+                f"Volume step: {volume_step}"
+            )
+
+            print(
+                f"Min stop distance: {min_stop_distance}"
+            )
+
+            print(
+                "================================"
             )
 
 
@@ -476,12 +458,15 @@ async def main():
                     f"🚀 RIObot PSAR ŠTART\n\n"
                     f"Symbol: {symbol}\n"
                     f"Lot: {LOT_SIZE}\n"
-                    f"TP: {TP_POINTS} bodov\n"
-                    f"SL: {SL_POINTS} bodov\n"
-                    f"BE trigger: {BE_TRIGGER} bodov\n"
-                    f"BE lock: +{BE_LOCK} bodov\n"
+                    f"TP: {TP_POINTS}\n"
+                    f"SL: {SL_POINTS}\n"
+                    f"BE: +{BE_TRIGGER} → +{BE_LOCK}\n\n"
                     f"Point: {point}\n"
-                    f"Digits: {digits}"
+                    f"Digits: {digits}\n"
+                    f"Min lot: {min_volume}\n"
+                    f"Max lot: {max_volume}\n"
+                    f"Lot step: {volume_step}\n"
+                    f"Min stop distance: {min_stop_distance}"
                 )
 
                 startup_message_sent = True
@@ -513,7 +498,6 @@ async def main():
 
                     positions = await connection.get_positions()
 
-
                     bot_positions = [
                         p
                         for p in positions
@@ -523,7 +507,7 @@ async def main():
 
 
                     # -----------------------------------------
-                    # BREAK EVEN
+                    # BE
                     # -----------------------------------------
 
                     if bot_positions:
@@ -537,9 +521,9 @@ async def main():
                         )
 
 
-                    # =================================================
-                    # HISTORICKÉ SVIEČKY
-                    # =================================================
+                    # -----------------------------------------
+                    # SVIEČKY
+                    # -----------------------------------------
 
                     candles = await account.get_historical_candles(
                         symbol=symbol,
@@ -551,10 +535,7 @@ async def main():
 
                     if not candles or len(candles) < 10:
 
-                        print("⚠️ Nedostatok sviečok")
-
                         await asyncio.sleep(5)
-
                         continue
 
 
@@ -568,7 +549,6 @@ async def main():
                     if trend is None:
 
                         await asyncio.sleep(5)
-
                         continue
 
 
@@ -580,22 +560,21 @@ async def main():
 
 
                     print(
-                        f"📈 {symbol} | "
-                        f"Bid: {bid} | "
-                        f"Ask: {ask} | "
-                        f"PSAR: {psar} | "
-                        f"Signal: {signal}"
+                        f"{symbol} | "
+                        f"Bid {bid} | "
+                        f"Ask {ask} | "
+                        f"PSAR {psar} | "
+                        f"{signal}"
                     )
 
 
-                    # =================================================
-                    # AK UŽ MÁME POZÍCIU
-                    # =================================================
+                    # -----------------------------------------
+                    # NEOTVÁRAJ DRUHÝ OBCHOD
+                    # -----------------------------------------
 
                     if bot_positions:
 
                         await asyncio.sleep(15)
-
                         continue
 
 
@@ -617,10 +596,22 @@ async def main():
 
 
                         print(
-                            f"🟢 BUY SIGNÁL\n"
-                            f"Cena: {ask}\n"
-                            f"SL: {sl}\n"
-                            f"TP: {tp}\n"
+                            "\n🟢 BUY SIGNÁL"
+                        )
+
+                        print(
+                            f"Cena: {ask}"
+                        )
+
+                        print(
+                            f"SL: {sl}"
+                        )
+
+                        print(
+                            f"TP: {tp}"
+                        )
+
+                        print(
                             f"Lot: {LOT_SIZE}"
                         )
 
@@ -645,22 +636,45 @@ async def main():
 
 
                             send_telegram(
-                                f"🟢 PSAR BUY OTVORENÝ\n\n"
+                                f"🟢 BUY OTVORENÝ\n\n"
                                 f"Symbol: {symbol}\n"
                                 f"Lot: {LOT_SIZE}\n"
                                 f"Cena: {ask}\n"
                                 f"SL: {sl}\n"
-                                f"TP: {tp}\n"
-                                f"BE: +{BE_TRIGGER} → +{BE_LOCK}\n\n"
-                                f"Result: {result}"
+                                f"TP: {tp}\n\n"
+                                f"{result}"
                             )
 
 
-                        except Exception as order_error:
+                        except Exception as error:
+
+                            # -------------------------------------
+                            # KOMPLETNÁ METAAPI CHYBA
+                            # -------------------------------------
+
+                            try:
+
+                                detailed_error = api.format_error(
+                                    error
+                                )
+
+                            except Exception:
+
+                                detailed_error = str(error)
+
 
                             print(
-                                f"❌ BUY ERROR: {order_error}"
+                                "\n❌ BUY NEBOL OTVORENÝ"
                             )
+
+                            print(
+                                f"CHYBA: {error}"
+                            )
+
+                            print(
+                                f"DETAIL: {detailed_error}"
+                            )
+
 
                             send_telegram(
                                 f"❌ BUY NEBOL OTVORENÝ\n\n"
@@ -669,7 +683,17 @@ async def main():
                                 f"Cena: {ask}\n"
                                 f"SL: {sl}\n"
                                 f"TP: {tp}\n\n"
-                                f"CHYBA:\n{order_error}"
+                                f"CHYBA:\n"
+                                f"{error}\n\n"
+                                f"DETAIL:\n"
+                                f"{detailed_error}\n\n"
+                                f"BTCUSD PARAMETRE:\n"
+                                f"Point: {point}\n"
+                                f"Digits: {digits}\n"
+                                f"Min lot: {min_volume}\n"
+                                f"Max lot: {max_volume}\n"
+                                f"Lot step: {volume_step}\n"
+                                f"Min stop: {min_stop_distance}"
                             )
 
 
@@ -691,10 +715,22 @@ async def main():
 
 
                         print(
-                            f"🔴 SELL SIGNÁL\n"
-                            f"Cena: {bid}\n"
-                            f"SL: {sl}\n"
-                            f"TP: {tp}\n"
+                            "\n🔴 SELL SIGNÁL"
+                        )
+
+                        print(
+                            f"Cena: {bid}"
+                        )
+
+                        print(
+                            f"SL: {sl}"
+                        )
+
+                        print(
+                            f"TP: {tp}"
+                        )
+
+                        print(
                             f"Lot: {LOT_SIZE}"
                         )
 
@@ -719,22 +755,41 @@ async def main():
 
 
                             send_telegram(
-                                f"🔴 PSAR SELL OTVORENÝ\n\n"
+                                f"🔴 SELL OTVORENÝ\n\n"
                                 f"Symbol: {symbol}\n"
                                 f"Lot: {LOT_SIZE}\n"
                                 f"Cena: {bid}\n"
                                 f"SL: {sl}\n"
-                                f"TP: {tp}\n"
-                                f"BE: +{BE_TRIGGER} → +{BE_LOCK}\n\n"
-                                f"Result: {result}"
+                                f"TP: {tp}\n\n"
+                                f"{result}"
                             )
 
 
-                        except Exception as order_error:
+                        except Exception as error:
+
+                            try:
+
+                                detailed_error = api.format_error(
+                                    error
+                                )
+
+                            except Exception:
+
+                                detailed_error = str(error)
+
 
                             print(
-                                f"❌ SELL ERROR: {order_error}"
+                                "\n❌ SELL NEBOL OTVORENÝ"
                             )
+
+                            print(
+                                f"CHYBA: {error}"
+                            )
+
+                            print(
+                                f"DETAIL: {detailed_error}"
+                            )
+
 
                             send_telegram(
                                 f"❌ SELL NEBOL OTVORENÝ\n\n"
@@ -743,43 +798,83 @@ async def main():
                                 f"Cena: {bid}\n"
                                 f"SL: {sl}\n"
                                 f"TP: {tp}\n\n"
-                                f"CHYBA:\n{order_error}"
+                                f"CHYBA:\n"
+                                f"{error}\n\n"
+                                f"DETAIL:\n"
+                                f"{detailed_error}\n\n"
+                                f"BTCUSD PARAMETRE:\n"
+                                f"Point: {point}\n"
+                                f"Digits: {digits}\n"
+                                f"Min lot: {min_volume}\n"
+                                f"Max lot: {max_volume}\n"
+                                f"Lot step: {volume_step}\n"
+                                f"Min stop: {min_stop_distance}"
                             )
 
-
-                    # -----------------------------------------
-                    # ČAKANIE
-                    # -----------------------------------------
 
                     await asyncio.sleep(15)
 
 
                 except Exception as inner_error:
 
+                    try:
+
+                        detailed_error = api.format_error(
+                            inner_error
+                        )
+
+                    except Exception:
+
+                        detailed_error = str(inner_error)
+
+
                     print(
                         f"⚠️ RIObot chyba v cykle:\n"
-                        f"{inner_error}"
+                        f"{inner_error}\n"
+                        f"DETAIL:\n"
+                        f"{detailed_error}"
                     )
+
 
                     send_telegram(
                         f"⚠️ RIObot chyba v cykle:\n"
-                        f"{inner_error}"
+                        f"{inner_error}\n\n"
+                        f"DETAIL:\n"
+                        f"{detailed_error}"
                     )
+
 
                     await asyncio.sleep(5)
 
 
         except Exception as outer_error:
 
+            try:
+
+                detailed_error = api.format_error(
+                    outer_error
+                )
+
+            except Exception:
+
+                detailed_error = str(outer_error)
+
+
             print(
                 f"🔴 CHYBA PRIPOJENIA:\n"
-                f"{outer_error}"
+                f"{outer_error}\n"
+                f"DETAIL:\n"
+                f"{detailed_error}"
             )
+
 
             send_telegram(
                 f"🔴 RIObot MetaApi problém:\n"
-                f"{outer_error}"
+                f"{outer_error}\n\n"
+                f"DETAIL:\n"
+                f"{detailed_error}"
             )
+
 
             await asyncio.sleep(15)
 
