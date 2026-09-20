@@ -48,7 +48,6 @@ def send_telegram(msg):
 
 async def main():
     global last_checked_candle_time
-    send_telegram("🚀 Riobot sa pripája na ProCent účet a spúšťa M15 logiku...")
     
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
@@ -62,14 +61,15 @@ async def main():
     await connection.connect()
     await connection.wait_synchronized()
     
-    send_telegram("✅ Riobot je online, stráži BTCUSD a čaká na uzavretie sviečky!")
+    # Úvodná správa pošleme iba raz pri štarte
+    send_telegram("🚀 Riobot je pripojený a sleduje M15 sviečky pre BTCUSD.")
 
     while True:
         try:
             positions = await connection.get_positions()
             btc_positions = [p for p in positions if p['symbol'] == SYMBOL]
 
-            # 1. Manažment otvorených pozícií (Break-Even)
+            # 1. Manažment Break-Even pre otvorené pozície
             for pos in btc_positions:
                 open_price = pos['openPrice']
                 current_sl = pos.get('stopLoss', 0)
@@ -95,16 +95,15 @@ async def main():
                             )
                             send_telegram("🔒 BE aktívne (SELL): SL posunutý do zisku!")
 
-            # 2. Vstupná logika podľa novej uzavretej M15 sviečky
+            # 2. Vstupná logika (iba ak nie je otvorená žiadna pozícia)
             if len(btc_positions) == 0:
                 candles = await connection.get_historical_candles(SYMBOL, TIMEFRAME, None, 3)
                 
                 if candles and len(candles) >= 2:
                     df = pd.DataFrame(candles)
-                    prev_candle = df.iloc[-2] # Posledná reálne uzavretá sviečka
+                    prev_candle = df.iloc[-2] # Posledná uzavretá sviečka
                     candle_time = prev_candle['time']
                     
-                    # Obchodujeme iba vtedy, ak ide o novú, doteraz nespracovanú sviečku
                     if last_checked_candle_time != candle_time:
                         c_open = prev_candle['open']
                         c_close = prev_candle['close']
@@ -114,24 +113,24 @@ async def main():
                         bid = price_info.get('bid')
 
                         if ask and bid:
-                            if c_close > c_open: # Zelená -> BUY
+                            if c_close > c_open: # Zelená sviečka -> BUY
                                 sl = ask - SL_POINTS
                                 tp = ask + TP_POINTS
                                 await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                                 last_checked_candle_time = candle_time
-                                send_telegram("🟢 BTCUSD BUY (0.02) otvorený podľa uzavretej M15 sviečky.")
+                                send_telegram("🟢 BTCUSD BUY (0.02) otvorený.")
 
-                            elif c_close < c_open: # Červená -> SELL
+                            elif c_close < c_open: # Červená sviečka -> SELL
                                 sl = bid + SL_POINTS
                                 tp = bid - TP_POINTS
                                 await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
                                 last_checked_candle_time = candle_time
-                                send_telegram("🔴 BTCUSD SELL (0.02) otvorený podľa uzavretej M15 sviečky.")
+                                send_telegram("🔴 BTCUSD SELL (0.02) otvorený.")
 
         except Exception as inner_e:
             print(f"Chyba v slučke: {inner_e}")
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
 
 if __name__ == "__main__":
     keep_alive()
