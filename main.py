@@ -2,7 +2,6 @@ import os
 import asyncio
 from flask import Flask
 from threading import Thread
-from metaapi_cloud_sdk import MetaApi
 requests_lib = __import__('requests')
 import time
 
@@ -116,6 +115,7 @@ async def main():
     if not METAAPI_TOKEN or not METAAPI_ACCOUNT_ID:
         return
 
+    from metaapi_cloud_sdk import MetaApi
     api = MetaApi(METAAPI_TOKEN)
 
     while True:
@@ -148,7 +148,7 @@ async def main():
             digits = int(specification.get("digits", 2))
 
             if not startup_message_sent:
-                send_telegram(f"🚀 RIOmot REST ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
+                send_telegram(f"🚀 RIObot ULTRA ČISTÝ ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
                 startup_message_sent = True
 
             while True:
