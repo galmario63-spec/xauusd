@@ -17,22 +17,40 @@ SYMBOL_REQUEST = "BTCUSD"
 # CENTOVÝ ÚČET
 LOT_SIZE = 0.30
 
+# =========================================================
 # PSAR
+# =========================================================
+
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
-# TP / POČIATOČNÝ SL V BODOCH
+# =========================================================
+# EMA FILTER
+# =========================================================
+
+EMA_PERIOD = 50
+
+# =========================================================
+# SL / TP V BODOCH
+# =========================================================
+
 TP_POINTS = 600.0
 SL_POINTS = 1500.0
 
 MAGIC = 26092026
-COMMENT = "Riobot PSAR"
+COMMENT = "Riobot PSAR EMA50"
 
+# =========================================================
 # BREAK EVEN
+# =========================================================
+
 BE_TRIGGER = 250.0
 BE_LOCK = 100.0
 
-# HLAVNÝ INTERVAL
+# =========================================================
+# LOOP
+# =========================================================
+
 LOOP_SECONDS = 10
 
 
@@ -411,7 +429,7 @@ async def manage_break_even(
                 )
 
                 # =========================================
-                # BUY BE
+                # BUY
                 # =========================================
 
                 if (
@@ -460,7 +478,7 @@ async def manage_break_even(
                             )
 
                 # =========================================
-                # SELL BE
+                # SELL
                 # =========================================
 
                 elif (
@@ -567,10 +585,6 @@ async def manage_psar_stop(
             )
         )
 
-        # =================================================
-        # MIN STOP DISTANCE
-        # =================================================
-
         min_stop_raw = spec.get(
             "minStopDistance"
         )
@@ -590,15 +604,15 @@ async def manage_psar_stop(
         )
 
         # =================================================
-        # HISTORICKÉ CANDLES
+        # 5M CANDLES
         # =================================================
 
         candles = await (
             account.get_historical_candles(
                 symbol=symbol,
-                timeframe="1m",
+                timeframe="5m",
                 start_time=None,
-                limit=50
+                limit=100
             )
         )
 
@@ -650,11 +664,17 @@ async def manage_psar_stop(
             return
 
         # =================================================
-        # PSAR
+        # ODSTRÁNIME AKTUÁLNU TVORIACU SA SVIEČKU
         # =================================================
 
+        closed_df = df.iloc[:-1].copy()
+
+        if len(closed_df) < 10:
+
+            return
+
         psar, bullish = calculate_psar(
-            df,
+            closed_df,
             PSAR_STEP,
             PSAR_MAX
         )
@@ -684,7 +704,7 @@ async def manage_psar_stop(
         )
 
         # =================================================
-        # KAŽDÁ POZÍCIA
+        # POZÍCIE
         # =================================================
 
         for position in positions:
@@ -709,7 +729,6 @@ async def manage_psar_stop(
 
                 # =================================================
                 # BUY
-                # PSAR SL MUSÍ BYŤ POD AKTUÁLNOU CENOU
                 # =================================================
 
                 if (
@@ -722,12 +741,12 @@ async def manage_psar_stop(
                         digits
                     )
 
-                    # PSAR musí byť pod BID
+                    # PSAR musí byť pod cenou
                     if candidate_sl >= bid:
 
                         continue
 
-                    # rešpektovanie min. vzdialenosti
+                    # minimálna vzdialenosť
                     if min_distance > 0:
 
                         if (
@@ -737,8 +756,7 @@ async def manage_psar_stop(
 
                             continue
 
-                    # ak už máme SL,
-                    # nový musí byť vyššie
+                    # SL môže ísť iba vyššie
                     if current_sl is not None:
 
                         current_sl_float = float(
@@ -770,13 +788,12 @@ async def manage_psar_stop(
                     )
 
                     print(
-                        f"[PSAR SL] BUY "
-                        f"→ {candidate_sl}"
+                        f"[PSAR SL] BUY -> "
+                        f"{candidate_sl}"
                     )
 
                 # =================================================
                 # SELL
-                # PSAR SL MUSÍ BYŤ NAD AKTUÁLNOU CENOU
                 # =================================================
 
                 elif (
@@ -789,12 +806,12 @@ async def manage_psar_stop(
                         digits
                     )
 
-                    # PSAR musí byť nad ASK
+                    # PSAR musí byť nad cenou
                     if candidate_sl <= ask:
 
                         continue
 
-                    # rešpektovanie min. vzdialenosti
+                    # minimálna vzdialenosť
                     if min_distance > 0:
 
                         if (
@@ -804,8 +821,7 @@ async def manage_psar_stop(
 
                             continue
 
-                    # ak už máme SL,
-                    # nový musí byť nižšie
+                    # SL môže ísť iba nižšie
                     if current_sl is not None:
 
                         current_sl_float = float(
@@ -837,8 +853,8 @@ async def manage_psar_stop(
                     )
 
                     print(
-                        f"[PSAR SL] SELL "
-                        f"→ {candidate_sl}"
+                        f"[PSAR SL] SELL -> "
+                        f"{candidate_sl}"
                     )
 
             except Exception:
@@ -854,6 +870,103 @@ async def manage_psar_stop(
             "PSAR trailing systém chyba:",
             traceback.format_exc()
         )
+
+
+# =========================================================
+# EMA
+# =========================================================
+
+def calculate_ema(
+    df,
+    period=50
+):
+
+    return (
+        df["close"]
+        .ewm(
+            span=period,
+            adjust=False
+        )
+        .mean()
+    )
+
+
+# =========================================================
+# NAČÍTANIE 5M DÁT
+# =========================================================
+
+async def get_market_data(
+    account,
+    symbol
+):
+
+    candles = await (
+        account.get_historical_candles(
+            symbol=symbol,
+            timeframe="5m",
+            start_time=None,
+            limit=100
+        )
+    )
+
+    if not candles:
+
+        return None
+
+    df = pd.DataFrame(
+        candles
+    )
+
+    if df.empty:
+
+        return None
+
+    if "time" in df.columns:
+
+        df = df.sort_values(
+            "time"
+        )
+
+    required = [
+        "open",
+        "high",
+        "low",
+        "close"
+    ]
+
+    if not all(
+        col in df.columns
+        for col in required
+    ):
+
+        return None
+
+    for col in required:
+
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
+        )
+
+    df = df.dropna(
+        subset=required
+    )
+
+    if len(df) < 60:
+
+        return None
+
+    # =================================================
+    # IBA UZAVRETÉ SVIEČKY
+    # =================================================
+
+    closed_df = df.iloc[:-1].copy()
+
+    if len(closed_df) < 55:
+
+        return None
+
+    return closed_df
 
 
 # =========================================================
@@ -911,12 +1024,15 @@ async def main():
             "🟢 RIObot spustený\n\n"
             f"Symbol: {SYMBOL_REQUEST}\n"
             f"Lot: {LOT_SIZE}\n"
+            f"Timeframe: 5M\n"
             f"TP: {TP_POINTS} bodov\n"
             f"Počiatočný SL: {SL_POINTS} bodov\n"
             f"BE trigger: {BE_TRIGGER} bodov\n"
             f"BE lock: {BE_LOCK} bodov\n\n"
             "PSAR: ON\n"
             "PSAR TRAILING SL: ON\n"
+            "EMA50 FILTER: ON\n"
+            "Vstup: PSAR FLIP + EMA50\n"
             "clientId: VYPNUTÝ"
         )
 
@@ -933,7 +1049,7 @@ async def main():
                 symbol = SYMBOL_REQUEST
 
                 # =================================================
-                # PSAR TRAILING STOP
+                # PSAR TRAILING
                 # =================================================
 
                 await manage_psar_stop(
@@ -952,19 +1068,15 @@ async def main():
                 )
 
                 # =================================================
-                # HISTORICKÉ CANDLES
+                # MARKET DATA 5M
                 # =================================================
 
-                candles = await (
-                    account.get_historical_candles(
-                        symbol=symbol,
-                        timeframe="1m",
-                        start_time=None,
-                        limit=50
-                    )
+                df = await get_market_data(
+                    account,
+                    symbol
                 )
 
-                if not candles:
+                if df is None:
 
                     await asyncio.sleep(
                         LOOP_SECONDS
@@ -972,60 +1084,35 @@ async def main():
 
                     continue
 
-                df = pd.DataFrame(
-                    candles
+                # =================================================
+                # PSAR FLIP
+                # =================================================
+
+                previous_df = df.iloc[:-1].copy()
+
+                current_df = df.copy()
+
+                previous_psar, previous_bull = (
+                    calculate_psar(
+                        previous_df,
+                        PSAR_STEP,
+                        PSAR_MAX
+                    )
                 )
 
-                if df.empty:
-
-                    await asyncio.sleep(
-                        LOOP_SECONDS
+                current_psar, current_bull = (
+                    calculate_psar(
+                        current_df,
+                        PSAR_STEP,
+                        PSAR_MAX
                     )
+                )
 
-                    continue
-
-                if "time" in df.columns:
-
-                    df = df.sort_values(
-                        "time"
-                    )
-
-                required = [
-                    "open",
-                    "high",
-                    "low",
-                    "close"
-                ]
-
-                if not all(
-                    col in df.columns
-                    for col in required
+                if (
+                    previous_psar is None
+                    or current_psar is None
                 ):
 
-                    print(
-                        "Chýbajú OHLC dáta:",
-                        df.columns.tolist()
-                    )
-
-                    await asyncio.sleep(
-                        LOOP_SECONDS
-                    )
-
-                    continue
-
-                for col in required:
-
-                    df[col] = pd.to_numeric(
-                        df[col],
-                        errors="coerce"
-                    )
-
-                df = df.dropna(
-                    subset=required
-                )
-
-                if len(df) < 10:
-
                     await asyncio.sleep(
                         LOOP_SECONDS
                     )
@@ -1033,40 +1120,106 @@ async def main():
                     continue
 
                 # =================================================
-                # PSAR
+                # EMA50
                 # =================================================
 
-                psar, bullish = calculate_psar(
+                ema_series = calculate_ema(
                     df,
-                    PSAR_STEP,
-                    PSAR_MAX
+                    EMA_PERIOD
                 )
 
-                if psar is None:
+                ema50 = float(
+                    ema_series.iloc[-1]
+                )
 
-                    await asyncio.sleep(
-                        LOOP_SECONDS
-                    )
-
-                    continue
-
-                last_close = float(
+                close_price = float(
                     df["close"].iloc[-1]
                 )
 
-                if bullish:
+                current_psar = float(
+                    current_psar
+                )
+
+                # =================================================
+                # PSAR FLIP
+                # =================================================
+
+                psar_flip_buy = (
+                    previous_bull is False
+                    and current_bull is True
+                )
+
+                psar_flip_sell = (
+                    previous_bull is True
+                    and current_bull is False
+                )
+
+                # =================================================
+                # EMA FILTER
+                # =================================================
+
+                buy_allowed = (
+                    psar_flip_buy
+                    and close_price > ema50
+                )
+
+                sell_allowed = (
+                    psar_flip_sell
+                    and close_price < ema50
+                )
+
+                if buy_allowed:
 
                     signal = "BUY"
 
-                else:
+                elif sell_allowed:
 
                     signal = "SELL"
 
+                else:
+
+                    signal = None
+
                 print(
-                    f"[PSAR] {symbol} | "
-                    f"Close={last_close} | "
-                    f"PSAR={psar} | "
-                    f"Signal={signal}"
+                    "\n=============================="
+                )
+
+                print(
+                    f"[5M] {symbol}"
+                )
+
+                print(
+                    f"Close: {close_price}"
+                )
+
+                print(
+                    f"PSAR: {current_psar}"
+                )
+
+                print(
+                    f"PSAR bullish: {current_bull}"
+                )
+
+                print(
+                    f"EMA50: {ema50}"
+                )
+
+                print(
+                    f"PSAR flip BUY: "
+                    f"{psar_flip_buy}"
+                )
+
+                print(
+                    f"PSAR flip SELL: "
+                    f"{psar_flip_sell}"
+                )
+
+                print(
+                    f"Signal: {signal}"
+                )
+
+                print(
+                    "=============================="
                 )
 
                 # =================================================
@@ -1081,8 +1234,7 @@ async def main():
                 if positions:
 
                     print(
-                        f"[INFO] Pozícia už existuje: "
-                        f"{len(positions)}"
+                        "[INFO] Pozícia už existuje."
                     )
 
                     await asyncio.sleep(
@@ -1092,7 +1244,19 @@ async def main():
                     continue
 
                 # =================================================
-                # ROVNAKÝ SIGNÁL
+                # ŽIADNY VALIDNÝ SIGNÁL
+                # =================================================
+
+                if signal is None:
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                # =================================================
+                # OCHRANA PROTI DUPLIKÁTU
                 # =================================================
 
                 if signal == last_signal:
@@ -1155,58 +1319,67 @@ async def main():
                 )
 
                 # =================================================
-                # AKTUÁLNA CENA
+                # FUNKCIA PRE ČERSTVÚ CENU
                 # =================================================
 
-                price = await (
-                    connection.get_symbol_price(
-                        symbol
+                async def get_order_prices():
+
+                    current_price = await (
+                        connection
+                        .get_symbol_price(
+                            symbol
+                        )
                     )
+
+                    if signal == "BUY":
+
+                        entry_price = float(
+                            current_price["ask"]
+                        )
+
+                        order_sl = round(
+                            entry_price
+                            - SL_POINTS * point,
+                            digits
+                        )
+
+                        order_tp = round(
+                            entry_price
+                            + TP_POINTS * point,
+                            digits
+                        )
+
+                    else:
+
+                        entry_price = float(
+                            current_price["bid"]
+                        )
+
+                        order_sl = round(
+                            entry_price
+                            + SL_POINTS * point,
+                            digits
+                        )
+
+                        order_tp = round(
+                            entry_price
+                            - TP_POINTS * point,
+                            digits
+                        )
+
+                    return (
+                        entry_price,
+                        order_sl,
+                        order_tp
+                    )
+
+                # =================================================
+                # PRVÝ POKUS
+                # =================================================
+
+                entry, sl, tp = (
+                    await get_order_prices()
                 )
-
-                if signal == "BUY":
-
-                    entry = float(
-                        price["ask"]
-                    )
-
-                else:
-
-                    entry = float(
-                        price["bid"]
-                    )
-
-                # =================================================
-                # POČIATOČNÝ SL / TP
-                # =================================================
-
-                if signal == "BUY":
-
-                    sl = round(
-                        entry
-                        - SL_POINTS * point,
-                        digits
-                    )
-
-                    tp = round(
-                        entry
-                        + TP_POINTS * point,
-                        digits
-                    )
-
-                else:
-
-                    sl = round(
-                        entry
-                        + SL_POINTS * point,
-                        digits
-                    )
-
-                    tp = round(
-                        entry
-                        - TP_POINTS * point,
-                        digits
-                    )
 
                 print(
                     "\n================================"
@@ -1237,31 +1410,23 @@ async def main():
                 )
 
                 print(
-                    f"Point: {point}"
+                    f"PSAR: {current_psar}"
                 )
 
                 print(
-                    f"Digits: {digits}"
+                    f"EMA50: {ema50}"
                 )
 
                 print(
-                    f"Min lot: {min_volume}"
+                    "Timeframe: 5M"
                 )
 
                 print(
-                    f"Max lot: {max_volume}"
+                    "PSAR FLIP: ON"
                 )
 
                 print(
-                    f"Lot step: {volume_step}"
-                )
-
-                print(
-                    f"Min stop: {min_stop}"
-                )
-
-                print(
-                    f"PSAR: {psar}"
+                    "EMA50 FILTER: ON"
                 )
 
                 print(
@@ -1276,46 +1441,150 @@ async def main():
                     "================================\n"
                 )
 
+                order_opened = False
+
                 # =================================================
-                # BUY
+                # MAX 2 POKUSY
                 # =================================================
 
-                if signal == "BUY":
+                for attempt in range(2):
 
                     try:
 
-                        result = await (
-                            connection
-                            .create_market_buy_order(
-                                symbol=symbol,
-                                volume=LOT_SIZE,
-                                stop_loss=sl,
-                                take_profit=tp,
-                                options={
-                                    "comment": COMMENT
-                                }
+                        if attempt > 0:
+
+                            await asyncio.sleep(1)
+
+                            (
+                                entry,
+                                sl,
+                                tp
+                            ) = await (
+                                get_order_prices()
                             )
+
+                            print(
+                                "🔄 NOVÁ CENA – "
+                                "OPAKUJEM OBJEDNÁVKU"
+                            )
+
+                        # =========================================
+                        # BUY
+                        # =========================================
+
+                        if signal == "BUY":
+
+                            result = await (
+                                connection
+                                .create_market_buy_order(
+                                    symbol=symbol,
+                                    volume=LOT_SIZE,
+                                    stop_loss=sl,
+                                    take_profit=tp,
+                                    options={
+                                        "comment": COMMENT
+                                    }
+                                )
+                            )
+
+                            print(
+                                "BUY OPENED:",
+                                result
+                            )
+
+                            telegram(
+                                "🟢 BUY OTVORENÝ\n\n"
+                                f"Symbol: {symbol}\n"
+                                f"Lot: {LOT_SIZE}\n"
+                                f"Cena: {entry}\n"
+                                f"SL: {sl}\n"
+                                f"TP: {tp}\n"
+                                f"PSAR: {current_psar}\n"
+                                f"EMA50: {ema50}\n"
+                                "Timeframe: 5M\n"
+                                "PSAR flip: ÁNO\n"
+                                "EMA50 filter: ÁNO\n"
+                                "PSAR trailing: ON"
+                            )
+
+                            order_opened = True
+
+                            break
+
+                        # =========================================
+                        # SELL
+                        # =========================================
+
+                        elif signal == "SELL":
+
+                            result = await (
+                                connection
+                                .create_market_sell_order(
+                                    symbol=symbol,
+                                    volume=LOT_SIZE,
+                                    stop_loss=sl,
+                                    take_profit=tp,
+                                    options={
+                                        "comment": COMMENT
+                                    }
+                                )
+                            )
+
+                            print(
+                                "SELL OPENED:",
+                                result
+                            )
+
+                            telegram(
+                                "🔴 SELL OTVORENÝ\n\n"
+                                f"Symbol: {symbol}\n"
+                                f"Lot: {LOT_SIZE}\n"
+                                f"Cena: {entry}\n"
+                                f"SL: {sl}\n"
+                                f"TP: {tp}\n"
+                                f"PSAR: {current_psar}\n"
+                                f"EMA50: {ema50}\n"
+                                "Timeframe: 5M\n"
+                                "PSAR flip: ÁNO\n"
+                                "EMA50 filter: ÁNO\n"
+                                "PSAR trailing: ON"
+                            )
+
+                            order_opened = True
+
+                            break
+
+                    except Exception as error:
+
+                        error_text = str(
+                            error
                         )
 
                         print(
-                            "BUY OPENED:",
-                            result
+                            "Obchodná chyba:",
+                            error_text
                         )
 
-                        telegram(
-                            "🟢 BUY OTVORENÝ\n\n"
-                            f"Symbol: {symbol}\n"
-                            f"Lot: {LOT_SIZE}\n"
-                            f"Cena: {entry}\n"
-                            f"SL: {sl}\n"
-                            f"TP: {tp}\n"
-                            f"PSAR: {psar}\n"
-                            "PSAR trailing: ON"
-                        )
+                        # =========================================
+                        # RETRY PRI INVALID STOPS
+                        # =========================================
 
-                        last_signal = signal
+                        if (
+                            "INVALID_STOPS"
+                            in error_text
+                            or
+                            "Invalid stops"
+                            in error_text
+                        ):
 
-                    except Exception as error:
+                            if attempt == 0:
+
+                                print(
+                                    "⚠️ Invalid stops – "
+                                    "obnovujem cenu..."
+                                )
+
+                                continue
 
                         detailed_error = (
                             get_error_details(
@@ -1325,16 +1594,16 @@ async def main():
                         )
 
                         telegram(
-                            "❌ BUY NEBOL OTVORENÝ\n\n"
+                            f"❌ {signal} NEBOL OTVORENÝ\n\n"
                             f"Symbol: {symbol}\n"
                             f"Lot: {LOT_SIZE}\n"
                             f"Cena: {entry}\n"
                             f"SL: {sl}\n"
                             f"TP: {tp}\n\n"
-                            f"CHYBA:\n{error}\n\n"
+                            f"CHYBA:\n"
+                            f"{error}\n\n"
                             f"DETAIL:\n"
                             f"{detailed_error}\n\n"
-                            f"BTCUSD PARAMETRE:\n"
                             f"Point: {point}\n"
                             f"Digits: {digits}\n"
                             f"Min lot: {min_volume}\n"
@@ -1343,72 +1612,15 @@ async def main():
                             f"Min stop: {min_stop}"
                         )
 
+                        break
+
                 # =================================================
-                # SELL
+                # SIGNAL SA ZAPÍŠE IBA PO ÚSPEŠNOM OBCHODE
                 # =================================================
 
-                elif signal == "SELL":
+                if order_opened:
 
-                    try:
-
-                        result = await (
-                            connection
-                            .create_market_sell_order(
-                                symbol=symbol,
-                                volume=LOT_SIZE,
-                                stop_loss=sl,
-                                take_profit=tp,
-                                options={
-                                    "comment": COMMENT
-                                }
-                            )
-                        )
-
-                        print(
-                            "SELL OPENED:",
-                            result
-                        )
-
-                        telegram(
-                            "🔴 SELL OTVORENÝ\n\n"
-                            f"Symbol: {symbol}\n"
-                            f"Lot: {LOT_SIZE}\n"
-                            f"Cena: {entry}\n"
-                            f"SL: {sl}\n"
-                            f"TP: {tp}\n"
-                            f"PSAR: {psar}\n"
-                            "PSAR trailing: ON"
-                        )
-
-                        last_signal = signal
-
-                    except Exception as error:
-
-                        detailed_error = (
-                            get_error_details(
-                                api,
-                                error
-                            )
-                        )
-
-                        telegram(
-                            "❌ SELL NEBOL OTVORENÝ\n\n"
-                            f"Symbol: {symbol}\n"
-                            f"Lot: {LOT_SIZE}\n"
-                            f"Cena: {entry}\n"
-                            f"SL: {sl}\n"
-                            f"TP: {tp}\n\n"
-                            f"CHYBA:\n{error}\n\n"
-                            f"DETAIL:\n"
-                            f"{detailed_error}\n\n"
-                            f"BTCUSD PARAMETRE:\n"
-                            f"Point: {point}\n"
-                            f"Digits: {digits}\n"
-                            f"Min lot: {min_volume}\n"
-                            f"Max lot: {max_volume}\n"
-                            f"Lot step: {volume_step}\n"
-                            f"Min stop: {min_stop}"
-                        )
+                    last_signal = signal
 
                 await asyncio.sleep(
                     LOOP_SECONDS
@@ -1484,4 +1696,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-            )
+        )
