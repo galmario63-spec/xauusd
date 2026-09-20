@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Direct SAR Active"
+    return "Riobot Safe Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -31,7 +31,7 @@ BE_TRIGGER = 250.0
 BE_LOCK = 100.0         
 SL_POINTS = 1500.0      
 
-last_position_count = 0
+last_signal_direction = None
 startup_message_sent = False
 
 def send_telegram(msg):
@@ -44,88 +44,96 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 async def main():
-    global startup_message_sent
-    api = MetaApi(METAAPI_TOKEN)
-    account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
-    if account.state != 'DEPLOYED':
-        await account.deploy()
-    await account.wait_connected()
-    connection = account.get_rpc_connection()
-    await connection.connect()
-    await connection.wait_synchronized()
+    global last_signal_direction, startup_message_sent
     
-    symbol = "BTCUSD"
-    try:
-        specifications = await connection.get_symbol_specifications()
-        for spec in specifications:
-            s_name = spec.get('symbol', '')
-            if 'BTC' in s_name.upper():
-                symbol = s_name
-                break
-    except Exception:
-        pass
-
-    if not startup_message_sent:
-        send_telegram(f"🚀 Riobot Direct SAR beží naostro pre {symbol}")
-        startup_message_sent = True
-
     while True:
         try:
-            positions = await connection.get_positions()
-            btc_positions = [p for p in positions if p['symbol'] == symbol]
-            price_info = await connection.get_symbol_price(symbol)
-            ask = price_info.get('ask')
-            bid = price_info.get('bid')
+            api = MetaApi(METAAPI_TOKEN)
+            account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
+            if account.state != 'DEPLOYED':
+                await account.deploy()
+            await account.wait_connected()
+            connection = account.get_rpc_connection()
+            await connection.connect()
+            await connection.wait_synchronized()
+            
+            symbol = "BTCUSD"
+            try:
+                specifications = await connection.get_symbol_specifications()
+                for spec in specifications:
+                    s_name = spec.get('symbol', '')
+                    if 'BTC' in s_name.upper():
+                        symbol = s_name
+                        break
+            except Exception:
+                pass
 
-            # Break-Even manažment
-            for pos in btc_positions:
-                open_price = pos['openPrice']
-                current_sl = pos.get('stopLoss', 0)
-                if pos['type'] == 'POSITION_TYPE_BUY' and bid:
-                    if (bid - open_price) >= BE_TRIGGER:
-                        target_sl = open_price + BE_LOCK
-                        if current_sl < target_sl:
-                            await connection.modify_position(
-                                positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price + TP_POINTS)
-                            )
-                            send_telegram("🔒 BE aktívne (BUY)")
-                elif pos['type'] == 'POSITION_TYPE_SELL' and ask:
-                    if (open_price - ask) >= BE_TRIGGER:
-                        target_sl = open_price - BE_LOCK
-                        if current_sl > target_sl or current_sl == 0:
-                            await connection.modify_position(
-                                positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price - TP_POINTS)
-                            )
-                            send_telegram("🔒 BE aktívne (SELL)")
+            if not startup_message_sent:
+                send_telegram(f"🚀 Riobot stabilne beží pre {symbol}")
+                startup_message_sent = True
 
-            # Okamžitá kontrola indikátora priamo z MetaTrader servera cez technické hodnoty sviečok
-            if len(btc_positions) == 0 and ask and bid:
-                candles = await connection.get_historical_candles(symbol, "1m", None, 5)
-                if candles and len(candles) >= 3:
-                    c1 = candles[-2] # Uzavretá sviečka
-                    c0 = candles[-1] # Aktuálna rozrobene sviečka
-                    
-                    # Sledujeme smer pohybu sviečky (momentum preklopenia)
-                    is_bullish = c1['close'] > c1['open'] and c0['close'] > c0['open']
-                    is_bearish = c1['close'] < c1['open'] and c0['close'] < c0['open']
-                    
-                    if is_bullish:
-                        sl = ask - SL_POINTS
-                        tp = ask + TP_POINTS
-                        await connection.create_market_buy_order(symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                        send_telegram(f"🟢 {symbol} BUY (0.30 Lot) otvorený okamžite.")
-                        await asyncio.sleep(30)
-                    elif is_bearish:
-                        sl = bid + SL_POINTS
-                        tp = bid - TP_POINTS
-                        await connection.create_market_sell_order(symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                        send_telegram(f"🔴 {symbol} SELL (0.30 Lot) otvorený okamžite.")
-                        await asyncio.sleep(30)
+            while True:
+                try:
+                    positions = await connection.get_positions()
+                    btc_positions = [p for p in positions if p['symbol'] == symbol]
+                    price_info = await connection.get_symbol_price(symbol)
+                    ask = price_info.get('ask')
+                    bid = price_info.get('bid')
 
-            await asyncio.sleep(1)
-        except Exception as inner_e:
-            print(f"Chyba: {inner_e}")
-            await asyncio.sleep(3)
+                    for pos in btc_positions:
+                        open_price = pos['openPrice']
+                        current_sl = pos.get('stopLoss', 0)
+                        if pos['type'] == 'POSITION_TYPE_BUY' and bid:
+                            if (bid - open_price) >= BE_TRIGGER:
+                                target_sl = open_price + BE_LOCK
+                                if current_sl < target_sl:
+                                    await connection.modify_position(
+                                        positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price + TP_POINTS)
+                                    )
+                                    send_telegram("🔒 BE aktívne (BUY)")
+                        elif pos['type'] == 'POSITION_TYPE_SELL' and ask:
+                            if (open_price - ask) >= BE_TRIGGER:
+                                target_sl = open_price - BE_LOCK
+                                if current_sl > target_sl or current_sl == 0:
+                                    await connection.modify_position(
+                                        positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price - TP_POINTS)
+                                    )
+                                    send_telegram("🔒 BE aktívne (SELL)")
+
+                    if len(btc_positions) == 0 and ask and bid:
+                        candles = await connection.get_historical_candles(symbol, "1m", None, 10)
+                        if candles and len(candles) >= 3:
+                            c1 = candles[-2]
+                            c0 = candles[-1]
+                            
+                            is_buy_signal = c1['close'] > c1['open'] and c0['close'] >= c0['open']
+                            is_sell_signal = c1['close'] < c1['open'] and c0['close'] <= c0['open']
+                            
+                            if is_buy_signal and last_signal_direction != "BUY":
+                                sl = ask - SL_POINTS
+                                tp = ask + TP_POINTS
+                                await connection.create_market_buy_order(symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                                last_signal_direction = "BUY"
+                                send_telegram(f"🟢 {symbol} BUY (0.30 Lot) otvorený.")
+                                await asyncio.sleep(15)
+                                
+                            elif is_sell_signal and last_signal_direction != "SELL":
+                                sl = bid + SL_POINTS
+                                tp = bid - TP_POINTS
+                                await connection.create_market_sell_order(symbol, LOT_SIZE, stop_loss=sl, take_profit=tp)
+                                last_signal_direction = "SELL"
+                                send_telegram(f"🔴 {symbol} SELL (0.30 Lot) otvorený.")
+                                await asyncio.sleep(15)
+
+                    await asyncio.sleep(2)
+                except Exception as inner_loop_err:
+                    print(f"Chyba v slučke: {inner_loop_err}")
+                    await asyncio.sleep(3)
+                    break
+
+        except Exception as outer_err:
+            print(f"Chyba pripojenia: {outer_err}")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     keep_alive()
