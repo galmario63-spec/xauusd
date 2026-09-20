@@ -10,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Riobot Parabolic SAR Target 3EUR Active"
+    return "Riobot True Parabolic SAR Active"
 
 def run_server():
     app.run(host='0.0.0.0', port=8080)
@@ -26,16 +26,17 @@ METAAPI_TOKEN = os.getenv("M_TOKEN")
 METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 SYMBOL = "BTCUSD"
-LOT_SIZE = 0.30         # Zvýšené na 0.30 pre 3 € cieľ
-TP_POINTS = 600.0       # 600 bodov = cca 3 € zisk pri 0.30 lote
-BE_TRIGGER = 250.0      # Posun BE pri 250 bodoch zisku
-BE_LOCK = 100.0         # Zámok v zisku na BE
-SL_POINTS = 1500.0      # Pevný SL
+LOT_SIZE = 0.30         
+TP_POINTS = 600.0       # 3 € cieľ
+BE_TRIGGER = 250.0      
+BE_LOCK = 100.0         
+SL_POINTS = 1500.0      
 
+# Parametre Parabolic SAR
 SAR_STEP = 0.80
 SAR_MAX = 0.40
 
-last_processed_candle = None
+last_signal_time = None
 startup_message_sent = False
 
 def send_telegram(msg):
@@ -47,21 +48,60 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-def calculate_parabolic_sar(candles):
-    if not candles or len(candles) < 5:
+def get_parabolic_sar_signal(candles):
+    """
+    Konečne reálny výpočet Parabolic SAR pre M1
+    """
+    if not candles or len(candles) < 10:
         return None
+    
     highs = [c['high'] for c in candles]
-    lows = [c['low'] for c in candles]
+        lows = [c['low'] for c in candles]
     closes = [c['close'] for c in candles]
     
-    if closes[-2] > highs[-3]:
+    # Inicializácia trendu podľa prvých sviečok
+    is_bullish = closes[-1] > closes[-5]
+    af = SAR_STEP
+    ep = highs[-1] if is_bullish else lows[-1]
+    sar = lows[0] if is_bullish else highs[0]
+    
+    # Prebehneme historické sviečky na simuláciu aktuálneho SAR bodu
+    for i in range(1, len(candles) - 1):
+        if is_bullish:
+            sar = sar + af * (ep - sar)
+            sar = min(sar, lows[i], lows[i-1])
+            if highs[i] > ep:
+                ep = highs[i]
+                af = min(af + SAR_STEP, SAR_MAX)
+            if lows[i] < sar:
+                # Preklopenie do BEARISH (SELL)
+                is_bullish = False
+                sar = ep
+                ep = lows[i]
+                af = SAR_STEP
+        else:
+            sar = sar + af * (ep - sar)
+            sar = max(sar, highs[i], highs[i-1])
+            if lows[i] < ep:
+                ep = lows[i]
+                af = min(af + SAR_STEP, SAR_MAX)
+            if highs[i] > sar:
+                # Preklopenie do BULLISH (BUY)
+                is_bullish = True
+                sar = ep
+                ep = highs[i]
+                af = SAR_STEP
+
+    # Vráti aktuálny smer trendu na základe pozície bodky voči poslednej cene
+    current_close = closes[-1]
+    if current_close > sar:
         return "BUY"
-    elif closes[-2] < lows[-3]:
+    elif current_close < sar:
         return "SELL"
     return None
 
 async def main():
-    global last_processed_candle, startup_message_sent
+    global last_signal_time, startup_message_sent
     
     api = MetaApi(METAAPI_TOKEN)
     account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
@@ -76,7 +116,7 @@ async def main():
     await connection.wait_synchronized()
     
     if not startup_message_sent:
-        send_telegram("🚀 Riobot SAR (Cieľ 3€ / Lot 0.30) pripravený.")
+        send_telegram("🚀 Riobot True Parabolic SAR pripravený.")
         startup_message_sent = True
 
     while True:
@@ -100,7 +140,7 @@ async def main():
                             await connection.modify_position(
                                 positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price + TP_POINTS)
                             )
-                            send_telegram("🔒 BE aktívne (BUY) - 3€ cieľ")
+                            send_telegram("🔒 BE aktívne (BUY)")
                             
                 elif pos['type'] == 'POSITION_TYPE_SELL' and ask:
                     if (open_price - ask) >= BE_TRIGGER:
@@ -109,39 +149,38 @@ async def main():
                             await connection.modify_position(
                                 positionId=pos['id'], stop_loss=target_sl, take_profit=pos.get('takeProfit', open_price - TP_POINTS)
                             )
-                            send_telegram("🔒 BE aktívne (SELL) - 3€ cieľ")
+                            send_telegram("🔒 BE aktívne (SELL)")
 
-            # Vstupy na základe SAR na M1
+            # Vstupy na základe reálneho SAR na M1
             if len(btc_positions) == 0 and ask and bid:
                 try:
-                    candles = await connection.get_historical_candles(SYMBOL, "1m", None, 10)
+                    candles = await connection.get_historical_candles(SYMBOL, "1m", None, 20)
                 except Exception:
                     candles = None
                 
-                if candles and len(candles) >= 5:
-                    curr_c = candles[-2]
-                    c_time = curr_c.get('time')
+                if candles and len(candles) >= 10:
+                    curr_candle_time = candles[-1].get('time')
                     
-                    if last_processed_candle != c_time:
-                        signal = calculate_parabolic_sar(candles)
+                    if last_signal_time != curr_candle_time:
+                        signal = get_parabolic_sar_signal(candles)
                         
                         if signal == "BUY":
                             sl = ask - SL_POINTS
                             tp = ask + TP_POINTS
                             await connection.create_market_buy_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                            last_processed_candle = c_time
-                            send_telegram("🟢 M1 SAR BUY (Lot 0.30 -> 3€ TP) otvorený.")
-                            await asyncio.sleep(20)
+                            last_signal_time = curr_candle_time
+                            send_telegram("🟢 True SAR M1 BUY (Lot 0.30) otvorený.")
+                            await asyncio.sleep(15)
                             
                         elif signal == "SELL":
                             sl = bid + SL_POINTS
                             tp = bid - TP_POINTS
                             await connection.create_market_sell_order(SYMBOL, LOT_SIZE, stop_loss=sl, take_profit=tp)
-                            last_processed_candle = c_time
-                            send_telegram("🔴 M1 SAR SELL (Lot 0.30 -> 3€ TP) otvorený.")
-                            await asyncio.sleep(20)
+                            last_signal_time = curr_candle_time
+                            send_telegram("🔴 True SAR M1 SELL (Lot 0.30) otvorený.")
+                            await asyncio.sleep(15)
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
         except Exception as inner_e:
             print(f"Chyba: {inner_e}")
