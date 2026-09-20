@@ -9,7 +9,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Riobot PSAR M1 Active"
+    return "Riobot Simple Mode Active"
 
 def run_server():
     port = int(os.getenv("PORT", "8080"))
@@ -26,15 +26,13 @@ METAAPI_ACCOUNT_ID = os.getenv("M_ACC")
 
 SYMBOL_REQUEST = "BTCUSD"
 TIMEFRAME = "1m"
-PSAR_STEP = 0.80
-PSAR_MAXIMUM = 0.40
 LOT_SIZE = 0.30
 TP_POINTS = 600.0
 SL_POINTS = 1500.0
 BE_TRIGGER = 250.0
 BE_LOCK = 100.0
 MAGIC = 26092026
-COMMENT = "Riobot PSAR M1"
+COMMENT = "Riobot Simple"
 
 startup_message_sent = False
 last_status_time = 0
@@ -52,55 +50,12 @@ def get_rest_candles(account_id, token, symbol):
     try:
         url = f"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{account_id}/historical-candles/{symbol}/1m"
         headers = {"auth-token": token}
-        response = requests_lib.get(url, headers=headers, params={"limit": 150}, timeout=5)
+        response = requests_lib.get(url, headers=headers, params={"limit": 10}, timeout=5)
         if response.status_code == 200:
             return response.json()
     except Exception as e:
         print(f"REST candles error: {e}")
     return []
-
-def calculate_psar(candles, step, maximum):
-    if len(candles) < 3:
-        return [], []
-    highs = [float(c["high"]) for c in candles]
-    lows = [float(c["low"]) for c in candles]
-    closes = [float(c["close"]) for c in candles]
-    sar = [None] * len(candles)
-    direction = [None] * len(candles)
-    uptrend = closes[1] >= closes[0]
-    sar[0] = lows[0] if uptrend else highs[0]
-    extreme_point = highs[0] if uptrend else lows[0]
-    acceleration = step
-    direction[0] = uptrend
-
-    for i in range(1, len(candles)):
-        previous_sar = sar[i - 1]
-        current_sar = previous_sar + acceleration * (extreme_point - previous_sar)
-        if uptrend:
-            current_sar = min(current_sar, lows[i - 1], lows[i - 2] if i >= 2 else lows[i - 1])
-            if lows[i] < current_sar:
-                uptrend = False
-                current_sar = extreme_point
-                extreme_point = lows[i]
-                acceleration = step
-            else:
-                if highs[i] > extreme_point:
-                    extreme_point = highs[i]
-                    acceleration = min(maximum, acceleration + step)
-        else:
-            current_sar = max(current_sar, highs[i - 1], highs[i - 2] if i >= 2 else highs[i - 1])
-            if highs[i] > current_sar:
-                uptrend = True
-                current_sar = extreme_point
-                extreme_point = highs[i]
-                acceleration = step
-            else:
-                if lows[i] < extreme_point:
-                    extreme_point = lows[i]
-                    acceleration = min(maximum, acceleration + step)
-        sar[i] = current_sar
-        direction[i] = uptrend
-    return sar, direction
 
 def is_bot_position(position):
     try:
@@ -120,7 +75,6 @@ async def main():
 
     while True:
         try:
-            print("🔌 Pripájam k MetaApi...")
             account = await api.metatrader_account_api.get_account(METAAPI_ACCOUNT_ID)
             if account.state != "DEPLOYED":
                 await account.deploy()
@@ -131,24 +85,12 @@ async def main():
             await connection.wait_synchronized()
 
             symbol = SYMBOL_REQUEST
-            specification = None
-            for _ in range(5):
-                try:
-                    specification = await connection.get_symbol_specification(symbol)
-                    if specification:
-                        break
-                except Exception:
-                    await asyncio.sleep(2)
-
-            if not specification:
-                await asyncio.sleep(5)
-                continue
-
+            specification = await connection.get_symbol_specification(symbol)
             point = float(specification.get("point", 0.01))
             digits = int(specification.get("digits", 2))
 
             if not startup_message_sent:
-                send_telegram(f"🚀 RIObot ULTRA ČISTÝ ŠTART\nSymbol: {symbol} | Lot: {LOT_SIZE}")
+                send_telegram(f"🚀 RIObot JEDNODUCHÝ REŽIM ŠTART\nSymbol: {symbol}")
                 startup_message_sent = True
 
             while True:
@@ -157,69 +99,45 @@ async def main():
                     bid, ask = float(price["bid"]), float(price["ask"])
 
                     candles = get_rest_candles(METAAPI_ACCOUNT_ID, METAAPI_TOKEN, symbol)
-                    if not candles or len(candles) < 10:
+                    if not candles or len(candles) < 2:
                         await asyncio.sleep(3)
                         continue
 
-                    candles = sorted(candles, key=lambda x: x["time"])
-                    sar_values, directions = calculate_psar(candles, PSAR_STEP, PSAR_MAXIMUM)
-                    if not sar_values:
-                        await asyncio.sleep(2)
-                        continue
-
-                    current_direction = directions[-1]
+                    last_candle = candles[-1]
+                    is_bullish = float(last_candle["close"]) > float(last_candle["open"])
 
                     positions = await connection.get_positions()
                     bot_positions = [p for p in positions if p.get("symbol") == symbol and is_bot_position(p)]
 
                     current_time = time.time()
                     if current_time - last_status_time > 60:
-                        trend_name = "BUY (rast)" if current_direction is True else "SELL (pokles)"
-                        send_telegram(f"📊 BOT STATUS:\nCena: {ask}\nPSAR Smer: {trend_name}\nPozície: {len(bot_positions)}")
+                        send_telegram(f"📊 BOT STATUS:\nCena: {ask}\nPozície: {len(bot_positions)}")
                         last_status_time = current_time
 
                     if not bot_positions:
-                        if current_direction is True:
+                        if is_bullish:
                             sl = round(ask - SL_POINTS * point, digits)
                             tp = round(ask + TP_POINTS * point, digits)
-                            try:
-                                await connection.create_market_buy_order(
-                                    symbol=symbol,
-                                    volume=LOT_SIZE,
-                                    options={
-                                        "stopLoss": sl,
-                                        "takeProfit": tp,
-                                        "comment": COMMENT,
-                                        "magic": MAGIC
-                                    }
-                                )
-                                send_telegram(f"🟢 BUY OTVORENÝ!\nCena: {ask}\nSL: {sl} | TP: {tp}")
-                            except Exception as e:
-                                send_telegram(f"❌ BUY CHYBA: {str(e)}")
-
-                        elif current_direction is False:
+                            await connection.create_market_buy_order(
+                                symbol=symbol,
+                                volume=LOT_SIZE,
+                                options={"stopLoss": sl, "takeProfit": tp, "comment": COMMENT, "magic": MAGIC}
+                            )
+                            send_telegram(f"🟢 BUY OTVORENÝ!\nCena: {ask}")
+                        else:
                             sl = round(bid + SL_POINTS * point, digits)
                             tp = round(bid - TP_POINTS * point, digits)
-                            try:
-                                await connection.create_market_sell_order(
-                                    symbol=symbol,
-                                    volume=LOT_SIZE,
-                                    options={
-                                        "stopLoss": sl,
-                                        "takeProfit": tp,
-                                        "comment": COMMENT,
-                                        "magic": MAGIC
-                                    }
-                                )
-                                send_telegram(f"🔴 SELL OTVORENÝ!\nCena: {bid}\nSL: {sl} | TP: {tp}")
-                            except Exception as e:
-                                send_telegram(f"❌ SELL CHYBA: {str(e)}")
+                            await connection.create_market_sell_order(
+                                symbol=symbol,
+                                volume=LOT_SIZE,
+                                options={"stopLoss": sl, "takeProfit": tp, "comment": COMMENT, "magic": MAGIC}
+                            )
+                            send_telegram(f"🔴 SELL OTVORENÝ!\nCena: {bid}")
 
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)
 
                 except Exception as inner_error:
                     print(f"Chyba v cykle: {inner_error}")
-                    send_telegram(f"⚠️ Bot Inner Error: {str(inner_error)}")
                     await asyncio.sleep(5)
                     break
 
