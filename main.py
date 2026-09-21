@@ -213,7 +213,7 @@ async def get_closed_m5(account, symbol):
     if len(df) < 10:
         return None
 
-    # Posledna sviecka sa este tvori.
+    # Posledna sviecka sa este tvori
     df = df.iloc[:-1].copy()
 
     return df.reset_index(drop=True)
@@ -230,11 +230,11 @@ def get_flip(df):
     if len(bull) < 2:
         return None, None
 
-    # Bodky NAD -> POD = BUY
+    # PSAR NAD -> POD = BUY
     if not bull[-2] and bull[-1]:
         return "BUY", float(psar[-1])
 
-    # Bodky POD -> NAD = SELL
+    # PSAR POD -> NAD = SELL
     if bull[-2] and not bull[-1]:
         return "SELL", float(psar[-1])
 
@@ -268,42 +268,51 @@ async def open_trade(connection, symbol, side, psar):
     sl_points = settings["sl"]
 
     spec = await connection.get_symbol_specification(symbol)
+
     price_data = await connection.get_symbol_price(symbol)
 
-    digits = int(spec.get("digits", 2))
+    digits = int(
+        spec.get("digits", 2)
+    )
 
     point = float(
         spec.get("tickSize")
         or (10 ** (-digits))
     )
 
-    if side == "BUY":
+    def levels(data):
 
-        entry = float(price_data["ask"])
+        if side == "BUY":
 
-        sl = round(
-            entry - sl_points * point,
-            digits
-        )
+            entry_price = float(data["ask"])
 
-        tp = round(
-            entry + tp_points * point,
-            digits
-        )
+            sl_price = round(
+                entry_price - sl_points * point,
+                digits
+            )
 
-    else:
+            tp_price = round(
+                entry_price + tp_points * point,
+                digits
+            )
 
-        entry = float(price_data["bid"])
+        else:
 
-        sl = round(
-            entry + sl_points * point,
-            digits
-        )
+            entry_price = float(data["bid"])
 
-        tp = round(
-            entry - tp_points * point,
-            digits
-        )
+            sl_price = round(
+                entry_price + sl_points * point,
+                digits
+            )
+
+            tp_price = round(
+                entry_price - tp_points * point,
+                digits
+            )
+
+        return entry_price, sl_price, tp_price
+
+    entry, sl, tp = levels(price_data)
 
     async def send_order():
 
@@ -338,36 +347,11 @@ async def open_trade(connection, symbol, side, psar):
 
         await asyncio.sleep(1)
 
-        # obnovime cenu
-        price_data = await connection.get_symbol_price(symbol)
+        price_data = await connection.get_symbol_price(
+            symbol
+        )
 
-        if side == "BUY":
-
-            entry = float(price_data["ask"])
-
-            sl = round(
-                entry - sl_points * point,
-                digits
-            )
-
-            tp = round(
-                entry + tp_points * point,
-                digits
-            )
-
-        else:
-
-            entry = float(price_data["bid"])
-
-            sl = round(
-                entry + sl_points * point,
-                digits
-            )
-
-            tp = round(
-                entry - tp_points * point,
-                digits
-            )
+        entry, sl, tp = levels(price_data)
 
         await send_order()
 
@@ -400,10 +384,17 @@ async def manage_be(connection, symbol):
     be_trigger = settings["be_trigger"]
     be_lock = settings["be_lock"]
 
-    spec = await connection.get_symbol_specification(symbol)
-    price_data = await connection.get_symbol_price(symbol)
+    spec = await connection.get_symbol_specification(
+        symbol
+    )
 
-    digits = int(spec.get("digits", 2))
+    price_data = await connection.get_symbol_price(
+        symbol
+    )
+
+    digits = int(
+        spec.get("digits", 2)
+    )
 
     point = float(
         spec.get("tickSize")
@@ -424,9 +415,12 @@ async def manage_be(connection, symbol):
 
         try:
 
+            # BUY
             if side == "POSITION_TYPE_BUY":
 
-                current = float(price_data["bid"])
+                current = float(
+                    price_data["bid"]
+                )
 
                 profit_points = (
                     current - entry
@@ -458,9 +452,12 @@ async def manage_be(connection, symbol):
                         f"SL -> {be_sl:.2f}"
                     )
 
+            # SELL
             elif side == "POSITION_TYPE_SELL":
 
-                current = float(price_data["ask"])
+                current = float(
+                    price_data["ask"]
+                )
 
                 profit_points = (
                     entry - current
@@ -521,18 +518,18 @@ async def bot_session(api):
 
     telegram(
         "RIObot START / CONNECTED\n\n"
+
         "BTCUSD lot 0.30\n"
         "M5 PSAR FLIP\n"
         "TP 3000 | SL 3000\n"
         "BE +1000 -> +200\n\n"
+
         "XAUUSD lot 0.30\n"
         "M5 PSAR FLIP\n"
         "TP 3000 | SL 2000\n"
         "BE +1000 -> +200"
     )
 
-    # Kazdy symbol ma vlastnu
-    # poslednu spracovanu M5 sviecku.
     last_candle = {
         symbol: None
         for symbol in SYMBOLS
@@ -570,4 +567,94 @@ async def bot_session(api):
 
                     last_candle[symbol] = candle_id
 
-                    signal,
+                    signal, psar = get_flip(df)
+
+                    positions = await symbol_positions(
+                        connection,
+                        symbol
+                    )
+
+                    print(
+                        f"{symbol} "
+                        f"M5={candle_id} "
+                        f"FLIP={signal} "
+                        f"PSAR={psar}",
+                        flush=True
+                    )
+
+                    # Jedna pozicia na symbol
+                    if (
+                        not positions
+                        and signal in ("BUY", "SELL")
+                    ):
+
+                        await open_trade(
+                            connection,
+                            symbol,
+                            signal,
+                            psar
+                        )
+
+                except Exception as e:
+
+                    print(
+                        f"LOOP ERROR {symbol}:",
+                        e,
+                        flush=True
+                    )
+
+            await asyncio.sleep(
+                LOOP_SECONDS
+            )
+
+    finally:
+
+        try:
+            await connection.close()
+
+        except Exception:
+            pass
+
+
+# =========================================================
+# MAIN + RECONNECT
+# =========================================================
+
+async def main():
+
+    if not M_TOKEN or not M_ACC:
+
+        raise RuntimeError(
+            "Missing M_TOKEN or M_ACC"
+        )
+
+    keep_alive()
+
+    api = MetaApi(M_TOKEN)
+
+    while True:
+
+        try:
+
+            await bot_session(api)
+
+        except Exception as e:
+
+            print(
+                "CONNECTION ERROR:",
+                e,
+                flush=True
+            )
+
+            telegram(
+                "RIObot: MetaApi connection lost.\n"
+                f"Reconnect za {RECONNECT_SECONDS}s..."
+            )
+
+            await asyncio.sleep(
+                RECONNECT_SECONDS
+            )
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
