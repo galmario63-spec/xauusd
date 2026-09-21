@@ -23,10 +23,10 @@ SYMBOLS = {
 
     "XAUUSD": {
         "lot": 0.30,
-        "tp": 3000.0,
-        "sl": 2000.0,
-        "be_trigger": 1000.0,
-        "be_lock": 200.0
+        "tp": 750.0,
+        "sl": 500.0,
+        "be_trigger": 300.0,
+        "be_lock": 100.0
     }
 }
 
@@ -52,7 +52,7 @@ T_CHAT = os.getenv("T_CHAT")
 
 
 # =========================================================
-# FLASK - RENDER
+# FLASK - RENDER KEEP ALIVE
 # =========================================================
 
 app = Flask(__name__)
@@ -213,7 +213,8 @@ async def get_closed_m5(account, symbol):
     if len(df) < 10:
         return None
 
-    # Posledna sviecka sa este tvori
+    # Ignorujeme poslednu sviecku,
+    # pretoze sa este tvori.
     df = df.iloc[:-1].copy()
 
     return df.reset_index(drop=True)
@@ -230,11 +231,11 @@ def get_flip(df):
     if len(bull) < 2:
         return None, None
 
-    # PSAR NAD -> POD = BUY
+    # PSAR NAD -> POD cenu = BUY
     if not bull[-2] and bull[-1]:
         return "BUY", float(psar[-1])
 
-    # PSAR POD -> NAD = SELL
+    # PSAR POD -> NAD cenu = SELL
     if bull[-2] and not bull[-1]:
         return "SELL", float(psar[-1])
 
@@ -268,51 +269,42 @@ async def open_trade(connection, symbol, side, psar):
     sl_points = settings["sl"]
 
     spec = await connection.get_symbol_specification(symbol)
-
     price_data = await connection.get_symbol_price(symbol)
 
-    digits = int(
-        spec.get("digits", 2)
-    )
+    digits = int(spec.get("digits", 2))
 
     point = float(
         spec.get("tickSize")
         or (10 ** (-digits))
     )
 
-    def levels(data):
+    if side == "BUY":
 
-        if side == "BUY":
+        entry = float(price_data["ask"])
 
-            entry_price = float(data["ask"])
+        sl = round(
+            entry - sl_points * point,
+            digits
+        )
 
-            sl_price = round(
-                entry_price - sl_points * point,
-                digits
-            )
+        tp = round(
+            entry + tp_points * point,
+            digits
+        )
 
-            tp_price = round(
-                entry_price + tp_points * point,
-                digits
-            )
+    else:
 
-        else:
+        entry = float(price_data["bid"])
 
-            entry_price = float(data["bid"])
+        sl = round(
+            entry + sl_points * point,
+            digits
+        )
 
-            sl_price = round(
-                entry_price + sl_points * point,
-                digits
-            )
-
-            tp_price = round(
-                entry_price - tp_points * point,
-                digits
-            )
-
-        return entry_price, sl_price, tp_price
-
-    entry, sl, tp = levels(price_data)
+        tp = round(
+            entry - tp_points * point,
+            digits
+        )
 
     async def send_order():
 
@@ -347,11 +339,36 @@ async def open_trade(connection, symbol, side, psar):
 
         await asyncio.sleep(1)
 
-        price_data = await connection.get_symbol_price(
-            symbol
-        )
+        # Obnovime aktualnu cenu
+        price_data = await connection.get_symbol_price(symbol)
 
-        entry, sl, tp = levels(price_data)
+        if side == "BUY":
+
+            entry = float(price_data["ask"])
+
+            sl = round(
+                entry - sl_points * point,
+                digits
+            )
+
+            tp = round(
+                entry + tp_points * point,
+                digits
+            )
+
+        else:
+
+            entry = float(price_data["bid"])
+
+            sl = round(
+                entry + sl_points * point,
+                digits
+            )
+
+            tp = round(
+                entry - tp_points * point,
+                digits
+            )
 
         await send_order()
 
@@ -384,17 +401,10 @@ async def manage_be(connection, symbol):
     be_trigger = settings["be_trigger"]
     be_lock = settings["be_lock"]
 
-    spec = await connection.get_symbol_specification(
-        symbol
-    )
+    spec = await connection.get_symbol_specification(symbol)
+    price_data = await connection.get_symbol_price(symbol)
 
-    price_data = await connection.get_symbol_price(
-        symbol
-    )
-
-    digits = int(
-        spec.get("digits", 2)
-    )
+    digits = int(spec.get("digits", 2))
 
     point = float(
         spec.get("tickSize")
@@ -418,9 +428,7 @@ async def manage_be(connection, symbol):
             # BUY
             if side == "POSITION_TYPE_BUY":
 
-                current = float(
-                    price_data["bid"]
-                )
+                current = float(price_data["bid"])
 
                 profit_points = (
                     current - entry
@@ -455,9 +463,7 @@ async def manage_be(connection, symbol):
             # SELL
             elif side == "POSITION_TYPE_SELL":
 
-                current = float(
-                    price_data["ask"]
-                )
+                current = float(price_data["ask"])
 
                 profit_points = (
                     entry - current
@@ -518,16 +524,14 @@ async def bot_session(api):
 
     telegram(
         "RIObot START / CONNECTED\n\n"
-
         "BTCUSD lot 0.30\n"
         "M5 PSAR FLIP\n"
         "TP 3000 | SL 3000\n"
         "BE +1000 -> +200\n\n"
-
         "XAUUSD lot 0.30\n"
         "M5 PSAR FLIP\n"
-        "TP 3000 | SL 2000\n"
-        "BE +1000 -> +200"
+        "TP 750 | SL 500\n"
+        "BE +300 -> +100"
     )
 
     last_candle = {
@@ -562,6 +566,8 @@ async def bot_session(api):
                         df.iloc[-1].get("time")
                     )
 
+                    # Kazdu uzavretu M5 sviecku
+                    # spracujeme iba raz.
                     if candle_id == last_candle[symbol]:
                         continue
 
@@ -582,7 +588,8 @@ async def bot_session(api):
                         flush=True
                     )
 
-                    # Jedna pozicia na symbol
+                    # Maximalne jedna otvorena
+                    # pozicia na kazdom symbole.
                     if (
                         not positions
                         and signal in ("BUY", "SELL")
