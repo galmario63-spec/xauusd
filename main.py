@@ -9,21 +9,19 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =========================================================
-# NASTAVENIA - XAUUSD
+# NASTAVENIA
 # =========================================================
 
 SYMBOL = "XAUUSD"
+
 LOT_SIZE = 0.50
 
-# PARABOLIC SAR M5
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
-# TP / SL
 TP_POINTS = 750.0
 SL_POINTS = 500.0
 
-# BREAK EVEN
 BE_TRIGGER = 300.0
 BE_LOCK = 100.0
 
@@ -34,7 +32,7 @@ COMMENT = "RIObot GOLD M5 PSAR BE"
 
 
 # =========================================================
-# ENV
+# ENVIRONMENT VARIABLES
 # =========================================================
 
 M_TOKEN = os.getenv("M_TOKEN")
@@ -45,7 +43,7 @@ T_CHAT = os.getenv("T_CHAT")
 
 
 # =========================================================
-# FLASK - RENDER KEEP ALIVE
+# FLASK / RENDER
 # =========================================================
 
 app = Flask(__name__)
@@ -53,11 +51,12 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "RIObot GOLD M5 active"
+    return "RIObot GOLD M5 ACTIVE"
 
 
 def run_server():
-    port = int(os.getenv("PORT", "10000"))
+    port = int(os.environ.get("PORT", 10000))
+
     app.run(
         host="0.0.0.0",
         port=port
@@ -65,10 +64,12 @@ def run_server():
 
 
 def keep_alive():
-    Thread(
+    thread = Thread(
         target=run_server,
         daemon=True
-    ).start()
+    )
+
+    thread.start()
 
 
 # =========================================================
@@ -81,6 +82,7 @@ def telegram(message):
         return
 
     try:
+
         url = (
             f"https://api.telegram.org/"
             f"bot{T_TOKEN}/sendMessage"
@@ -96,8 +98,9 @@ def telegram(message):
         )
 
     except Exception as e:
+
         print(
-            "Telegram error:",
+            "TELEGRAM ERROR:",
             e,
             flush=True
         )
@@ -122,6 +125,7 @@ def psar_values(df):
     bull = [True] * n
 
     is_bull = close[1] >= close[0]
+
     af = PSAR_STEP
 
     if is_bull:
@@ -154,7 +158,6 @@ def psar_values(df):
                     low[i - 2]
                 )
 
-            # FLIP BUY -> SELL
             if low[i] < value:
 
                 is_bull = False
@@ -184,7 +187,6 @@ def psar_values(df):
                     high[i - 2]
                 )
 
-            # FLIP SELL -> BUY
             if high[i] > value:
 
                 is_bull = True
@@ -225,12 +227,14 @@ async def get_closed_m5(account):
 
     df = pd.DataFrame(candles)
 
-    for col in [
+    required = [
         "open",
         "high",
         "low",
         "close"
-    ]:
+    ]
+
+    for col in required:
 
         df[col] = pd.to_numeric(
             df[col],
@@ -238,26 +242,20 @@ async def get_closed_m5(account):
         )
 
     df = df.dropna(
-        subset=[
-            "open",
-            "high",
-            "low",
-            "close"
-        ]
+        subset=required
     ).reset_index(drop=True)
 
     if len(df) < 10:
         return None
 
-    # Posledna sviecka sa este tvori,
-    # preto ju robot ignoruje.
+    # Ignorujeme aktualne otvorenu M5 sviecku
     df = df.iloc[:-1].copy()
 
     return df.reset_index(drop=True)
 
 
 # =========================================================
-# M5 PSAR FLIP
+# PSAR FLIP
 # =========================================================
 
 def get_flip(df):
@@ -267,8 +265,7 @@ def get_flip(df):
     if len(bull) < 2:
         return None, None
 
-    # Bodky boli NAD cenou
-    # a presli POD cenu = BUY
+    # PSAR sa prehodil NAD -> POD cenu = BUY
     if not bull[-2] and bull[-1]:
 
         return (
@@ -276,8 +273,7 @@ def get_flip(df):
             float(psar[-1])
         )
 
-    # Bodky boli POD cenou
-    # a presli NAD cenu = SELL
+    # PSAR sa prehodil POD -> NAD cenu = SELL
     if bull[-2] and not bull[-1]:
 
         return (
@@ -292,16 +288,17 @@ def get_flip(df):
 
 
 # =========================================================
-# XAUUSD POZICIE
+# OTVORENE XAUUSD POZICIE
 # =========================================================
 
-async def symbol_positions(connection):
+async def get_positions(connection):
 
     positions = await connection.get_positions()
 
     return [
-        p for p in positions
-        if p.get("symbol") == SYMBOL
+        position
+        for position in positions
+        if position.get("symbol") == SYMBOL
     ]
 
 
@@ -315,14 +312,8 @@ async def open_trade(
     psar
 ):
 
-    spec = (
-        await connection
-        .get_symbol_specification(SYMBOL)
-    )
-
-    price_data = (
-        await connection
-        .get_symbol_price(SYMBOL)
+    spec = await connection.get_symbol_specification(
+        SYMBOL
     )
 
     digits = int(
@@ -331,83 +322,13 @@ async def open_trade(
 
     point = float(
         spec.get("tickSize")
-        or (10 ** (-digits))
+        or 10 ** (-digits)
     )
 
-    if side == "BUY":
+    async def calculate_prices():
 
-        entry = float(
-            price_data["ask"]
-        )
-
-        sl = round(
-            entry - SL_POINTS * point,
-            digits
-        )
-
-        tp = round(
-            entry + TP_POINTS * point,
-            digits
-        )
-
-    else:
-
-        entry = float(
-            price_data["bid"]
-        )
-
-        sl = round(
-            entry + SL_POINTS * point,
-            digits
-        )
-
-        tp = round(
-            entry - TP_POINTS * point,
-            digits
-        )
-
-    async def send_order():
-
-        if side == "BUY":
-
-            await connection.create_market_buy_order(
-                SYMBOL,
-                LOT_SIZE,
-                sl,
-                tp,
-                {
-                    "comment": COMMENT
-                }
-            )
-
-        else:
-
-            await connection.create_market_sell_order(
-                SYMBOL,
-                LOT_SIZE,
-                sl,
-                tp,
-                {
-                    "comment": COMMENT
-                }
-            )
-
-    try:
-
-        await send_order()
-
-    except Exception as first_error:
-
-        # Pri rychlom pohybe ceny
-        # obnovime cenu a skusime 1x znova.
-        if "Invalid stops" not in str(first_error):
-            raise
-
-        await asyncio.sleep(1)
-
-        price_data = (
-            await connection
-            .get_symbol_price(SYMBOL)
+        price_data = await connection.get_symbol_price(
+            SYMBOL
         )
 
         if side == "BUY":
@@ -442,15 +363,72 @@ async def open_trade(
                 digits
             )
 
+        return entry, sl, tp
+
+    entry, sl, tp = await calculate_prices()
+
+    async def send_order():
+
+        if side == "BUY":
+
+            return await connection.create_market_buy_order(
+                SYMBOL,
+                LOT_SIZE,
+                sl,
+                tp,
+                {
+                    "comment": COMMENT
+                }
+            )
+
+        return await connection.create_market_sell_order(
+            SYMBOL,
+            LOT_SIZE,
+            sl,
+            tp,
+            {
+                "comment": COMMENT
+            }
+        )
+
+    try:
+
         await send_order()
 
+    except Exception as error:
+
+        if "Invalid stops" not in str(error):
+
+            raise
+
+        print(
+            "INVALID STOPS - RETRY",
+            flush=True
+        )
+
+        await asyncio.sleep(1)
+
+        entry, sl, tp = await calculate_prices()
+
+        await send_order()
+
+    print(
+        f"OPEN {side} {SYMBOL} "
+        f"LOT={LOT_SIZE} "
+        f"ENTRY={entry} "
+        f"SL={sl} "
+        f"TP={tp}",
+        flush=True
+    )
+
     telegram(
+        f"RIObot GOLD\n\n"
         f"{side} {SYMBOL}\n"
         f"Lot: {LOT_SIZE}\n"
         f"Entry: {entry:.2f}\n"
         f"SL: {sl:.2f}\n"
         f"TP: {tp:.2f}\n"
-        f"M5 PSAR: {psar:.2f}"
+        f"PSAR: {psar:.2f}"
     )
 
 
@@ -460,11 +438,73 @@ async def open_trade(
 
 async def manage_be(connection):
 
-    positions = await symbol_positions(
+    positions = await get_positions(
         connection
     )
 
     if not positions:
         return
 
-    spec
+    spec = await connection.get_symbol_specification(
+        SYMBOL
+    )
+
+    price_data = await connection.get_symbol_price(
+        SYMBOL
+    )
+
+    digits = int(
+        spec.get("digits", 2)
+    )
+
+    point = float(
+        spec.get("tickSize")
+        or 10 ** (-digits)
+    )
+
+    for position in positions:
+
+        try:
+
+            position_id = position.get("id")
+            side = position.get("type")
+
+            entry = float(
+                position.get("openPrice", 0)
+            )
+
+            current_sl = position.get(
+                "stopLoss"
+            )
+
+            tp = position.get(
+                "takeProfit"
+            )
+
+            # ==============================
+            # BUY
+            # ==============================
+
+            if side == "POSITION_TYPE_BUY":
+
+                current = float(
+                    price_data["bid"]
+                )
+
+                profit_points = (
+                    current - entry
+                ) / point
+
+                new_sl = round(
+                    entry + BE_LOCK * point,
+                    digits
+                )
+
+                if current_sl is None:
+
+                    sl_needs_change = True
+
+                else:
+
+                    sl_needs_change = (
+                        float(current
