@@ -35,7 +35,6 @@ COMMENT = "Riobot M1 PSAR ONLY"
 LOOP_SECONDS = 10
 RECONNECT_SECONDS = 15
 
-# Po koľkých chybách v loope spravíme nové spojenie
 MAX_CONNECTION_ERRORS = 2
 
 
@@ -87,4 +86,92 @@ def keep_alive():
 # TELEGRAM
 # =========================================================
 
-def
+def telegram(message):
+
+    if not T_TOKEN or not T_CHAT:
+        print(message)
+        return
+
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{T_TOKEN}/sendMessage",
+            data={
+                "chat_id": T_CHAT,
+                "text": message
+            },
+            timeout=10
+        )
+
+    except Exception as e:
+        print("Telegram chyba:", e)
+
+
+# =========================================================
+# PARABOLIC SAR
+# =========================================================
+
+def calculate_psar(df, step=0.02, max_af=0.20):
+
+    if len(df) < 5:
+        raise ValueError("Málo sviečok pre PSAR")
+
+    high = df["high"].astype(float).tolist()
+    low = df["low"].astype(float).tolist()
+    close = df["close"].astype(float).tolist()
+
+    psar = [0.0] * len(df)
+
+    bull = close[1] >= close[0]
+    af = step
+
+    if bull:
+        ep = high[0]
+        psar[0] = low[0]
+    else:
+        ep = low[0]
+        psar[0] = high[0]
+
+    for i in range(1, len(df)):
+
+        psar[i] = psar[i - 1] + af * (
+            ep - psar[i - 1]
+        )
+
+        # BULL
+        if bull:
+
+            if i >= 2:
+                psar[i] = min(
+                    psar[i],
+                    low[i - 1],
+                    low[i - 2]
+                )
+            else:
+                psar[i] = min(
+                    psar[i],
+                    low[i - 1]
+                )
+
+            if low[i] < psar[i]:
+
+                bull = False
+                psar[i] = ep
+                ep = low[i]
+                af = step
+
+            else:
+
+                if high[i] > ep:
+                    ep = high[i]
+                    af = min(
+                        af + step,
+                        max_af
+                    )
+
+        # BEAR
+        else:
+
+            if i >= 2:
+                psar[i] = max(
+                    psar[i],
+                    high[i - 1],
