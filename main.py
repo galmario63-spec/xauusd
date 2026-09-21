@@ -42,7 +42,7 @@ T_CHAT = os.getenv("T_CHAT")
 
 
 # =========================================================
-# FLASK - RENDER KEEP ALIVE
+# FLASK - RENDER
 # =========================================================
 
 app = Flask(__name__)
@@ -105,7 +105,6 @@ def psar_values(df):
     bull = [True] * n
 
     is_bull = close[1] >= close[0]
-
     af = PSAR_STEP
 
     if is_bull:
@@ -138,10 +137,7 @@ def psar_values(df):
             elif high[i] > ep:
 
                 ep = high[i]
-                af = min(
-                    af + PSAR_STEP,
-                    PSAR_MAX
-                )
+                af = min(af + PSAR_STEP, PSAR_MAX)
 
         else:
 
@@ -160,10 +156,7 @@ def psar_values(df):
             elif low[i] < ep:
 
                 ep = low[i]
-                af = min(
-                    af + PSAR_STEP,
-                    PSAR_MAX
-                )
+                af = min(af + PSAR_STEP, PSAR_MAX)
 
         psar[i] = value
         bull[i] = is_bull
@@ -172,7 +165,7 @@ def psar_values(df):
 
 
 # =========================================================
-# M1 UZAVRETE SVIECKY
+# UZAVRETE M1 SVIECKY
 # =========================================================
 
 async def get_closed_m1(account):
@@ -190,7 +183,6 @@ async def get_closed_m1(account):
     df = pd.DataFrame(candles)
 
     for col in ["open", "high", "low", "close"]:
-
         df[col] = pd.to_numeric(
             df[col],
             errors="coerce"
@@ -203,7 +195,7 @@ async def get_closed_m1(account):
     if len(df) < 10:
         return None
 
-    # poslednu tvoriacu sa sviecku nepouzivame
+    # Posledna sviecka sa este tvori.
     df = df.iloc[:-1].copy()
 
     return df.reset_index(drop=True)
@@ -220,14 +212,12 @@ def get_flip(df):
     if len(bull) < 2:
         return None, None
 
-    # bodky sa prehodili POD cenu
+    # Bodky presli zhora pod cenu = BUY
     if not bull[-2] and bull[-1]:
-
         return "BUY", float(psar[-1])
 
-    # bodky sa prehodili NAD cenu
+    # Bodky presli zdola nad cenu = SELL
     if bull[-2] and not bull[-1]:
-
         return "SELL", float(psar[-1])
 
     return None, float(psar[-1])
@@ -254,12 +244,9 @@ async def symbol_positions(connection):
 async def open_trade(connection, side, psar):
 
     spec = await connection.get_symbol_specification(SYMBOL)
-
     price_data = await connection.get_symbol_price(SYMBOL)
 
-    digits = int(
-        spec.get("digits", 2)
-    )
+    digits = int(spec.get("digits", 2))
 
     point = float(
         spec.get("tickSize")
@@ -318,14 +305,14 @@ async def open_trade(connection, side, psar):
 
     except Exception as first_error:
 
+        # Ak broker odmietne SL/TP kvoli rychlemu pohybu ceny,
+        # nacitame novu cenu a skusime este raz.
         if "Invalid stops" not in str(first_error):
             raise
 
         await asyncio.sleep(1)
 
-        price_data = await connection.get_symbol_price(
-            SYMBOL
-        )
+        price_data = await connection.get_symbol_price(SYMBOL)
 
         if side == "BUY":
 
@@ -391,17 +378,10 @@ async def manage_be(connection):
     if not positions:
         return
 
-    spec = await connection.get_symbol_specification(
-        SYMBOL
-    )
+    spec = await connection.get_symbol_specification(SYMBOL)
+    price_data = await connection.get_symbol_price(SYMBOL)
 
-    price_data = await connection.get_symbol_price(
-        SYMBOL
-    )
-
-    digits = int(
-        spec.get("digits", 2)
-    )
+    digits = int(spec.get("digits", 2))
 
     point = float(
         spec.get("tickSize")
@@ -422,11 +402,10 @@ async def manage_be(connection):
 
         try:
 
+            # BUY
             if side == "POSITION_TYPE_BUY":
 
-                current = float(
-                    price_data["bid"]
-                )
+                current = float(price_data["bid"])
 
                 profit_points = (
                     current - entry
@@ -458,11 +437,10 @@ async def manage_be(connection):
                         f"SL -> {be_sl:.2f}"
                     )
 
+            # SELL
             elif side == "POSITION_TYPE_SELL":
 
-                current = float(
-                    price_data["ask"]
-                )
+                current = float(price_data["ask"])
 
                 profit_points = (
                     entry - current
@@ -504,7 +482,7 @@ async def manage_be(connection):
 
 
 # =========================================================
-# BOT
+# BOT SESSION
 # =========================================================
 
 async def bot_session(api):
@@ -519,7 +497,6 @@ async def bot_session(api):
     connection = account.get_rpc_connection()
 
     await connection.connect()
-
     await connection.wait_synchronized()
 
     telegram(
@@ -537,47 +514,60 @@ async def bot_session(api):
 
         while True:
 
-            # najprv kontrola BE
-            await manage_be(connection)
+            try:
 
-            df = await get_closed_m1(account)
+                # Najprv kontrolujeme BE.
+                await manage_be(connection)
 
-            if df is not None and len(df) >= 10:
+                df = await get_closed_m1(account)
 
-                candle_id = str(
-                    df.iloc[-1].get("time")
+                if df is not None and len(df) >= 10:
+
+                    candle_id = str(
+                        df.iloc[-1].get("time")
+                    )
+
+                    # Kazdu uzavretu M1 sviecku
+                    # spracujeme iba raz.
+                    if candle_id != last_candle:
+
+                        last_candle = candle_id
+
+                        signal, psar = get_flip(df)
+
+                        positions = await symbol_positions(
+                            connection
+                        )
+
+                        print(
+                            f"M1 closed={candle_id} "
+                            f"signal={signal} "
+                            f"psar={psar}",
+                            flush=True
+                        )
+
+                        # Iba jedna BTCUSD pozicia naraz.
+                        if (
+                            not positions
+                            and signal in ("BUY", "SELL")
+                        ):
+
+                            await open_trade(
+                                connection,
+                                signal,
+                                psar
+                            )
+
+            except Exception as e:
+
+                # Kratky vypadok MetaApi nezastavi bota.
+                print(
+                    "LOOP ERROR:",
+                    e,
+                    flush=True
                 )
 
-                # kazdu uzavretu M1 sviecku
-                # kontrolujeme iba raz
-                if candle_id != last_candle:
-
-                    last_candle = candle_id
-
-                    signal, psar = get_flip(df)
-
-                    positions = await symbol_positions(
-                        connection
-                    )
-
-                    print(
-                        f"M1 closed={candle_id} "
-                        f"signal={signal} "
-                        f"psar={psar}",
-                        flush=True
-                    )
-
-                    # iba jedna pozicia naraz
-                    if (
-                        not positions
-                        and signal in ("BUY", "SELL")
-                    ):
-
-                        await open_trade(
-                            connection,
-                            signal,
-                            psar
-                        )
+                await asyncio.sleep(5)
 
             await asyncio.sleep(
                 LOOP_SECONDS
@@ -617,19 +607,14 @@ async def main():
         except Exception as e:
 
             print(
-                "BOT ERROR:",
+                "CONNECTION ERROR:",
                 e,
                 flush=True
             )
 
             telegram(
-                f"RIObot ERROR\n{e}"
-            )
-
-            print(
-                f"Reconnect in "
-                f"{RECONNECT_SECONDS}s",
-                flush=True
+                "RIObot CONNECTION ERROR\n"
+                "MetaApi reconnecting..."
             )
 
             await asyncio.sleep(
