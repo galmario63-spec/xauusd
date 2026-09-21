@@ -27,7 +27,7 @@ BE_LOCK = 200.0
 LOOP_SECONDS = 10
 RECONNECT_SECONDS = 15
 
-COMMENT = "RIObot M1 PSAR flip BE"
+COMMENT = "RIObot M5 filter M1 entry BE"
 
 
 # =========================================================
@@ -71,10 +71,12 @@ def telegram(message):
         return
 
     try:
-        url = f"https://api.telegram.org/bot{T_TOKEN}/sendMessage"
         requests.post(
-            url,
-            data={"chat_id": T_CHAT, "text": message},
+            f"https://api.telegram.org/bot{T_TOKEN}/sendMessage",
+            data={
+                "chat_id": T_CHAT,
+                "text": message
+            },
             timeout=10
         )
     except Exception as e:
@@ -130,7 +132,10 @@ def psar_values(df):
 
             elif high[i] > ep:
                 ep = high[i]
-                af = min(af + PSAR_STEP, PSAR_MAX)
+                af = min(
+                    af + PSAR_STEP,
+                    PSAR_MAX
+                )
 
         else:
 
@@ -147,7 +152,10 @@ def psar_values(df):
 
             elif low[i] < ep:
                 ep = low[i]
-                af = min(af + PSAR_STEP, PSAR_MAX)
+                af = min(
+                    af + PSAR_STEP,
+                    PSAR_MAX
+                )
 
         psar[i] = value
         bull[i] = is_bull
@@ -156,14 +164,14 @@ def psar_values(df):
 
 
 # =========================================================
-# UZAVRETE M1 SVIECKY
+# UZAVRETE SVIECKY
 # =========================================================
 
-async def get_closed_m1(account):
+async def get_closed_candles(account, timeframe):
 
     candles = await account.get_historical_candles(
         SYMBOL,
-        "1m",
+        timeframe,
         None,
         120
     )
@@ -174,7 +182,10 @@ async def get_closed_m1(account):
     df = pd.DataFrame(candles)
 
     for col in ["open", "high", "low", "close"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
+        )
 
     df = df.dropna(
         subset=["open", "high", "low", "close"]
@@ -190,19 +201,38 @@ async def get_closed_m1(account):
 
 
 # =========================================================
-# PSAR FLIP
+# M5 SMER
 # =========================================================
 
-def get_flip(df):
+def get_m5_direction(df):
+
+    psar, bull = psar_values(df)
+
+    if not bull:
+        return None
+
+    if bull[-1]:
+        return "BUY"
+
+    return "SELL"
+
+
+# =========================================================
+# M1 PSAR FLIP
+# =========================================================
+
+def get_m1_flip(df):
 
     psar, bull = psar_values(df)
 
     if len(bull) < 2:
         return None, None
 
+    # PSAR zhora pod cenu = BUY
     if not bull[-2] and bull[-1]:
         return "BUY", float(psar[-1])
 
+    # PSAR zdola nad cenu = SELL
     if bull[-2] and not bull[-1]:
         return "SELL", float(psar[-1])
 
@@ -242,14 +272,30 @@ async def open_trade(connection, side, psar):
     if side == "BUY":
 
         entry = float(price_data["ask"])
-        sl = round(entry - SL_POINTS * point, digits)
-        tp = round(entry + TP_POINTS * point, digits)
+
+        sl = round(
+            entry - SL_POINTS * point,
+            digits
+        )
+
+        tp = round(
+            entry + TP_POINTS * point,
+            digits
+        )
 
     else:
 
         entry = float(price_data["bid"])
-        sl = round(entry + SL_POINTS * point, digits)
-        tp = round(entry - TP_POINTS * point, digits)
+
+        sl = round(
+            entry + SL_POINTS * point,
+            digits
+        )
+
+        tp = round(
+            entry - TP_POINTS * point,
+            digits
+        )
 
     try:
 
@@ -280,13 +326,23 @@ async def open_trade(connection, side, psar):
 
         await asyncio.sleep(1)
 
-        price_data = await connection.get_symbol_price(SYMBOL)
+        price_data = await connection.get_symbol_price(
+            SYMBOL
+        )
 
         if side == "BUY":
 
             entry = float(price_data["ask"])
-            sl = round(entry - SL_POINTS * point, digits)
-            tp = round(entry + TP_POINTS * point, digits)
+
+            sl = round(
+                entry - SL_POINTS * point,
+                digits
+            )
+
+            tp = round(
+                entry + TP_POINTS * point,
+                digits
+            )
 
             await connection.create_market_buy_order(
                 SYMBOL,
@@ -299,8 +355,16 @@ async def open_trade(connection, side, psar):
         else:
 
             entry = float(price_data["bid"])
-            sl = round(entry + SL_POINTS * point, digits)
-            tp = round(entry - TP_POINTS * point, digits)
+
+            sl = round(
+                entry + SL_POINTS * point,
+                digits
+            )
+
+            tp = round(
+                entry - TP_POINTS * point,
+                digits
+            )
 
             await connection.create_market_sell_order(
                 SYMBOL,
@@ -315,6 +379,7 @@ async def open_trade(connection, side, psar):
         f"Entry: {entry:.2f}\n"
         f"SL: {sl:.2f}\n"
         f"TP: {tp:.2f}\n"
+        f"M5 direction: {side}\n"
         f"M1 PSAR: {psar:.2f}"
     )
 
@@ -345,65 +410,89 @@ async def manage_be(connection):
         pos_id = p.get("id")
         side = p.get("type")
 
-        entry = float(p.get("openPrice", 0))
+        entry = float(
+            p.get("openPrice", 0)
+        )
+
         current_sl = p.get("stopLoss")
         tp = p.get("takeProfit")
 
-        if side == "POSITION_TYPE_BUY":
+        try:
 
-            current = float(price_data["bid"])
-            profit_points = (current - entry) / point
+            if side == "POSITION_TYPE_BUY":
 
-            be_sl = round(
-                entry + BE_LOCK * point,
-                digits
-            )
+                current = float(price_data["bid"])
 
-            sl_ok = (
-                current_sl is None
-                or float(current_sl) < be_sl
-            )
+                profit_points = (
+                    current - entry
+                ) / point
 
-            if profit_points >= BE_TRIGGER and sl_ok:
-
-                await connection.modify_position(
-                    pos_id,
-                    be_sl,
-                    tp
+                be_sl = round(
+                    entry + BE_LOCK * point,
+                    digits
                 )
 
-                telegram(
-                    f"BE BUY {SYMBOL}\n"
-                    f"SL -> {be_sl:.2f}"
+                sl_ok = (
+                    current_sl is None
+                    or float(current_sl) < be_sl
                 )
 
-        elif side == "POSITION_TYPE_SELL":
+                if (
+                    profit_points >= BE_TRIGGER
+                    and sl_ok
+                ):
 
-            current = float(price_data["ask"])
-            profit_points = (entry - current) / point
+                    await connection.modify_position(
+                        pos_id,
+                        be_sl,
+                        tp
+                    )
 
-            be_sl = round(
-                entry - BE_LOCK * point,
-                digits
+                    telegram(
+                        f"BE BUY {SYMBOL}\n"
+                        f"SL -> {be_sl:.2f}"
+                    )
+
+            elif side == "POSITION_TYPE_SELL":
+
+                current = float(price_data["ask"])
+
+                profit_points = (
+                    entry - current
+                ) / point
+
+                be_sl = round(
+                    entry - BE_LOCK * point,
+                    digits
+                )
+
+                sl_ok = (
+                    current_sl is None
+                    or float(current_sl) > be_sl
+                )
+
+                if (
+                    profit_points >= BE_TRIGGER
+                    and sl_ok
+                ):
+
+                    await connection.modify_position(
+                        pos_id,
+                        be_sl,
+                        tp
+                    )
+
+                    telegram(
+                        f"BE SELL {SYMBOL}\n"
+                        f"SL -> {be_sl:.2f}"
+                    )
+
+        except Exception as e:
+            print(
+                "BE error:",
+                e,
+                flush=True
             )
-
-            sl_ok = (
-                current_sl is None
-                or float(current_sl) > be_sl
-            )
-
-            if profit_points >= BE_TRIGGER and sl_ok:
-
-                await connection.modify_position(
-                    pos_id,
-                    be_sl,
-                    tp
-                )
-
-                telegram(
-                    f"BE SELL {SYMBOL}\n"
-                    f"SL -> {be_sl:.2f}"
-                )
 
 
 # =========================================================
@@ -412,106 +501,131 @@ async def manage_be(connection):
 
 async def bot_session(api):
 
-    account = await api.metatrader_account_api.get_account(M_ACC)
+    account = await api.metatrader_account_api.get_account(
+        M_ACC
+    )
 
     if account.state != "DEPLOYED":
         await account.deploy()
 
     connection = account.get_rpc_connection()
 
+    await connection.connect()
+    await connection.wait_synchronized()
+
+    telegram(
+        "RIObot START / CONNECTED\n"
+        f"{SYMBOL} lot {LOT_SIZE}\n"
+        "M5 PSAR direction\n"
+        "M1 PSAR FLIP entry\n"
+        f"TP {TP_POINTS} | SL {SL_POINTS}\n"
+        f"BE +{BE_TRIGGER} -> +{BE_LOCK}"
+    )
+
+    last_m1_candle = None
+
     try:
-
-        print("Connecting to MetaApi...", flush=True)
-
-        await connection.connect()
-        await connection.wait_synchronized()
-
-        print("MetaApi synchronized", flush=True)
-
-        telegram(
-            "RIObot START / CONNECTED\n"
-            f"{SYMBOL} lot {LOT_SIZE}\n"
-            "M1 PSAR FLIP entry\n"
-            "PSAR trailing OFF\n"
-            f"TP {TP_POINTS} | SL {SL_POINTS}\n"
-            f"BE +{BE_TRIGGER} -> +{BE_LOCK}"
-        )
-
-        last_candle = None
 
         while True:
 
             try:
 
+                # BREAK EVEN
                 await manage_be(connection)
 
-                df = await get_closed_m1(account)
+                # M1 + M5
+                m1 = await get_closed_candles(
+                    account,
+                    "1m"
+                )
 
-                if df is not None and len(df) >= 10:
+                m5 = await get_closed_candles(
+                    account,
+                    "5m"
+                )
+
+                if (
+                    m1 is not None
+                    and m5 is not None
+                ):
 
                     candle_id = str(
-                        df.iloc[-1].get("time")
+                        m1.iloc[-1].get("time")
                     )
 
-                    if candle_id != last_candle:
+                    if candle_id != last_m1_candle:
 
-                        last_candle = candle_id
+                        last_m1_candle = candle_id
 
-                        signal, psar = get_flip(df)
+                        # M5 urci smer
+                        m5_direction = get_m5_direction(
+                            m5
+                        )
+
+                        # M1 hlada presny PSAR flip
+                        m1_signal, psar = get_m1_flip(
+                            m1
+                        )
 
                         positions = await symbol_positions(
                             connection
                         )
 
                         print(
-                            f"M1 closed={candle_id} "
-                            f"signal={signal} "
-                            f"psar={psar}",
+                            f"M1={candle_id} "
+                            f"M5={m5_direction} "
+                            f"M1_FLIP={m1_signal} "
+                            f"PSAR={psar}",
                             flush=True
                         )
 
+                        # Obchod iba ked M5 a M1 suhlasia.
                         if (
                             not positions
-                            and signal in ("BUY", "SELL")
+                            and m1_signal in ("BUY", "SELL")
+                            and m1_signal == m5_direction
                         ):
 
                             await open_trade(
                                 connection,
-                                signal,
+                                m1_signal,
                                 psar
                             )
 
-                await asyncio.sleep(LOOP_SECONDS)
-
             except Exception as e:
 
-                # Dolezite:
-                # pri chybe websocketu nepouzivame
-                # stare pokazene spojenie.
                 print(
-                    "LOOP ERROR - RECONNECT:",
+                    "LOOP ERROR:",
                     e,
                     flush=True
                 )
 
-                raise
+                await asyncio.sleep(5)
+
+            await asyncio.sleep(
+                LOOP_SECONDS
+            )
 
     finally:
 
         try:
             await connection.close()
+
         except Exception:
             pass
 
 
 # =========================================================
-# MAIN + AUTOMATICKY RECONNECT
+# MAIN + RECONNECT
 # =========================================================
 
 async def main():
 
     if not M_TOKEN or not M_ACC:
-        raise RuntimeError("Missing M_TOKEN or M_ACC")
+
+        raise RuntimeError(
+            "Missing M_TOKEN or M_ACC"
+        )
 
     keep_alive()
 
@@ -532,11 +646,13 @@ async def main():
             )
 
             telegram(
-                "RIObot: MetaApi connection lost.\n"
-                f"Reconnect za {RECONNECT_SECONDS}s..."
+                "RIObot CONNECTION ERROR\n"
+                "MetaApi reconnecting..."
             )
 
-            await asyncio.sleep(RECONNECT_SECONDS)
+            await asyncio.sleep(
+                RECONNECT_SECONDS
+            )
 
 
 if __name__ == "__main__":
