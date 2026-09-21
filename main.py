@@ -1,554 +1,351 @@
 import asyncio
 import os
-import traceback
-from flask import Flask
 from threading import Thread
-
 import pandas as pd
 import requests
+from flask import Flask
 from metaapi_cloud_sdk import MetaApi
 
-
-# =========================================================
-# NASTAVENIA
-# =========================================================
-
 SYMBOL = "BTCUSD"
-
-# CENTOVY UCET
 LOT_SIZE = 0.30
 
-# PARABOLIC SAR
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
-# TP / SL 1:1
 TP_POINTS = 1500.0
 SL_POINTS = 1500.0
 
-# BREAK EVEN
 BE_TRIGGER = 500.0
 BE_LOCK = 100.0
 
 LOOP_SECONDS = 10
 RECONNECT_SECONDS = 15
 
-COMMENT = "Riobot M1 PSAR ONLY"
-
-
-# =========================================================
-# ENV
-# =========================================================
+COMMENT = "Riobot 5M+1M PSAR"
 
 M_TOKEN = os.getenv("M_TOKEN")
 M_ACC = os.getenv("M_ACC")
-
 T_TOKEN = os.getenv("T_TOKEN")
 T_CHAT = os.getenv("T_CHAT")
-
-
-# =========================================================
-# FLASK / RENDER
-# =========================================================
 
 app = Flask(__name__)
 
 
 @app.route("/")
 def home():
-    return "RIObot M1 PSAR ONLY is running"
-
-
-def run_server():
-    port = int(os.getenv("PORT", "10000"))
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    return "RIObot running"
 
 
 def keep_alive():
     Thread(
-        target=run_server,
+        target=lambda: app.run(
+            host="0.0.0.0",
+            port=int(os.getenv("PORT", "10000"))
+        ),
         daemon=True
     ).start()
 
 
-# =========================================================
-# TELEGRAM
-# =========================================================
-
-def telegram(message):
-
-    if not T_TOKEN or not T_CHAT:
-        print(message)
-        return
-
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{T_TOKEN}/sendMessage",
-            data={
-                "chat_id": T_CHAT,
-                "text": message
-            },
-            timeout=10
-        )
-
-    except Exception as e:
-        print("Telegram error:", e)
+def telegram(msg):
+    if T_TOKEN and T_CHAT:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{T_TOKEN}/sendMessage",
+                data={"chat_id": T_CHAT, "text": msg},
+                timeout=10
+            )
+        except Exception as e:
+            print("Telegram:", e)
 
 
-# =========================================================
-# PARABOLIC SAR
-# =========================================================
-
-def calculate_psar(df):
+def psar(df):
+    h = df.high.astype(float).tolist()
+    l = df.low.astype(float).tolist()
+    c = df.close.astype(float).tolist()
 
     if len(df) < 5:
-        raise ValueError("Too few candles for PSAR")
+        raise ValueError("Malo dat pre PSAR")
 
-    high = df["high"].astype(float).tolist()
-    low = df["low"].astype(float).tolist()
-    close = df["close"].astype(float).tolist()
-
-    psar = [0.0] * len(df)
-
-    bull = close[1] >= close[0]
-
+    p = [0.0] * len(df)
+    bull = c[1] >= c[0]
     af = PSAR_STEP
 
-    if bull:
-        ep = high[0]
-        psar[0] = low[0]
-
-    else:
-        ep = low[0]
-        psar[0] = high[0]
+    ep = h[0] if bull else l[0]
+    p[0] = l[0] if bull else h[0]
 
     for i in range(1, len(df)):
-
-        psar[i] = (
-            psar[i - 1]
-            + af * (ep - psar[i - 1])
-        )
+        p[i] = p[i - 1] + af * (ep - p[i - 1])
 
         if bull:
+            p[i] = (
+                min(p[i], l[i - 1], l[i - 2])
+                if i >= 2
+                else min(p[i], l[i - 1])
+            )
 
-            if i >= 2:
-                psar[i] = min(
-                    psar[i],
-                    low[i - 1],
-                    low[i - 2]
-                )
-
-            else:
-                psar[i] = min(
-                    psar[i],
-                    low[i - 1]
-                )
-
-            if low[i] < psar[i]:
-
+            if l[i] < p[i]:
                 bull = False
-
-                psar[i] = ep
-
-                ep = low[i]
-
+                p[i] = ep
+                ep = l[i]
                 af = PSAR_STEP
 
-            elif high[i] > ep:
-
-                ep = high[i]
-
-                af = min(
-                    af + PSAR_STEP,
-                    PSAR_MAX
-                )
+            elif h[i] > ep:
+                ep = h[i]
+                af = min(af + PSAR_STEP, PSAR_MAX)
 
         else:
+            p[i] = (
+                max(p[i], h[i - 1], h[i - 2])
+                if i >= 2
+                else max(p[i], h[i - 1])
+            )
 
-            if i >= 2:
-                psar[i] = max(
-                    psar[i],
-                    high[i - 1],
-                    high[i - 2]
-                )
-
-            else:
-                psar[i] = max(
-                    psar[i],
-                    high[i - 1]
-                )
-
-            if high[i] > psar[i]:
-
+            if h[i] > p[i]:
                 bull = True
-
-                psar[i] = ep
-
-                ep = high[i]
-
+                p[i] = ep
+                ep = h[i]
                 af = PSAR_STEP
 
-            elif low[i] < ep:
+            elif l[i] < ep:
+                ep = l[i]
+                af = min(af + PSAR_STEP, PSAR_MAX)
 
-                ep = low[i]
-
-                af = min(
-                    af + PSAR_STEP,
-                    PSAR_MAX
-                )
-
-    return float(psar[-1]), bull
+    return p[-1], bull
 
 
-# =========================================================
-# M1 SVIECKY
-# =========================================================
-
-async def get_closed_candles(account):
-
-    candles = await account.get_historical_candles(
-        SYMBOL,
-        "1m",
-        None,
-        100
+async def candles(account, tf):
+    data = await account.get_historical_candles(
+        SYMBOL, tf, None, 100
     )
 
-    if not candles:
-        raise RuntimeError("No M1 candle data")
+    if not data or len(data) < 11:
+        raise RuntimeError("Malo dat " + tf)
 
-    df = pd.DataFrame(candles)
+    df = pd.DataFrame(data)
+    df = df.sort_values("time").reset_index(drop=True)
 
-    df = df.sort_values(
-        "time"
-    ).reset_index(drop=True)
-
-    for col in (
-        "open",
-        "high",
-        "low",
-        "close"
-    ):
-
+    for col in ("open", "high", "low", "close"):
         df[col] = pd.to_numeric(
             df[col],
             errors="coerce"
         )
 
     df = df.dropna(
-        subset=[
-            "open",
-            "high",
-            "low",
-            "close"
-        ]
+        subset=["open", "high", "low", "close"]
     )
 
-    # Odstranime aktualnu rozpracovanu sviecku
-    df = df.iloc[:-1].copy()
-
-    if len(df) < 10:
-        raise RuntimeError(
-            "Too few closed M1 candles"
-        )
-
-    return df
+    # iba uzavrete sviecky
+    return df.iloc[:-1].copy()
 
 
-# =========================================================
-# SYMBOL
-# =========================================================
-
-async def symbol_data(connection):
-
-    spec = await connection.get_symbol_specification(
-        SYMBOL
-    )
-
-    if not spec:
-        raise RuntimeError(
-            f"Symbol {SYMBOL} not found"
-        )
-
-    point = float(
-        spec.get("tickSize") or 0.01
-    )
-
-    digits = int(
-        spec.get("digits", 2)
-    )
-
-    return point, digits
-
-
-# =========================================================
-# POZICIE
-# =========================================================
-
-async def positions(connection):
-
-    all_positions = await connection.get_positions()
+async def positions(conn):
+    all_pos = await conn.get_positions()
 
     return [
-        p for p in all_positions
+        p for p in all_pos
         if p.get("symbol") == SYMBOL
     ]
 
 
-# =========================================================
-# BREAK EVEN
-# =========================================================
+async def spec(conn):
+    s = await conn.get_symbol_specification(SYMBOL)
 
-async def manage_break_even(connection):
+    if not s:
+        raise RuntimeError("Symbol nenajdeny")
 
-    pos = await positions(connection)
+    point = float(s.get("tickSize") or 0.01)
+    digits = int(s.get("digits", 2))
+
+    return point, digits
+
+
+async def protect(conn):
+    pos = await positions(conn)
 
     if not pos:
         return
 
-    point, digits = await symbol_data(
-        connection
-    )
-
-    price = await connection.get_symbol_price(
-        SYMBOL
-    )
+    point, digits = await spec(conn)
+    price = await conn.get_symbol_price(SYMBOL)
 
     bid = float(price["bid"])
     ask = float(price["ask"])
 
     for p in pos:
-
-        side = p["type"]
-
-        open_price = float(
-            p["openPrice"]
-        )
-
-        current_sl = float(
-            p.get("stopLoss") or 0
-        )
-
+        op = float(p["openPrice"])
+        old_sl = float(p.get("stopLoss") or 0)
         tp = p.get("takeProfit")
 
-        # BUY
-        if side == "POSITION_TYPE_BUY":
+        if p["type"] == "POSITION_TYPE_BUY":
+            profit = (bid - op) / point
 
-            profit = (
-                bid - open_price
-            ) / point
-
-            new_sl = round(
-                open_price
-                + BE_LOCK * point,
-                digits
-            )
-
-            if (
-                profit >= BE_TRIGGER
-                and (
-                    current_sl == 0
-                    or current_sl < new_sl
-                )
-            ):
-
-                await connection.modify_position(
-                    p["id"],
-                    new_sl,
-                    tp
+            if profit >= BE_TRIGGER:
+                new_sl = round(
+                    op + BE_LOCK * point,
+                    digits
                 )
 
-                telegram(
-                    f"BREAK EVEN BUY {SYMBOL}\n"
-                    f"SL -> {new_sl}"
+                if old_sl == 0 or new_sl > old_sl:
+                    await conn.modify_position(
+                        p["id"],
+                        new_sl,
+                        tp
+                    )
+
+        elif p["type"] == "POSITION_TYPE_SELL":
+            profit = (op - ask) / point
+
+            if profit >= BE_TRIGGER:
+                new_sl = round(
+                    op - BE_LOCK * point,
+                    digits
                 )
 
-        # SELL
-        elif side == "POSITION_TYPE_SELL":
-
-            profit = (
-                open_price - ask
-            ) / point
-
-            new_sl = round(
-                open_price
-                - BE_LOCK * point,
-                digits
-            )
-
-            if (
-                profit >= BE_TRIGGER
-                and (
-                    current_sl == 0
-                    or current_sl > new_sl
-                )
-            ):
-
-                await connection.modify_position(
-                    p["id"],
-                    new_sl,
-                    tp
-                )
-
-                telegram(
-                    f"BREAK EVEN SELL {SYMBOL}\n"
-                    f"SL -> {new_sl}"
-                )
+                if old_sl == 0 or new_sl < old_sl:
+                    await conn.modify_position(
+                        p["id"],
+                        new_sl,
+                        tp
+                    )
 
 
-# =========================================================
-# PSAR TRAILING
-# =========================================================
+async def order(conn, side, psar_value):
+    point, digits = await spec(conn)
+    price = await conn.get_symbol_price(SYMBOL)
 
-async def manage_psar_trailing(
-    connection,
-    account
-):
-
-    pos = await positions(connection)
-
-    if not pos:
-        return
-
-    df = await get_closed_candles(
-        account
-    )
-
-    psar, _ = calculate_psar(df)
-
-    point, digits = await symbol_data(
-        connection
-    )
-
-    price = await connection.get_symbol_price(
-        SYMBOL
-    )
-
-    bid = float(price["bid"])
     ask = float(price["ask"])
+    bid = float(price["bid"])
 
-    for p in pos:
+    entry = ask if side == "BUY" else bid
 
-        side = p["type"]
-
-        open_price = float(
-            p["openPrice"]
+    if side == "BUY":
+        sl = round(
+            entry - SL_POINTS * point,
+            digits
+        )
+        tp = round(
+            entry + TP_POINTS * point,
+            digits
+        )
+    else:
+        sl = round(
+            entry + SL_POINTS * point,
+            digits
+        )
+        tp = round(
+            entry - TP_POINTS * point,
+            digits
         )
 
-        current_sl = float(
-            p.get("stopLoss") or 0
+    options = {"comment": COMMENT}
+
+    if side == "BUY":
+        result = await conn.create_market_buy_order(
+            SYMBOL,
+            LOT_SIZE,
+            sl,
+            tp,
+            options
+        )
+    else:
+        result = await conn.create_market_sell_order(
+            SYMBOL,
+            LOT_SIZE,
+            sl,
+            tp,
+            options
         )
 
-        tp = p.get("takeProfit")
-
-        # BUY
-        if side == "POSITION_TYPE_BUY":
-
-            profit = (
-                bid - open_price
-            ) / point
-
-            if profit < BE_TRIGGER:
-                continue
-
-            floor = (
-                open_price
-                + BE_LOCK * point
-            )
-
-            new_sl = round(
-                max(psar, floor),
-                digits
-            )
-
-            if (
-                new_sl < bid
-                and (
-                    current_sl == 0
-                    or new_sl > current_sl
-                )
-            ):
-
-                await connection.modify_position(
-                    p["id"],
-                    new_sl,
-                    tp
-                )
-
-        # SELL
-        elif side == "POSITION_TYPE_SELL":
-
-            profit = (
-                open_price - ask
-            ) / point
-
-            if profit < BE_TRIGGER:
-                continue
-
-            ceiling = (
-                open_price
-                - BE_LOCK * point
-            )
-
-            new_sl = round(
-                min(psar, ceiling),
-                digits
-            )
-
-            if (
-                new_sl > ask
-                and (
-                    current_sl == 0
-                    or new_sl < current_sl
-                )
-            ):
-
-                await connection.modify_position(
-                    p["id"],
-                    new_sl,
-                    tp
-                )
-
-
-# =========================================================
-# OTVORENIE OBCHODU
-# =========================================================
-
-async def open_trade(
-    connection,
-    signal,
-    psar
-):
-
-    point, digits = await symbol_data(
-        connection
+    telegram(
+        f"{side} {SYMBOL} otvoreny\n"
+        f"Entry {entry}\n"
+        f"SL {sl}\n"
+        f"TP {tp}\n"
+        f"PSAR {psar_value:.2f}"
     )
 
-    for attempt in range(2):
+    print("ORDER:", result)
 
-        price = await connection.get_symbol_price(
-            SYMBOL
+
+async def session(api):
+    account = await (
+        api.metatrader_account_api.get_account(
+            M_ACC
         )
+    )
 
-        ask = float(price["ask"])
-        bid = float(price["bid"])
+    if account.state != "DEPLOYED":
+        await account.deploy()
+        await account.wait_deployed()
 
-        if signal == "BUY":
+    conn = account.get_rpc_connection()
 
-            entry = ask
+    print("Pripajam MetaApi...")
 
-            sl = round(
-                entry
-                - SL_POINTS * point,
-                digits
+    await conn.connect()
+    await conn.wait_synchronized()
+
+    print("MetaApi synchronizovane")
+
+    telegram(
+        f"RIObot START\n"
+        f"{SYMBOL} lot {LOT_SIZE}\n"
+        f"5M PSAR smer + M1 PSAR flip"
+    )
+
+    last_candle = None
+
+    try:
+        while True:
+            await protect(conn)
+
+            # 5M urcuje smer
+            df5 = await candles(account, "5m")
+            _, bull5 = psar(df5)
+
+            # 1M urcuje vstup
+            df1 = await candles(account, "1m")
+
+            _, previous_bull = psar(
+                df1.iloc[:-1]
             )
 
-            tp = round(
-                entry
-                + TP_POINTS * point,
-                digits
+            current_psar, current_bull = psar(
+                df1
             )
 
-                else:
+            signal = None
+
+            if (
+                bull5
+                and not previous_bull
+                and current_bull
+            ):
+                signal = "BUY"
+
+            elif (
+                not bull5
+                and previous_bull
+                and not current_bull
+            ):
+                signal = "SELL"
+
+            candle_id = str(
+                df1.iloc[-1]["time"]
+            )
+
+            print(
+                SYMBOL,
+                "5M:",
+                bull5,
+                "1M:",
+                current_bull,
+                "SIGNAL:",
+                signal
+            )
+
+            open_positions = await positions(conn)
+
+            if (
+                signal
+               
