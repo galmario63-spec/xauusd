@@ -15,19 +15,22 @@ from metaapi_cloud_sdk import MetaApi
 SYMBOL = "BTCUSD"
 LOT_SIZE = 0.30
 
+# PARABOLIC SAR M5
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
+# SL / TP
 TP_POINTS = 3000.0
 SL_POINTS = 3000.0
 
+# BREAK EVEN
 BE_TRIGGER = 1000.0
 BE_LOCK = 200.0
 
 LOOP_SECONDS = 10
 RECONNECT_SECONDS = 15
 
-COMMENT = "RIObot M5 filter M1 entry BE"
+COMMENT = "RIObot M5 PSAR flip BE"
 
 
 # =========================================================
@@ -50,7 +53,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "RIObot active"
+    return "RIObot M5 active"
 
 
 def run_server():
@@ -67,18 +70,22 @@ def keep_alive():
 # =========================================================
 
 def telegram(message):
+
     if not T_TOKEN or not T_CHAT:
         return
 
     try:
+        url = f"https://api.telegram.org/bot{T_TOKEN}/sendMessage"
+
         requests.post(
-            f"https://api.telegram.org/bot{T_TOKEN}/sendMessage",
+            url,
             data={
                 "chat_id": T_CHAT,
                 "text": message
             },
             timeout=10
         )
+
     except Exception as e:
         print("Telegram error:", e, flush=True)
 
@@ -124,13 +131,16 @@ def psar_values(df):
             if i > 1:
                 value = min(value, low[i - 2])
 
+            # FLIP DO SELL
             if low[i] < value:
+
                 is_bull = False
                 value = ep
                 ep = low[i]
                 af = PSAR_STEP
 
             elif high[i] > ep:
+
                 ep = high[i]
                 af = min(
                     af + PSAR_STEP,
@@ -144,13 +154,16 @@ def psar_values(df):
             if i > 1:
                 value = max(value, high[i - 2])
 
+            # FLIP DO BUY
             if high[i] > value:
+
                 is_bull = True
                 value = ep
                 ep = high[i]
                 af = PSAR_STEP
 
             elif low[i] < ep:
+
                 ep = low[i]
                 af = min(
                     af + PSAR_STEP,
@@ -164,14 +177,14 @@ def psar_values(df):
 
 
 # =========================================================
-# UZAVRETE SVIECKY
+# UZAVRETE M5 SVIECKY
 # =========================================================
 
-async def get_closed_candles(account, timeframe):
+async def get_closed_m5(account):
 
     candles = await account.get_historical_candles(
         SYMBOL,
-        timeframe,
+        "5m",
         None,
         120
     )
@@ -182,6 +195,7 @@ async def get_closed_candles(account, timeframe):
     df = pd.DataFrame(candles)
 
     for col in ["open", "high", "low", "close"]:
+
         df[col] = pd.to_numeric(
             df[col],
             errors="coerce"
@@ -194,45 +208,31 @@ async def get_closed_candles(account, timeframe):
     if len(df) < 10:
         return None
 
-    # Posledna sviecka sa este tvori.
+    # Posledna M5 sviecka sa este tvori.
+    # Robot ju preto ignoruje.
     df = df.iloc[:-1].copy()
 
     return df.reset_index(drop=True)
 
 
 # =========================================================
-# M5 SMER
+# M5 PSAR FLIP
 # =========================================================
 
-def get_m5_direction(df):
-
-    psar, bull = psar_values(df)
-
-    if not bull:
-        return None
-
-    if bull[-1]:
-        return "BUY"
-
-    return "SELL"
-
-
-# =========================================================
-# M1 PSAR FLIP
-# =========================================================
-
-def get_m1_flip(df):
+def get_flip(df):
 
     psar, bull = psar_values(df)
 
     if len(bull) < 2:
         return None, None
 
-    # PSAR zhora pod cenu = BUY
+    # Bodky boli NAD cenou
+    # a presli POD cenu = BUY
     if not bull[-2] and bull[-1]:
         return "BUY", float(psar[-1])
 
-    # PSAR zdola nad cenu = SELL
+    # Bodky boli POD cenou
+    # a presli NAD cenu = SELL
     if bull[-2] and not bull[-1]:
         return "SELL", float(psar[-1])
 
@@ -259,10 +259,17 @@ async def symbol_positions(connection):
 
 async def open_trade(connection, side, psar):
 
-    spec = await connection.get_symbol_specification(SYMBOL)
-    price_data = await connection.get_symbol_price(SYMBOL)
+    spec = await connection.get_symbol_specification(
+        SYMBOL
+    )
 
-    digits = int(spec.get("digits", 2))
+    price_data = await connection.get_symbol_price(
+        SYMBOL
+    )
+
+    digits = int(
+        spec.get("digits", 2)
+    )
 
     point = float(
         spec.get("tickSize")
@@ -321,6 +328,8 @@ async def open_trade(connection, side, psar):
 
     except Exception as first_error:
 
+        # Pri rychlom pohybe ceny moze broker
+        # odmietnut povodne SL/TP.
         if "Invalid stops" not in str(first_error):
             raise
 
@@ -379,8 +388,7 @@ async def open_trade(connection, side, psar):
         f"Entry: {entry:.2f}\n"
         f"SL: {sl:.2f}\n"
         f"TP: {tp:.2f}\n"
-        f"M5 direction: {side}\n"
-        f"M1 PSAR: {psar:.2f}"
+        f"M5 PSAR: {psar:.2f}"
     )
 
 
@@ -395,10 +403,17 @@ async def manage_be(connection):
     if not positions:
         return
 
-    spec = await connection.get_symbol_specification(SYMBOL)
-    price_data = await connection.get_symbol_price(SYMBOL)
+    spec = await connection.get_symbol_specification(
+        SYMBOL
+    )
 
-    digits = int(spec.get("digits", 2))
+    price_data = await connection.get_symbol_price(
+        SYMBOL
+    )
+
+    digits = int(
+        spec.get("digits", 2)
+    )
 
     point = float(
         spec.get("tickSize")
@@ -419,9 +434,12 @@ async def manage_be(connection):
 
         try:
 
+            # BUY
             if side == "POSITION_TYPE_BUY":
 
-                current = float(price_data["bid"])
+                current = float(
+                    price_data["bid"]
+                )
 
                 profit_points = (
                     current - entry
@@ -453,9 +471,12 @@ async def manage_be(connection):
                         f"SL -> {be_sl:.2f}"
                     )
 
+            # SELL
             elif side == "POSITION_TYPE_SELL":
 
-                current = float(price_data["ask"])
+                current = float(
+                    price_data["ask"]
+                )
 
                 profit_points = (
                     entry - current
@@ -488,6 +509,7 @@ async def manage_be(connection):
                     )
 
         except Exception as e:
+
             print(
                 "BE error:",
                 e,
@@ -516,13 +538,13 @@ async def bot_session(api):
     telegram(
         "RIObot START / CONNECTED\n"
         f"{SYMBOL} lot {LOT_SIZE}\n"
-        "M5 PSAR direction\n"
-        "M1 PSAR FLIP entry\n"
+        "M5 PSAR FLIP entry\n"
+        "M1 filter OFF\n"
         f"TP {TP_POINTS} | SL {SL_POINTS}\n"
         f"BE +{BE_TRIGGER} -> +{BE_LOCK}"
     )
 
-    last_m1_candle = None
+    last_candle = None
 
     try:
 
@@ -530,65 +552,46 @@ async def bot_session(api):
 
             try:
 
-                # BREAK EVEN
+                # Kontrola Break Even
                 await manage_be(connection)
 
-                # M1 + M5
-                m1 = await get_closed_candles(
-                    account,
-                    "1m"
-                )
+                # Nacitanie M5
+                df = await get_closed_m5(account)
 
-                m5 = await get_closed_candles(
-                    account,
-                    "5m"
-                )
-
-                if (
-                    m1 is not None
-                    and m5 is not None
-                ):
+                if df is not None and len(df) >= 10:
 
                     candle_id = str(
-                        m1.iloc[-1].get("time")
+                        df.iloc[-1].get("time")
                     )
 
-                    if candle_id != last_m1_candle:
+                    # Kazdu uzavretu M5 sviecku
+                    # spracujeme iba raz.
+                    if candle_id != last_candle:
 
-                        last_m1_candle = candle_id
+                        last_candle = candle_id
 
-                        # M5 urci smer
-                        m5_direction = get_m5_direction(
-                            m5
-                        )
-
-                        # M1 hlada presny PSAR flip
-                        m1_signal, psar = get_m1_flip(
-                            m1
-                        )
+                        signal, psar = get_flip(df)
 
                         positions = await symbol_positions(
                             connection
                         )
 
                         print(
-                            f"M1={candle_id} "
-                            f"M5={m5_direction} "
-                            f"M1_FLIP={m1_signal} "
+                            f"M5={candle_id} "
+                            f"FLIP={signal} "
                             f"PSAR={psar}",
                             flush=True
                         )
 
-                        # Obchod iba ked M5 a M1 suhlasia.
+                        # Iba jedna BTCUSD pozicia naraz.
                         if (
                             not positions
-                            and m1_signal in ("BUY", "SELL")
-                            and m1_signal == m5_direction
+                            and signal in ("BUY", "SELL")
                         ):
 
                             await open_trade(
                                 connection,
-                                m1_signal,
+                                signal,
                                 psar
                             )
 
@@ -646,8 +649,8 @@ async def main():
             )
 
             telegram(
-                "RIObot CONNECTION ERROR\n"
-                "MetaApi reconnecting..."
+                "RIObot: MetaApi connection lost.\n"
+                f"Reconnect za {RECONNECT_SECONDS}s..."
             )
 
             await asyncio.sleep(
