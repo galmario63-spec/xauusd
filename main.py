@@ -27,6 +27,10 @@ BE_LOCK = 100.0
 LOOP_SECONDS = 10
 RECONNECT_SECONDS = 15
 
+# Po kolkych po sebe iducich connection chybach
+# spravime uplny reconnect
+MAX_CONNECTION_ERRORS = 2
+
 COMMENT = "RIObot GOLD M5 PSAR BE"
 
 
@@ -55,11 +59,18 @@ def home():
 
 def run_server():
     port = int(os.getenv("PORT", "10000"))
-    app.run(host="0.0.0.0", port=port)
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        use_reloader=False
+    )
 
 
 def keep_alive():
-    Thread(target=run_server, daemon=True).start()
+    Thread(
+        target=run_server,
+        daemon=True
+    ).start()
 
 
 # =========================================================
@@ -80,7 +91,37 @@ def telegram(message):
             timeout=10
         )
     except Exception as e:
-        print("TELEGRAM ERROR:", e, flush=True)
+        print(
+            "TELEGRAM ERROR:",
+            e,
+            flush=True
+        )
+
+
+# =========================================================
+# CONNECTION ERROR DETECTION
+# =========================================================
+
+def is_connection_error(error):
+    text = str(error).lower()
+
+    connection_words = (
+        "timed out",
+        "timeout",
+        "failed to connect",
+        "socket",
+        "websocket",
+        "not connected",
+        "connection",
+        "disconnected",
+        "synchronize",
+        "synchronization"
+    )
+
+    return any(
+        word in text
+        for word in connection_words
+    )
 
 
 # =========================================================
@@ -113,13 +154,22 @@ def psar_values(df):
     bull[0] = is_bull
 
     for i in range(1, n):
-        value = psar[i - 1] + af * (ep - psar[i - 1])
+        value = (
+            psar[i - 1]
+            + af * (ep - psar[i - 1])
+        )
 
         if is_bull:
-            value = min(value, low[i - 1])
+            value = min(
+                value,
+                low[i - 1]
+            )
 
             if i > 1:
-                value = min(value, low[i - 2])
+                value = min(
+                    value,
+                    low[i - 2]
+                )
 
             if low[i] < value:
                 is_bull = False
@@ -129,13 +179,23 @@ def psar_values(df):
 
             elif high[i] > ep:
                 ep = high[i]
-                af = min(af + PSAR_STEP, PSAR_MAX)
+
+                af = min(
+                    af + PSAR_STEP,
+                    PSAR_MAX
+                )
 
         else:
-            value = max(value, high[i - 1])
+            value = max(
+                value,
+                high[i - 1]
+            )
 
             if i > 1:
-                value = max(value, high[i - 2])
+                value = max(
+                    value,
+                    high[i - 2]
+                )
 
             if high[i] > value:
                 is_bull = True
@@ -145,7 +205,11 @@ def psar_values(df):
 
             elif low[i] < ep:
                 ep = low[i]
-                af = min(af + PSAR_STEP, PSAR_MAX)
+
+                af = min(
+                    af + PSAR_STEP,
+                    PSAR_MAX
+                )
 
         psar[i] = value
         bull[i] = is_bull
@@ -170,20 +234,31 @@ async def get_closed_m5(account):
 
     df = pd.DataFrame(candles)
 
-    for col in ["open", "high", "low", "close"]:
+    for col in [
+        "open",
+        "high",
+        "low",
+        "close"
+    ]:
         df[col] = pd.to_numeric(
             df[col],
             errors="coerce"
         )
 
     df = df.dropna(
-        subset=["open", "high", "low", "close"]
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close"
+        ]
     ).reset_index(drop=True)
 
     if len(df) < 10:
         return None
 
-    # Ignorujeme prave otvorenu M5 sviecku
+    # Posledna sviecka moze byt este otvorena
+    # preto ju nepouzivame
     df = df.iloc[:-1].copy()
 
     return df.reset_index(drop=True)
@@ -200,14 +275,29 @@ def get_flip(df):
         return None, None
 
     # PSAR NAD -> POD cenu = BUY
-    if not bull[-2] and bull[-1]:
-        return "BUY", float(psar[-1])
+    if (
+        not bull[-2]
+        and bull[-1]
+    ):
+        return (
+            "BUY",
+            float(psar[-1])
+        )
 
     # PSAR POD -> NAD cenu = SELL
-    if bull[-2] and not bull[-1]:
-        return "SELL", float(psar[-1])
+    if (
+        bull[-2]
+        and not bull[-1]
+    ):
+        return (
+            "SELL",
+            float(psar[-1])
+        )
 
-    return None, float(psar[-1])
+    return (
+        None,
+        float(psar[-1])
+    )
 
 
 # =========================================================
@@ -218,8 +308,9 @@ async def symbol_positions(connection):
     positions = await connection.get_positions()
 
     return [
-        p for p in positions
-        if p.get("symbol") == SYMBOL
+        position
+        for position in positions
+        if position.get("symbol") == SYMBOL
     ]
 
 
@@ -236,48 +327,66 @@ async def market_info(connection):
         SYMBOL
     )
 
-    digits = int(spec.get("digits", 2))
+    digits = int(
+        spec.get("digits", 2)
+    )
 
     point = float(
         spec.get("tickSize")
         or (10 ** (-digits))
     )
 
-    return price, digits, point
+    return (
+        price,
+        digits,
+        point
+    )
 
 
 # =========================================================
 # OTVORENIE OBCHODU
 # =========================================================
 
-async def open_trade(connection, side, psar):
+async def open_trade(
+    connection,
+    side,
+    psar
+):
     price, digits, point = await market_info(
         connection
     )
 
     if side == "BUY":
-        entry = float(price["ask"])
+        entry = float(
+            price["ask"]
+        )
 
         sl = round(
-            entry - SL_POINTS * point,
+            entry
+            - SL_POINTS * point,
             digits
         )
 
         tp = round(
-            entry + TP_POINTS * point,
+            entry
+            + TP_POINTS * point,
             digits
         )
 
     else:
-        entry = float(price["bid"])
+        entry = float(
+            price["bid"]
+        )
 
         sl = round(
-            entry + SL_POINTS * point,
+            entry
+            + SL_POINTS * point,
             digits
         )
 
         tp = round(
-            entry - TP_POINTS * point,
+            entry
+            - TP_POINTS * point,
             digits
         )
 
@@ -288,7 +397,9 @@ async def open_trade(connection, side, psar):
                 LOT_SIZE,
                 sl,
                 tp,
-                {"comment": COMMENT}
+                {
+                    "comment": COMMENT
+                }
             )
 
         else:
@@ -297,15 +408,26 @@ async def open_trade(connection, side, psar):
                 LOT_SIZE,
                 sl,
                 tp,
-                {"comment": COMMENT}
+                {
+                    "comment": COMMENT
+                }
             )
 
     except Exception as error:
-        # Pri Invalid stops obnovime cenu a skusime este raz
-        if "Invalid stops" not in str(error):
+        # Connection chybu posleme vyssie,
+        # aby sa spustil reconnect.
+        if is_connection_error(error):
             raise
 
-        print("INVALID STOPS - RETRY", flush=True)
+        # Invalid stops = obnovime cenu
+        # a skusime obchod este raz.
+        if "invalid stops" not in str(error).lower():
+            raise
+
+        print(
+            "INVALID STOPS - RETRY",
+            flush=True
+        )
 
         await asyncio.sleep(1)
 
@@ -314,15 +436,19 @@ async def open_trade(connection, side, psar):
         )
 
         if side == "BUY":
-            entry = float(price["ask"])
+            entry = float(
+                price["ask"]
+            )
 
             sl = round(
-                entry - SL_POINTS * point,
+                entry
+                - SL_POINTS * point,
                 digits
             )
 
             tp = round(
-                entry + TP_POINTS * point,
+                entry
+                + TP_POINTS * point,
                 digits
             )
 
@@ -331,19 +457,25 @@ async def open_trade(connection, side, psar):
                 LOT_SIZE,
                 sl,
                 tp,
-                {"comment": COMMENT}
+                {
+                    "comment": COMMENT
+                }
             )
 
         else:
-            entry = float(price["bid"])
+            entry = float(
+                price["bid"]
+            )
 
             sl = round(
-                entry + SL_POINTS * point,
+                entry
+                + SL_POINTS * point,
                 digits
             )
 
             tp = round(
-                entry - TP_POINTS * point,
+                entry
+                - TP_POINTS * point,
                 digits
             )
 
@@ -352,7 +484,9 @@ async def open_trade(connection, side, psar):
                 LOT_SIZE,
                 sl,
                 tp,
-                {"comment": COMMENT}
+                {
+                    "comment": COMMENT
+                }
             )
 
     print(
@@ -365,7 +499,7 @@ async def open_trade(connection, side, psar):
     )
 
     telegram(
-        f"RIObot GOLD\n\n"
+        "RIObot GOLD\n\n"
         f"{side} {SYMBOL}\n"
         f"Lot: {LOT_SIZE}\n"
         f"Entry: {entry:.2f}\n"
@@ -392,99 +526,105 @@ async def manage_be(connection):
     )
 
     for position in positions:
-        try:
-            position_id = position.get("id")
-            side = position.get("type")
+        position_id = position.get("id")
+        side = position.get("type")
 
-            entry = float(
-                position.get("openPrice", 0)
+        entry = float(
+            position.get(
+                "openPrice",
+                0
+            )
+        )
+
+        current_sl = position.get(
+            "stopLoss"
+        )
+
+        tp = position.get(
+            "takeProfit"
+        )
+
+        # BUY
+        if side == "POSITION_TYPE_BUY":
+            current = float(
+                price["bid"]
             )
 
-            current_sl = position.get("stopLoss")
-            tp = position.get("takeProfit")
+            profit_points = (
+                current - entry
+            ) / point
 
-            # BUY
-            if side == "POSITION_TYPE_BUY":
-                current = float(price["bid"])
-
-                profit_points = (
-                    current - entry
-                ) / point
-
-                new_sl = round(
-                    entry + BE_LOCK * point,
-                    digits
-                )
-
-                sl_ok = (
-                    current_sl is None
-                    or float(current_sl) < new_sl
-                )
-
-                if (
-                    profit_points >= BE_TRIGGER
-                    and sl_ok
-                ):
-                    await connection.modify_position(
-                        position_id,
-                        new_sl,
-                        tp
-                    )
-
-                    print(
-                        f"BE BUY -> {new_sl}",
-                        flush=True
-                    )
-
-                    telegram(
-                        f"BE BUY {SYMBOL}\n"
-                        f"SL -> {new_sl:.2f}"
-                    )
-
-            # SELL
-            elif side == "POSITION_TYPE_SELL":
-                current = float(price["ask"])
-
-                profit_points = (
-                    entry - current
-                ) / point
-
-                new_sl = round(
-                    entry - BE_LOCK * point,
-                    digits
-                )
-
-                sl_ok = (
-                    current_sl is None
-                    or float(current_sl) > new_sl
-                )
-
-                if (
-                    profit_points >= BE_TRIGGER
-                    and sl_ok
-                ):
-                    await connection.modify_position(
-                        position_id,
-                        new_sl,
-                        tp
-                    )
-
-                    print(
-                        f"BE SELL -> {new_sl}",
-                        flush=True
-                    )
-
-                    telegram(
-                        f"BE SELL {SYMBOL}\n"
-                        f"SL -> {new_sl:.2f}"
-                    )
-
-        except Exception as e:
-            print(
-                "BE ERROR:",
-                e,
-                flush=True
+            new_sl = round(
+                entry
+                + BE_LOCK * point,
+                digits
             )
+
+            sl_ok = (
+                current_sl is None
+                or float(current_sl) < new_sl
+            )
+
+            if (
+                profit_points >= BE_TRIGGER
+                and sl_ok
+            ):
+                await connection.modify_position(
+                    position_id,
+                    new_sl,
+                    tp
+                )
+
+                print(
+                    f"BE BUY -> {new_sl}",
+                    flush=True
+                )
+
+                telegram(
+                    f"BE BUY {SYMBOL}\n"
+                    f"SL -> {new_sl:.2f}"
+                )
+
+        # SELL
+        elif side == "POSITION_TYPE_SELL":
+            current = float(
+                price["ask"]
+            )
+
+            profit_points = (
+                entry - current
+            ) / point
+
+            new_sl = round(
+                entry
+                - BE_LOCK * point,
+                digits
+            )
+
+            sl_ok = (
+                current_sl is None
+                or float(current_sl) > new_sl
+            )
+
+            if (
+                profit_points >= BE_TRIGGER
+                and sl_ok
+            ):
+                await connection.modify_position(
+                    position_id,
+                    new_sl,
+                    tp
+                )
+
+                print(
+                    f"BE SELL -> {new_sl}",
+                    flush=True
+                )
+
+                telegram(
+                    f"BE SELL {SYMBOL}\n"
+                    f"SL -> {new_sl:.2f}"
+                )
 
 
 # =========================================================
@@ -492,81 +632,96 @@ async def manage_be(connection):
 # =========================================================
 
 async def bot_session(api):
-    account = await api.metatrader_account_api.get_account(
-        M_ACC
-    )
+    connection = None
 
-    if account.state != "DEPLOYED":
+    try:
+        account = (
+            await api.metatrader_account_api.get_account(
+                M_ACC
+            )
+        )
+
+        if account.state != "DEPLOYED":
+            print(
+                "DEPLOYING METAAPI ACCOUNT...",
+                flush=True
+            )
+
+            await account.deploy()
+
+        connection = account.get_rpc_connection()
+
         print(
-            "DEPLOYING METAAPI ACCOUNT...",
+            "CONNECTING METAAPI...",
             flush=True
         )
 
-        await account.deploy()
+        await connection.connect()
 
-    connection = account.get_rpc_connection()
+        print(
+            "WAITING FOR SYNCHRONIZATION...",
+            flush=True
+        )
 
-    print(
-        "CONNECTING METAAPI...",
-        flush=True
-    )
+        await connection.wait_synchronized()
 
-    await connection.connect()
+        print(
+            "RIObot GOLD CONNECTED",
+            flush=True
+        )
 
-    print(
-        "WAITING FOR SYNCHRONIZATION...",
-        flush=True
-    )
+        telegram(
+            "RIObot GOLD START / CONNECTED\n\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Lot: {LOT_SIZE}\n"
+            "Timeframe: M5\n"
+            "Strategy: PSAR FLIP\n"
+            f"TP: {TP_POINTS}\n"
+            f"SL: {SL_POINTS}\n"
+            f"BE: +{BE_TRIGGER} -> +{BE_LOCK}\n"
+            "BTCUSD: OFF"
+        )
 
-    await connection.wait_synchronized()
+        last_candle = None
+        connection_errors = 0
 
-    print(
-        "RIObot GOLD CONNECTED",
-        flush=True
-    )
-
-    telegram(
-        "RIObot GOLD START / CONNECTED\n\n"
-        f"Symbol: {SYMBOL}\n"
-        f"Lot: {LOT_SIZE}\n"
-        "Timeframe: M5\n"
-        "Strategy: PSAR FLIP\n"
-        f"TP: {TP_POINTS}\n"
-        f"SL: {SL_POINTS}\n"
-        f"BE: +{BE_TRIGGER} -> +{BE_LOCK}\n"
-        "BTCUSD: OFF"
-    )
-
-    last_candle = None
-
-    try:
         while True:
             try:
-                # Kontrola BE
+                # -----------------------------
+                # BREAK EVEN
+                # -----------------------------
                 await manage_be(
                     connection
                 )
 
-                # M5 data
+                # -----------------------------
+                # M5 DATA
+                # -----------------------------
                 df = await get_closed_m5(
                     account
                 )
 
-                if df is not None and len(df) >= 10:
+                if (
+                    df is not None
+                    and len(df) >= 10
+                ):
                     candle_id = str(
-                        df.iloc[-1].get("time")
+                        df.iloc[-1].get(
+                            "time"
+                        )
                     )
 
-                    # Kazdu uzavretu M5 spracujeme iba raz
+                    # Kazdu uzavretu M5
+                    # spracujeme iba raz
                     if candle_id != last_candle:
-                        last_candle = candle_id
-
                         signal, psar = get_flip(
                             df
                         )
 
-                        positions = await symbol_positions(
-                            connection
+                        positions = (
+                            await symbol_positions(
+                                connection
+                            )
                         )
 
                         print(
@@ -577,16 +732,27 @@ async def bot_session(api):
                             flush=True
                         )
 
-                        # Iba jedna XAUUSD pozicia naraz
+                        # Candle oznacime ako spracovanu
+                        # az po uspesnych MetaApi volaniach
+                        last_candle = candle_id
+
+                        # Max 1 XAUUSD pozicia
                         if (
                             not positions
-                            and signal in ("BUY", "SELL")
+                            and signal in (
+                                "BUY",
+                                "SELL"
+                            )
                         ):
                             await open_trade(
                                 connection,
                                 signal,
                                 psar
                             )
+
+                # Uspesny cyklus =
+                # reset connection errors
+                connection_errors = 0
 
             except Exception as e:
                 print(
@@ -595,19 +761,61 @@ async def bot_session(api):
                     flush=True
                 )
 
+                if is_connection_error(e):
+                    connection_errors += 1
+
+                    print(
+                        "METAAPI CONNECTION FAILURE "
+                        f"{connection_errors}/"
+                        f"{MAX_CONNECTION_ERRORS}",
+                        flush=True
+                    )
+
+                    if (
+                        connection_errors
+                        >= MAX_CONNECTION_ERRORS
+                    ):
+                        print(
+                            "FORCING FULL METAAPI "
+                            "RECONNECT...",
+                            flush=True
+                        )
+
+                        raise ConnectionError(
+                            "MetaApi connection lost - "
+                            "forcing reconnect"
+                        ) from e
+
+                else:
+                    # Nie je to connection chyba.
+                    # Bot pokracuje dalej.
+                    connection_errors = 0
+
             await asyncio.sleep(
                 LOOP_SECONDS
             )
 
     finally:
-        try:
-            await connection.close()
-        except Exception:
-            pass
+        if connection is not None:
+            try:
+                print(
+                    "CLOSING OLD METAAPI "
+                    "CONNECTION...",
+                    flush=True
+                )
+
+                await connection.close()
+
+            except Exception as e:
+                print(
+                    "CONNECTION CLOSE ERROR:",
+                    e,
+                    flush=True
+                )
 
 
 # =========================================================
-# MAIN / RECONNECT
+# MAIN / FULL RECONNECT
 # =========================================================
 
 async def main():
@@ -623,25 +831,36 @@ async def main():
 
     keep_alive()
 
-    api = MetaApi(M_TOKEN)
-
     while True:
         try:
+            # Pri kazdom novom session vytvorime
+            # novy MetaApi objekt.
+            api = MetaApi(
+                M_TOKEN
+            )
+
             await bot_session(
                 api
             )
 
         except Exception as e:
             print(
-                "METAAPI CONNECTION ERROR:",
+                "METAAPI SESSION ERROR:",
                 e,
                 flush=True
             )
 
             telegram(
                 "RIObot GOLD\n"
-                "MetaApi connection error.\n"
+                "MetaApi spojenie vypadlo.\n"
+                "Robim FULL RECONNECT.\n"
                 f"Retry za {RECONNECT_SECONDS}s."
+            )
+
+            print(
+                f"RECONNECT IN "
+                f"{RECONNECT_SECONDS}s...",
+                flush=True
             )
 
             await asyncio.sleep(
@@ -654,4 +873,6 @@ async def main():
 # =========================================================
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(
+        main()
+    )
