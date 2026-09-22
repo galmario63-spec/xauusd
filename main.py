@@ -20,11 +20,12 @@ PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
 # XAUUSD pri tickSize 0.01
-TP_POINTS = 800.0       # +8.00 pohyb ceny
+TP_POINTS = 700.0       # +7.00 pohyb ceny
 SL_POINTS = 1000.0      # -10.00 pohyb ceny
 
-BE_TRIGGER = 250.0      # pri +2.50
-BE_LOCK = 100.0         # zamkne +1.00
+# BREAK EVEN
+BE_TRIGGER = 500.0      # pri +5.00
+BE_LOCK = 300.0         # zamkne +3.00
 
 COMMENT = "RIObot GOLD M5 PSAR 2DOT BE"
 
@@ -131,14 +132,12 @@ def psar_values(df):
                 )
 
             if low[i] < sar:
-
                 bull = False
                 sar = ep
                 ep = low[i]
                 af = PSAR_STEP
 
             else:
-
                 if high[i] > ep:
                     ep = high[i]
                     af = min(
@@ -161,14 +160,12 @@ def psar_values(df):
                 )
 
             if high[i] > sar:
-
                 bull = True
                 sar = ep
                 ep = high[i]
                 af = PSAR_STEP
 
             else:
-
                 if low[i] < ep:
                     ep = low[i]
                     af = min(
@@ -219,7 +216,7 @@ async def get_closed_m5(account):
         ]
     ).reset_index(drop=True)
 
-    # odstráni aktuálnu otvorenú M5 sviečku
+    # používame iba zatvorené M5 sviečky
     if len(df) > 1:
         df = df.iloc[:-1].copy()
 
@@ -240,8 +237,8 @@ def get_confirmed_signal(df):
     if df is None or len(df) < 4:
         return None
 
-    # A = sviečka pred flipom
-    # B = prvá PSAR bodka po flipe
+    # A = pred flipom
+    # B = prvá PSAR bodka
     # C = druhá potvrdená PSAR bodka
     a = df.iloc[-3]
     b = df.iloc[-2]
@@ -301,8 +298,10 @@ async def symbol_positions(connection):
 
 async def market_info(connection):
 
-    specification = await connection.get_symbol_specification(
-        SYMBOL
+    specification = (
+        await connection.get_symbol_specification(
+            SYMBOL
+        )
     )
 
     price = await connection.get_symbol_price(
@@ -332,8 +331,8 @@ async def market_info(connection):
 
 async def open_trade(connection, side):
 
-    point, digits, bid, ask = await market_info(
-        connection
+    point, digits, bid, ask = (
+        await market_info(connection)
     )
 
     if side == "BUY":
@@ -411,8 +410,8 @@ async def open_trade(connection, side):
 
         await asyncio.sleep(1)
 
-        point, digits, bid, ask = await market_info(
-            connection
+        point, digits, bid, ask = (
+            await market_info(connection)
         )
 
         if side == "BUY":
@@ -471,7 +470,7 @@ async def open_trade(connection, side):
         f"SL: {sl}\n"
         f"TP: {tp}\n"
         f"PSAR: 2nd dot confirmed\n"
-        f"BE: +2.50 -> +1.00"
+        f"BE: +5.00 -> +3.00"
     )
 
     return result
@@ -490,8 +489,8 @@ async def manage_be(connection):
     if not positions:
         return
 
-    point, digits, bid, ask = await market_info(
-        connection
+    point, digits, bid, ask = (
+        await market_info(connection)
     )
 
     for position in positions:
@@ -557,8 +556,8 @@ async def manage_be(connection):
                     telegram(
                         f"RIObot GOLD BE\n\n"
                         f"BUY {SYMBOL}\n"
-                        f"+2.50 reached\n"
-                        f"SL locked +1.00\n"
+                        f"+5.00 reached\n"
+                        f"SL locked +3.00\n"
                         f"SL: {new_sl}"
                     )
 
@@ -598,8 +597,8 @@ async def manage_be(connection):
                     telegram(
                         f"RIObot GOLD BE\n\n"
                         f"SELL {SYMBOL}\n"
-                        f"+2.50 reached\n"
-                        f"SL locked +1.00\n"
+                        f"+5.00 reached\n"
+                        f"SL locked +3.00\n"
                         f"SL: {new_sl}"
                     )
 
@@ -610,8 +609,10 @@ async def manage_be(connection):
 
 async def bot_session(api):
 
-    account = await api.metatrader_account_api.get_account(
-        M_ACC
+    account = (
+        await api.metatrader_account_api.get_account(
+            M_ACC
+        )
     )
 
     print(
@@ -641,9 +642,9 @@ async def bot_session(api):
         f"Lot: {LOT_SIZE}\n"
         f"Timeframe: M5\n"
         f"Strategy: PSAR 2nd DOT\n"
-        f"TP: +8.00 price move\n"
+        f"TP: +7.00 price move\n"
         f"SL: -10.00 price move\n"
-        f"BE: +2.50 -> +1.00\n"
+        f"BE: +5.00 -> +3.00\n"
         f"BTCUSD: OFF"
     )
 
@@ -654,7 +655,7 @@ async def bot_session(api):
 
         try:
 
-            # BE kontrola každých 10 sekúnd
+            # BE kontrolujeme každých 10 sekúnd
             await manage_be(connection)
 
             df = await get_closed_m5(
@@ -670,19 +671,13 @@ async def bot_session(api):
                 continue
 
             candle = df.iloc[-1]
+            candle_time = candle.get("time")
 
-            candle_time = candle.get(
-                "time"
-            )
-
-            # iba raz na novú zatvorenú M5 sviečku
             if candle_time != last_candle_time:
 
                 last_candle_time = candle_time
 
-                signal = get_confirmed_signal(
-                    df
-                )
+                signal = get_confirmed_signal(df)
 
                 print(
                     f"{SYMBOL} "
@@ -696,7 +691,7 @@ async def bot_session(api):
                     connection
                 )
 
-                # maximálne 1 XAUUSD pozícia
+                # maximálne jedna XAUUSD pozícia
                 if (
                     not positions
                     and signal in ["BUY", "SELL"]
@@ -725,7 +720,10 @@ async def bot_session(api):
                 flush=True
             )
 
-            if connection_errors >= MAX_CONNECTION_ERRORS:
+            if (
+                connection_errors
+                >= MAX_CONNECTION_ERRORS
+            ):
 
                 print(
                     "RECONNECTING METAAPI...",
@@ -757,7 +755,7 @@ async def main():
 
     keep_alive()
 
-    # DÔLEŽITÉ: bez region a bez clientId
+    # Bez region a bez clientId
     api = MetaApi(M_TOKEN)
 
     while True:
