@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from threading import Thread
 
@@ -10,7 +11,7 @@ from metaapi_cloud_sdk import MetaApi
 
 # =========================================================
 # RIObot GOLD
-# XAUUSD | M5 | LIVE PSAR 2nd DOT
+# XAUUSD | M5 | LIVE PSAR 2nd DOT | MT5 cloud-g2
 # =========================================================
 
 SYMBOL = "XAUUSD"
@@ -30,6 +31,12 @@ COMMENT = "RIObot GOLD M5 LIVE PSAR 2DOT"
 LOOP_SECONDS = 10
 RECONNECT_SECONDS = 15
 META_TIMEOUT = 30
+
+META_REGION = "london"
+
+MIN_PSAR_BARS = 6
+MAX_CACHE_BARS = 120
+CACHE_FILE = "m5_cache.json"
 
 
 # =========================================================
@@ -74,10 +81,7 @@ def telegram(message):
     try:
         requests.post(
             f"https://api.telegram.org/bot{T_TOKEN}/sendMessage",
-            data={
-                "chat_id": T_CHAT,
-                "text": message
-            },
+            data={"chat_id": T_CHAT, "text": message},
             timeout=10,
         )
     except Exception as exc:
@@ -85,10 +89,148 @@ def telegram(message):
 
 
 # =========================================================
+# M5 CACHE
+# =========================================================
+
+def load_cache():
+    try:
+        if not os.path.exists(CACHE_FILE):
+            return []
+
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if not isinstance(data, list):
+            return []
+
+        clean = []
+
+        for c in data[-MAX_CACHE_BARS:]:
+            if all(
+                k in c
+                for k in ("time", "open", "high", "low", "close")
+            ):
+                clean.append(c)
+
+        return clean
+
+    except Exception as exc:
+        print(f"CACHE LOAD WARNING: {exc}", flush=True)
+        return []
+
+
+def save_cache(candles):
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(
+                candles[-MAX_CACHE_BARS:],
+                f
+            )
+    except Exception as exc:
+        print(f"CACHE SAVE WARNING: {exc}", flush=True)
+
+
+# =========================================================
+# CURRENT LIVE M5 CANDLE
+# =========================================================
+
+async def get_current_m5_candle():
+
+    url = (
+        f"https://mt-client-api-v1.{META_REGION}."
+        f"agiliumtrade.ai/users/current/accounts/"
+        f"{M_ACC}/symbols/{SYMBOL}/"
+        f"current-candles/5m?keepSubscription=true"
+    )
+
+    def fetch():
+        response = requests.get(
+            url,
+            headers={
+                "Accept": "application/json",
+                "auth-token": M_TOKEN,
+            },
+            timeout=20,
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"M5 candle HTTP "
+                f"{response.status_code}: "
+                f"{response.text[:300]}"
+            )
+
+        return response.json()
+
+    try:
+        candle = await asyncio.to_thread(fetch)
+
+        if not candle:
+            return None
+
+        required = (
+            "time",
+            "open",
+            "high",
+            "low",
+            "close",
+        )
+
+        if not all(k in candle for k in required):
+            print(
+                f"M5 CANDLE WARNING: "
+                f"missing fields: {candle}",
+                flush=True,
+            )
+            return None
+
+        return {
+            "time": str(candle["time"]),
+            "open": float(candle["open"]),
+            "high": float(candle["high"]),
+            "low": float(candle["low"]),
+            "close": float(candle["close"]),
+        }
+
+    except Exception as exc:
+        # chyba sviečky už NESPUSTÍ reconnect slučku
+        print(
+            f"M5 CANDLE WARNING: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        return None
+
+
+def update_candle_cache(candles, candle):
+
+    if candle is None:
+        return candles
+
+    if not candles:
+        candles.append(candle)
+
+    elif candles[-1]["time"] == candle["time"]:
+        # stále tá istá LIVE M5 sviečka
+        candles[-1] = candle
+
+    else:
+        # nová M5 sviečka
+        candles.append(candle)
+
+    candles[:] = candles[-MAX_CACHE_BARS:]
+
+    save_cache(candles)
+
+    return candles
+
+
+# =========================================================
 # PARABOLIC SAR
 # =========================================================
 
 def psar_values(df):
+
     highs = df["high"].astype(float).tolist()
     lows = df["low"].astype(float).tolist()
 
@@ -107,6 +249,7 @@ def psar_values(df):
     psar[0] = sar
 
     for i in range(1, count):
+
         sar = sar + af * (ep - sar)
 
         if bull:
@@ -115,26 +258,28 @@ def psar_values(df):
                 sar = min(
                     sar,
                     lows[i - 1],
-                    lows[i - 2]
+                    lows[i - 2],
                 )
             else:
                 sar = min(
                     sar,
-                    lows[i - 1]
+                    lows[i - 1],
                 )
 
             if lows[i] < sar:
+
                 bull = False
                 sar = ep
                 ep = lows[i]
                 af = PSAR_STEP
 
             elif highs[i] > ep:
+
                 ep = highs[i]
 
                 af = min(
                     af + PSAR_STEP,
-                    PSAR_MAX
+                    PSAR_MAX,
                 )
 
         else:
@@ -143,26 +288,28 @@ def psar_values(df):
                 sar = max(
                     sar,
                     highs[i - 1],
-                    highs[i - 2]
+                    highs[i - 2],
                 )
             else:
                 sar = max(
                     sar,
-                    highs[i - 1]
+                    highs[i - 1],
                 )
 
             if highs[i] > sar:
+
                 bull = True
                 sar = ep
                 ep = highs[i]
                 af = PSAR_STEP
 
             elif lows[i] < ep:
+
                 ep = lows[i]
 
                 af = min(
                     af + PSAR_STEP,
-                    PSAR_MAX
+                    PSAR_MAX,
                 )
 
         psar[i] = sar
@@ -170,23 +317,9 @@ def psar_values(df):
     return psar
 
 
-# =========================================================
-# M5 DATA - VRÁTANE AKTUÁLNEJ OTVORENEJ SVIEČKY
-# =========================================================
+def make_m5_dataframe(candles):
 
-async def get_m5(account):
-
-    candles = await asyncio.wait_for(
-        account.get_historical_candles(
-            SYMBOL,
-            "5m",
-            None,
-            120
-        ),
-        timeout=META_TIMEOUT,
-    )
-
-    if not candles or len(candles) < 6:
+    if len(candles) < MIN_PSAR_BARS:
         return None
 
     df = pd.DataFrame(candles)
@@ -195,11 +328,11 @@ async def get_m5(account):
         "open",
         "high",
         "low",
-        "close"
+        "close",
     ):
         df[col] = pd.to_numeric(
             df[col],
-            errors="coerce"
+            errors="coerce",
         )
 
     df = df.dropna(
@@ -207,15 +340,12 @@ async def get_m5(account):
             "open",
             "high",
             "low",
-            "close"
+            "close",
         ]
     ).reset_index(drop=True)
 
-    if len(df) < 6:
+    if len(df) < MIN_PSAR_BARS:
         return None
-
-    # Poslednú M5 sviečku NEODSTRAŇUJEME.
-    # Použijeme ju na LIVE druhú PSAR bodku.
 
     df["psar"] = psar_values(df)
 
@@ -232,8 +362,8 @@ def get_live_signal(df):
         return None
 
     # A = pred flipom
-    # B = prvá bodka
-    # C = druhá LIVE bodka
+    # B = prvá PSAR bodka
+    # C = druhá LIVE PSAR bodka
 
     a = df.iloc[-3]
     b = df.iloc[-2]
@@ -267,7 +397,7 @@ def get_live_signal(df):
 
 
 # =========================================================
-# POZÍCIE
+# POSITIONS
 # =========================================================
 
 async def get_positions(connection):
@@ -278,9 +408,9 @@ async def get_positions(connection):
     )
 
     return [
-        position
-        for position in positions
-        if position.get(
+        p
+        for p in positions
+        if p.get(
             "symbol",
             ""
         ).upper() == SYMBOL.upper()
@@ -288,7 +418,7 @@ async def get_positions(connection):
 
 
 # =========================================================
-# MARKET INFO
+# MARKET
 # =========================================================
 
 async def get_market(connection):
@@ -335,7 +465,7 @@ async def get_market(connection):
         point,
         digits,
         bid,
-        ask
+        ask,
     )
 
 
@@ -359,13 +489,13 @@ async def open_trade(
         sl = round(
             entry
             - SL_POINTS * point,
-            digits
+            digits,
         )
 
         tp = round(
             entry
             + TP_POINTS * point,
-            digits
+            digits,
         )
 
         result = await asyncio.wait_for(
@@ -376,7 +506,7 @@ async def open_trade(
                 tp,
                 {
                     "comment": COMMENT
-                }
+                },
             ),
             timeout=META_TIMEOUT,
         )
@@ -388,13 +518,13 @@ async def open_trade(
         sl = round(
             entry
             + SL_POINTS * point,
-            digits
+            digits,
         )
 
         tp = round(
             entry
             - TP_POINTS * point,
-            digits
+            digits,
         )
 
         result = await asyncio.wait_for(
@@ -405,7 +535,7 @@ async def open_trade(
                 tp,
                 {
                     "comment": COMMENT
-                }
+                },
             ),
             timeout=META_TIMEOUT,
         )
@@ -490,7 +620,7 @@ async def manage_be(connection):
         # BUY
         if side in (
             "BUY",
-            "POSITION_TYPE_BUY"
+            "POSITION_TYPE_BUY",
         ):
 
             profit_points = (
@@ -500,7 +630,7 @@ async def manage_be(connection):
             new_sl = round(
                 entry
                 + BE_LOCK * point,
-                digits
+                digits,
             )
 
             if (
@@ -515,14 +645,14 @@ async def manage_be(connection):
                     connection.modify_position(
                         position_id,
                         new_sl,
-                        current_tp
+                        current_tp,
                     ),
                     timeout=META_TIMEOUT,
                 )
 
                 print(
                     f"BE BUY -> {new_sl}",
-                    flush=True
+                    flush=True,
                 )
 
                 telegram(
@@ -536,7 +666,7 @@ async def manage_be(connection):
         # SELL
         elif side in (
             "SELL",
-            "POSITION_TYPE_SELL"
+            "POSITION_TYPE_SELL",
         ):
 
             profit_points = (
@@ -546,7 +676,7 @@ async def manage_be(connection):
             new_sl = round(
                 entry
                 - BE_LOCK * point,
-                digits
+                digits,
             )
 
             if (
@@ -561,14 +691,14 @@ async def manage_be(connection):
                     connection.modify_position(
                         position_id,
                         new_sl,
-                        current_tp
+                        current_tp,
                     ),
                     timeout=META_TIMEOUT,
                 )
 
                 print(
                     f"BE SELL -> {new_sl}",
-                    flush=True
+                    flush=True,
                 )
 
                 telegram(
@@ -603,7 +733,7 @@ async def bot_session(state):
 
         print(
             "CONNECTING METAAPI...",
-            flush=True
+            flush=True,
         )
 
         connection = (
@@ -622,12 +752,10 @@ async def bot_session(state):
 
         print(
             "RIObot GOLD CONNECTED",
-            flush=True
+            flush=True,
         )
 
-        if not state[
-            "ever_connected"
-        ]:
+        if not state["ever_connected"]:
 
             telegram(
                 "RIObot GOLD START / CONNECTED\n\n"
@@ -635,16 +763,13 @@ async def bot_session(state):
                 f"Lot: {LOT_SIZE}\n"
                 "Timeframe: M5\n"
                 "Strategy: LIVE PSAR 2nd DOT\n"
-                "Entry: no wait for 2nd candle close\n"
-                "TP: +8.00 price move\n"
-                "SL: -10.00 price move\n"
-                "BE: +5.00 -> +3.00\n"
-                "BTCUSD: OFF"
+                "MT5 cloud-g2\n"
+                "TP: +8.00\n"
+                "SL: -10.00\n"
+                "BE: +5.00 -> +3.00"
             )
 
-            state[
-                "ever_connected"
-            ] = True
+            state["ever_connected"] = True
 
         else:
 
@@ -656,86 +781,124 @@ async def bot_session(state):
 
         while True:
 
-            # BREAK EVEN
+            # BE má prioritu
             await manage_be(
                 connection
             )
 
-            # LIVE M5
-            df = await get_m5(
-                account
+            # LIVE aktuálna M5
+            candle = (
+                await get_current_m5_candle()
             )
 
-            if df is not None:
+            if candle is not None:
 
-                current_candle = (
-                    df.iloc[-1]
+                update_candle_cache(
+                    state["m5_candles"],
+                    candle,
                 )
 
-                candle_time = str(
-                    current_candle.get(
-                        "time"
-                    )
+                count = len(
+                    state["m5_candles"]
                 )
 
-                signal = get_live_signal(
-                    df
-                )
+                if count < MIN_PSAR_BARS:
 
-                signal_key = None
+                    if (
+                        count
+                        != state[
+                            "last_warmup_count"
+                        ]
+                    ):
 
-                if signal in (
-                    "BUY",
-                    "SELL"
-                ):
-
-                    signal_key = (
-                        f"{candle_time}|"
-                        f"{signal}"
-                    )
-
-                if (
-                    signal_key is not None
-                    and signal_key
-                    != state[
-                        "last_signal_key"
-                    ]
-                ):
-
-                    print(
-                        f"LIVE SIGNAL "
-                        f"{signal} "
-                        f"M5={candle_time} "
-                        f"PSAR="
-                        f"{current_candle['psar']}",
-                        flush=True,
-                    )
-
-                    positions = (
-                        await get_positions(
-                            connection
-                        )
-                    )
-
-                    # Maximálne 1 XAUUSD pozícia
-                    if not positions:
-
-                        # ochrana proti duplicitnému
-                        # otvoreniu toho istého signálu
-                        state[
-                            "last_signal_key"
-                        ] = signal_key
-
-                        await open_trade(
-                            connection,
-                            signal
+                        print(
+                            f"M5 WARMUP "
+                            f"{count}/"
+                            f"{MIN_PSAR_BARS}",
+                            flush=True,
                         )
 
-                    else:
-
                         state[
-                            "last_signal_key"
-                        ] = signal_key
+                            "last_warmup_count"
+                        ] = count
+
+                else:
+
+                    df = make_m5_dataframe(
+                        state["m5_candles"]
+                    )
+
+                    if df is not None:
+
+                        current_candle = (
+                            df.iloc[-1]
+                        )
+
+                        candle_time = str(
+                            current_candle.get(
+                                "time"
+                            )
+                        )
+
+                        signal = (
+                            get_live_signal(
+                                df
+                            )
+                        )
+
+                        signal_key = None
+
+                        if signal in (
+                            "BUY",
+                            "SELL",
+                        ):
+
+                            signal_key = (
+                                f"{candle_time}|"
+                                f"{signal}"
+                            )
+
+                        if (
+                            signal_key
+                            is not None
+                            and signal_key
+                            != state[
+                                "last_signal_key"
+                            ]
+                        ):
+
+                            print(
+                                f"LIVE SIGNAL "
+                                f"{signal} "
+                                f"M5={candle_time} "
+                                f"PSAR="
+                                f"{current_candle['psar']}",
+                                flush=True,
+                            )
+
+                            positions = (
+                                await get_positions(
+                                    connection
+                                )
+                            )
+
+                            # MAX 1 XAUUSD
+                            if not positions:
+
+                                state[
+                                    "last_signal_key"
+                                ] = signal_key
+
+                                await open_trade(
+                                    connection,
+                                    signal,
+                                )
+
+                            else:
+
+                                state[
+                                    "last_signal_key"
+                                ] = signal_key
 
             await asyncio.sleep(
                 LOOP_SECONDS
@@ -757,12 +920,12 @@ async def bot_session(state):
                 print(
                     f"CLOSE WARNING: "
                     f"{exc}",
-                    flush=True
+                    flush=True,
                 )
 
 
 # =========================================================
-# MAIN / AUTO RECONNECT
+# MAIN
 # =========================================================
 
 async def main():
@@ -782,7 +945,15 @@ async def main():
     state = {
         "ever_connected": False,
         "last_signal_key": None,
+        "m5_candles": load_cache(),
+        "last_warmup_count": -1,
     }
+
+    print(
+        f"M5 CACHE LOADED: "
+        f"{len(state['m5_candles'])} bars",
+        flush=True,
+    )
 
     while True:
 
