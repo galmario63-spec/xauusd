@@ -34,7 +34,8 @@ RECONNECT_SECONDS = 15
 META_TIMEOUT = 30
 MAX_LOOP_ERRORS = 3
 
-DEFAULT_META_REGION = "london"
+DEFAULT_META_REGION = None
+ACCOUNT_CONNECT_TIMEOUT = 180
 
 MIN_PSAR_BARS = 6
 MAX_CACHE_BARS = 120
@@ -198,12 +199,10 @@ def update_candle_cache(
         == candle["time"]
     ):
 
-        # Tá istá LIVE M5 sviečka
         candles[-1] = candle
 
     else:
 
-        # Nová M5 sviečka
         candles.append(candle)
 
     del candles[:-MAX_CACHE_BARS]
@@ -212,8 +211,60 @@ def update_candle_cache(
 
 
 # =========================================================
+# METAAPI ACCOUNT REGION
+# =========================================================
+
+def get_account_region_from_provisioning():
+
+    url = (
+        "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai/"
+        f"users/current/accounts/{M_ACC}"
+    )
+
+    try:
+
+        response = requests.get(
+            url,
+            headers={
+                "Accept": "application/json",
+                "auth-token": M_TOKEN,
+            },
+            timeout=20,
+        )
+
+        if response.status_code != 200:
+
+            print(
+                "REGION LOOKUP WARNING: "
+                f"HTTP {response.status_code}: "
+                f"{response.text[:200]}",
+                flush=True
+            )
+
+            return None
+
+        data = response.json()
+
+        region = data.get("region")
+
+        if region:
+            return str(region).lower()
+
+        return None
+
+    except Exception as exc:
+
+        print(
+            "REGION LOOKUP WARNING: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True
+        )
+
+        return None
+
+
+# =========================================================
 # CURRENT LIVE M5 CANDLE
-# cloud-g2
 # =========================================================
 
 async def get_current_m5_candle(
@@ -236,10 +287,8 @@ async def get_current_m5_candle(
         response = requests.get(
             url,
             headers={
-                "Accept":
-                    "application/json",
-                "auth-token":
-                    M_TOKEN,
+                "Accept": "application/json",
+                "auth-token": M_TOKEN,
             },
             timeout=20,
         )
@@ -300,8 +349,6 @@ async def get_current_m5_candle(
 
     except Exception as exc:
 
-        # Market-data chyba nezhodí
-        # hneď celého robota
         print(
             f"M5 CANDLE WARNING: "
             f"{type(exc).__name__}: "
@@ -486,7 +533,7 @@ def make_m5_dataframe(
 
 # =========================================================
 # AGGRESSIVE LIVE SIGNAL
-# PRVÁ PSAR BODKA = VSTUP
+# PRVA PSAR BODKA = VSTUP
 # =========================================================
 
 def get_live_signal(df):
@@ -517,34 +564,26 @@ def get_live_signal(df):
         current["psar"]
     )
 
-    # =====================================
-    # BUY
-    # PSAR bol NAD cenou
-    # a prvá LIVE bodka prejde POD cenu
-    # =====================================
+    # BUY:
+    # PSAR bol nad cenou
+    # a prva LIVE bodka presla pod cenu
 
     if (
-        previous_psar
-        > previous_close
+        previous_psar > previous_close
         and
-        current_psar
-        < current_close
+        current_psar < current_close
     ):
 
         return "BUY"
 
-    # =====================================
-    # SELL
-    # PSAR bol POD cenou
-    # a prvá LIVE bodka prejde NAD cenu
-    # =====================================
+    # SELL:
+    # PSAR bol pod cenou
+    # a prva LIVE bodka presla nad cenu
 
     if (
-        previous_psar
-        < previous_close
+        previous_psar < previous_close
         and
-        current_psar
-        > current_close
+        current_psar > current_close
     ):
 
         return "SELL"
@@ -614,10 +653,8 @@ async def get_market(
         )
     )
 
-    point = (
-        specification.get(
-            "tickSize"
-        )
+    point = specification.get(
+        "tickSize"
     )
 
     if not point:
@@ -826,9 +863,7 @@ async def manage_be(
                 current_tp
             )
 
-        # =================================
-        # BUY BE
-        # =================================
+        # BUY
 
         if side in (
             "BUY",
@@ -883,9 +918,7 @@ async def manage_be(
                     f"SL: {new_sl}"
                 )
 
-        # =================================
-        # SELL BE
-        # =================================
+        # SELL
 
         elif side in (
             "SELL",
@@ -949,6 +982,8 @@ async def bot_session(
     state
 ):
 
+    # Python SDK:
+    # region sa sem NEZADAVA.
     api = MetaApi(
         M_TOKEN
     )
@@ -968,21 +1003,92 @@ async def bot_session(
             )
         )
 
+        # =============================================
+        # UCET MUSI BYT NAJPRV NASADENY
+        # =============================================
+
+        account_state = str(
+            getattr(
+                account,
+                "state",
+                ""
+            )
+        ).upper()
+
+        if account_state != "DEPLOYED":
+
+            print(
+                f"METAAPI STATE: "
+                f"{account_state or 'UNKNOWN'} "
+                f"-> DEPLOYING",
+                flush=True
+            )
+
+            await asyncio.wait_for(
+                account.deploy(),
+                timeout=ACCOUNT_CONNECT_TIMEOUT
+            )
+
+        # =============================================
+        # POCKAME NA REALNE SPOJENIE S BROKEROM
+        # =============================================
+
+        connection_status = str(
+            getattr(
+                account,
+                "connection_status",
+                ""
+            )
+        ).upper()
+
+        if connection_status != "CONNECTED":
+
+            print(
+                "WAITING FOR METAAPI "
+                "BROKER CONNECTION...",
+                flush=True
+            )
+
+            await asyncio.wait_for(
+                account.wait_connected(),
+                timeout=ACCOUNT_CONNECT_TIMEOUT
+            )
+
+        print(
+            "METAAPI BROKER CONNECTED",
+            flush=True
+        )
+
+        # =============================================
+        # REGION SA ZISTI AUTOMATICKY
+        # =============================================
+
         region = getattr(
             account,
             "region",
             None
         )
 
-        if not region:
+        if region:
+
+            region = str(
+                region
+            ).lower()
+
+        else:
 
             region = (
-                DEFAULT_META_REGION
+                await asyncio.to_thread(
+                    get_account_region_from_provisioning
+                )
             )
 
-        region = str(
-            region
-        ).lower()
+        if not region:
+
+            raise RuntimeError(
+                "MetaApi account region "
+                "could not be detected"
+            )
 
         state[
             "meta_region"
@@ -994,8 +1100,12 @@ async def bot_session(
             flush=True
         )
 
+        # =============================================
+        # RPC SPOJENIE
+        # =============================================
+
         print(
-            "CONNECTING METAAPI...",
+            "CONNECTING METAAPI RPC...",
             flush=True
         )
 
@@ -1007,6 +1117,11 @@ async def bot_session(
         await asyncio.wait_for(
             connection.connect(),
             timeout=60
+        )
+
+        print(
+            "WAITING FOR SYNCHRONIZATION...",
+            flush=True
         )
 
         await asyncio.wait_for(
@@ -1055,17 +1170,17 @@ async def bot_session(
 
             try:
 
-                # =========================
+                # =================================
                 # BREAK EVEN
-                # =========================
+                # =================================
 
                 await manage_be(
                     connection
                 )
 
-                # =========================
+                # =================================
                 # LIVE M5
-                # =========================
+                # =================================
 
                 candle = (
                     await get_current_m5_candle(
@@ -1090,9 +1205,9 @@ async def bot_session(
                         ]
                     )
 
-                    # =====================
+                    # =============================
                     # WARMUP
-                    # =====================
+                    # =============================
 
                     if (
                         count
@@ -1157,9 +1272,9 @@ async def bot_session(
                                     f"{signal}"
                                 )
 
-                            # =================
-                            # 1. PSAR DOT
-                            # =================
+                            # =========================
+                            # PRVA LIVE PSAR BODKA
+                            # =========================
 
                             if (
                                 signal_key
@@ -1187,14 +1302,15 @@ async def bot_session(
                                     )
                                 )
 
-                                # =================
+                                # =====================
                                 # MAX 1 OBCHOD
-                                # =================
+                                # =====================
 
                                 if not positions:
 
-                                    # ochrana pred
-                                    # duplicitným orderom
+                                    # nastavime kluc
+                                    # este pred orderom,
+                                    # aby nevznikol duplikat
                                     state[
                                         "last_signal_key"
                                     ] = signal_key
@@ -1210,7 +1326,9 @@ async def bot_session(
                                         "last_signal_key"
                                     ] = signal_key
 
-                # úspešný cyklus
+                # Ak cely cyklus presiel,
+                # pocitadlo chyb vynulujeme.
+
                 loop_errors = 0
 
             except Exception as exc:
@@ -1226,8 +1344,11 @@ async def bot_session(
                     flush=True
                 )
 
-                # Krátky timeout už
-                # nezhodí robota hneď.
+                # Jedna kratka chyba/timeout
+                # robota hned nevypne.
+                # Po troch po sebe iducich
+                # chybach spravi komplet reconnect.
+
                 if (
                     loop_errors
                     >= MAX_LOOP_ERRORS
@@ -1299,7 +1420,7 @@ async def main():
             -1,
 
         "meta_region":
-            DEFAULT_META_REGION,
+            None,
     }
 
     print(
@@ -1353,4 +1474,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-        )
+    )
