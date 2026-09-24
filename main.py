@@ -9,42 +9,32 @@ from flask import Flask
 from metaapi_cloud_sdk import MetaApi
 
 
-# =========================================================
-# RIObot GOLD
-# XAUUSD | M5 | AGGRESSIVE LIVE PSAR 1st DOT
-# MT5 cloud-g2
-# =========================================================
-
 SYMBOL = "XAUUSD"
-LOT_SIZE = 1.00
+LOT_SIZE = 1.0
 
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
-TP_POINTS = 800.0       # +8.00
-SL_POINTS = 1000.0      # -10.00
+TP_POINTS = 800.0
+SL_POINTS = 1000.0
 
-BE_TRIGGER = 500.0      # +5.00
-BE_LOCK = 300.0         # zamkne +3.00
+BE_TRIGGER = 500.0
+BE_LOCK = 300.0
 
-COMMENT = "RIObot GOLD M5 PSAR 1DOT"
+COMMENT = "RIObot GOLD M1 PSAR 2DOT"
 
 LOOP_SECONDS = 10
 RECONNECT_SECONDS = 15
 META_TIMEOUT = 30
 MAX_LOOP_ERRORS = 3
 
-DEFAULT_META_REGION = None
+DEFAULT_META_REGION = "london"
 ACCOUNT_CONNECT_TIMEOUT = 180
 
 MIN_PSAR_BARS = 6
 MAX_CACHE_BARS = 120
-CACHE_FILE = "m5_cache.json"
+CACHE_FILE = "m1_cache.json"
 
-
-# =========================================================
-# ENV
-# =========================================================
 
 M_TOKEN = os.getenv("M_TOKEN")
 M_ACC = os.getenv("M_ACC")
@@ -52,10 +42,6 @@ M_ACC = os.getenv("M_ACC")
 T_TOKEN = os.getenv("T_TOKEN")
 T_CHAT = os.getenv("T_CHAT")
 
-
-# =========================================================
-# RENDER WEB SERVER
-# =========================================================
 
 app = Flask(__name__)
 
@@ -77,10 +63,6 @@ def keep_alive():
     ).start()
 
 
-# =========================================================
-# TELEGRAM
-# =========================================================
-
 def telegram(message):
 
     if not T_TOKEN or not T_CHAT:
@@ -94,7 +76,7 @@ def telegram(message):
                 "chat_id": T_CHAT,
                 "text": message
             },
-            timeout=10,
+            timeout=10
         )
 
     except Exception as exc:
@@ -105,10 +87,6 @@ def telegram(message):
             flush=True
         )
 
-
-# =========================================================
-# M5 CACHE
-# =========================================================
 
 def load_cache():
 
@@ -210,64 +188,7 @@ def update_candle_cache(
     save_cache(candles)
 
 
-# =========================================================
-# METAAPI ACCOUNT REGION
-# =========================================================
-
-def get_account_region_from_provisioning():
-
-    url = (
-        "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai/"
-        f"users/current/accounts/{M_ACC}"
-    )
-
-    try:
-
-        response = requests.get(
-            url,
-            headers={
-                "Accept": "application/json",
-                "auth-token": M_TOKEN,
-            },
-            timeout=20,
-        )
-
-        if response.status_code != 200:
-
-            print(
-                "REGION LOOKUP WARNING: "
-                f"HTTP {response.status_code}: "
-                f"{response.text[:200]}",
-                flush=True
-            )
-
-            return None
-
-        data = response.json()
-
-        region = data.get("region")
-
-        if region:
-            return str(region).lower()
-
-        return None
-
-    except Exception as exc:
-
-        print(
-            "REGION LOOKUP WARNING: "
-            f"{type(exc).__name__}: {exc}",
-            flush=True
-        )
-
-        return None
-
-
-# =========================================================
-# CURRENT LIVE M5 CANDLE
-# =========================================================
-
-async def get_current_m5_candle(
+async def get_current_m1_candle(
     region
 ):
 
@@ -278,7 +199,7 @@ async def get_current_m5_candle(
         f"users/current/accounts/"
         f"{M_ACC}/symbols/"
         f"{SYMBOL}/"
-        f"current-candles/5m"
+        f"current-candles/1m"
         f"?keepSubscription=true"
     )
 
@@ -287,16 +208,18 @@ async def get_current_m5_candle(
         response = requests.get(
             url,
             headers={
-                "Accept": "application/json",
-                "auth-token": M_TOKEN,
+                "Accept":
+                    "application/json",
+                "auth-token":
+                    M_TOKEN
             },
-            timeout=20,
+            timeout=20
         )
 
         if response.status_code != 200:
 
             raise RuntimeError(
-                f"M5 candle HTTP "
+                f"M1 candle HTTP "
                 f"{response.status_code}: "
                 f"{response.text[:250]}"
             )
@@ -326,7 +249,7 @@ async def get_current_m5_candle(
         ):
 
             print(
-                "M5 CANDLE WARNING: "
+                "M1 CANDLE WARNING: "
                 f"missing fields: "
                 f"{candle}",
                 flush=True
@@ -344,13 +267,13 @@ async def get_current_m5_candle(
             "low":
                 float(candle["low"]),
             "close":
-                float(candle["close"]),
+                float(candle["close"])
         }
 
     except Exception as exc:
 
         print(
-            f"M5 CANDLE WARNING: "
+            f"M1 CANDLE WARNING: "
             f"{type(exc).__name__}: "
             f"{exc}",
             flush=True
@@ -358,10 +281,6 @@ async def get_current_m5_candle(
 
         return None
 
-
-# =========================================================
-# PARABOLIC SAR
-# =========================================================
 
 def psar_values(df):
 
@@ -475,11 +394,7 @@ def psar_values(df):
     return psar
 
 
-# =========================================================
-# DATAFRAME
-# =========================================================
-
-def make_m5_dataframe(
+def make_m1_dataframe(
     candles
 ):
 
@@ -531,11 +446,6 @@ def make_m5_dataframe(
     return df
 
 
-# =========================================================
-# AGGRESSIVE LIVE SIGNAL
-# PRVA PSAR BODKA = VSTUP
-# =========================================================
-
 def get_live_signal(df):
 
     if (
@@ -545,55 +455,68 @@ def get_live_signal(df):
 
         return None
 
-    previous = df.iloc[-2]
-    current = df.iloc[-1]
+    # A = posledná bodka starého smeru
+    # B = prvá bodka nového smeru
+    # C = druhá LIVE bodka nového smeru
 
-    previous_close = float(
-        previous["close"]
+    a = df.iloc[-3]
+    b = df.iloc[-2]
+    c = df.iloc[-1]
+
+    a_close = float(
+        a["close"]
     )
 
-    current_close = float(
-        current["close"]
+    b_close = float(
+        b["close"]
     )
 
-    previous_psar = float(
-        previous["psar"]
+    c_close = float(
+        c["close"]
     )
 
-    current_psar = float(
-        current["psar"]
+    a_psar = float(
+        a["psar"]
     )
 
-    # BUY:
+    b_psar = float(
+        b["psar"]
+    )
+
+    c_psar = float(
+        c["psar"]
+    )
+
+    # BUY
     # PSAR bol nad cenou
-    # a prva LIVE bodka presla pod cenu
+    # potom 2 bodky pod cenou
 
     if (
-        previous_psar > previous_close
+        a_psar > a_close
         and
-        current_psar < current_close
+        b_psar < b_close
+        and
+        c_psar < c_close
     ):
 
         return "BUY"
 
-    # SELL:
+    # SELL
     # PSAR bol pod cenou
-    # a prva LIVE bodka presla nad cenu
+    # potom 2 bodky nad cenou
 
     if (
-        previous_psar < previous_close
+        a_psar < a_close
         and
-        current_psar > current_close
+        b_psar > b_close
+        and
+        c_psar > c_close
     ):
 
         return "SELL"
 
     return None
 
-
-# =========================================================
-# POSITIONS
-# =========================================================
 
 async def get_positions(
     connection
@@ -617,10 +540,6 @@ async def get_positions(
         == SYMBOL.upper()
     ]
 
-
-# =========================================================
-# MARKET
-# =========================================================
 
 async def get_market(
     connection
@@ -653,8 +572,10 @@ async def get_market(
         )
     )
 
-    point = specification.get(
-        "tickSize"
+    point = (
+        specification.get(
+            "tickSize"
+        )
     )
 
     if not point:
@@ -680,10 +601,6 @@ async def get_market(
         ask
     )
 
-
-# =========================================================
-# OPEN TRADE
-# =========================================================
 
 async def open_trade(
     connection,
@@ -786,16 +703,12 @@ async def open_trade(
         f"Entry: {entry}\n"
         f"SL: {sl}\n"
         f"TP: {tp}\n"
-        "PSAR: LIVE 1st DOT\n"
+        "PSAR: LIVE 2nd DOT M1\n"
         "BE: +5.00 -> +3.00"
     )
 
     return result
 
-
-# =========================================================
-# BREAK EVEN
-# =========================================================
 
 async def manage_be(
     connection
@@ -863,8 +776,6 @@ async def manage_be(
                 current_tp
             )
 
-        # BUY
-
         if side in (
             "BUY",
             "POSITION_TYPE_BUY"
@@ -886,11 +797,9 @@ async def manage_be(
                 >= BE_TRIGGER
                 and
                 (
-                    current_sl
-                    is None
+                    current_sl is None
                     or
-                    current_sl
-                    < new_sl
+                    current_sl < new_sl
                 )
             ):
 
@@ -918,8 +827,6 @@ async def manage_be(
                     f"SL: {new_sl}"
                 )
 
-        # SELL
-
         elif side in (
             "SELL",
             "POSITION_TYPE_SELL"
@@ -941,11 +848,9 @@ async def manage_be(
                 >= BE_TRIGGER
                 and
                 (
-                    current_sl
-                    is None
+                    current_sl is None
                     or
-                    current_sl
-                    > new_sl
+                    current_sl > new_sl
                 )
             ):
 
@@ -974,16 +879,10 @@ async def manage_be(
                 )
 
 
-# =========================================================
-# METAAPI SESSION
-# =========================================================
-
 async def bot_session(
     state
 ):
 
-    # Python SDK:
-    # region sa sem NEZADAVA.
     api = MetaApi(
         M_TOKEN
     )
@@ -1003,10 +902,6 @@ async def bot_session(
             )
         )
 
-        # =============================================
-        # UCET MUSI BYT NAJPRV NASADENY
-        # =============================================
-
         account_state = str(
             getattr(
                 account,
@@ -1020,7 +915,7 @@ async def bot_session(
             print(
                 f"METAAPI STATE: "
                 f"{account_state or 'UNKNOWN'} "
-                f"-> DEPLOYING",
+                "-> DEPLOYING",
                 flush=True
             )
 
@@ -1028,10 +923,6 @@ async def bot_session(
                 account.deploy(),
                 timeout=ACCOUNT_CONNECT_TIMEOUT
             )
-
-        # =============================================
-        # POCKAME NA REALNE SPOJENIE S BROKEROM
-        # =============================================
 
         connection_status = str(
             getattr(
@@ -1059,36 +950,18 @@ async def bot_session(
             flush=True
         )
 
-        # =============================================
-        # REGION SA ZISTI AUTOMATICKY
-        # =============================================
-
         region = getattr(
             account,
             "region",
             None
         )
 
-        if region:
-
-            region = str(
-                region
-            ).lower()
-
-        else:
-
-            region = (
-                await asyncio.to_thread(
-                    get_account_region_from_provisioning
-                )
-            )
-
         if not region:
+            region = DEFAULT_META_REGION
 
-            raise RuntimeError(
-                "MetaApi account region "
-                "could not be detected"
-            )
+        region = str(
+            region
+        ).lower()
 
         state[
             "meta_region"
@@ -1099,10 +972,6 @@ async def bot_session(
             f"{region}",
             flush=True
         )
-
-        # =============================================
-        # RPC SPOJENIE
-        # =============================================
 
         print(
             "CONNECTING METAAPI RPC...",
@@ -1117,11 +986,6 @@ async def bot_session(
         await asyncio.wait_for(
             connection.connect(),
             timeout=60
-        )
-
-        print(
-            "WAITING FOR SYNCHRONIZATION...",
-            flush=True
         )
 
         await asyncio.wait_for(
@@ -1143,8 +1007,8 @@ async def bot_session(
                 "RIObot GOLD START / CONNECTED\n\n"
                 f"Symbol: {SYMBOL}\n"
                 f"Lot: {LOT_SIZE}\n"
-                "Timeframe: M5\n"
-                "Strategy: AGGRESSIVE LIVE PSAR 1st DOT\n"
+                "Timeframe: M1\n"
+                "Strategy: LIVE PSAR 2nd DOT\n"
                 "MT5 cloud-g2\n"
                 "MAX: 1 XAUUSD position\n"
                 "TP: +8.00\n"
@@ -1160,7 +1024,7 @@ async def bot_session(
 
             telegram(
                 "RIObot GOLD RECONNECTED\n\n"
-                f"{SYMBOL} M5\n"
+                f"{SYMBOL} M1\n"
                 "MetaApi connection restored."
             )
 
@@ -1170,20 +1034,12 @@ async def bot_session(
 
             try:
 
-                # =================================
-                # BREAK EVEN
-                # =================================
-
                 await manage_be(
                     connection
                 )
 
-                # =================================
-                # LIVE M5
-                # =================================
-
                 candle = (
-                    await get_current_m5_candle(
+                    await get_current_m1_candle(
                         state[
                             "meta_region"
                         ]
@@ -1194,20 +1050,16 @@ async def bot_session(
 
                     update_candle_cache(
                         state[
-                            "m5_candles"
+                            "m1_candles"
                         ],
                         candle
                     )
 
                     count = len(
                         state[
-                            "m5_candles"
+                            "m1_candles"
                         ]
                     )
-
-                    # =============================
-                    # WARMUP
-                    # =============================
 
                     if (
                         count
@@ -1222,7 +1074,7 @@ async def bot_session(
                         ):
 
                             print(
-                                f"M5 WARMUP "
+                                f"M1 WARMUP "
                                 f"{count}/"
                                 f"{MIN_PSAR_BARS}",
                                 flush=True
@@ -1235,9 +1087,9 @@ async def bot_session(
                     else:
 
                         df = (
-                            make_m5_dataframe(
+                            make_m1_dataframe(
                                 state[
-                                    "m5_candles"
+                                    "m1_candles"
                                 ]
                             )
                         )
@@ -1272,10 +1124,6 @@ async def bot_session(
                                     f"{signal}"
                                 )
 
-                            # =========================
-                            # PRVA LIVE PSAR BODKA
-                            # =========================
-
                             if (
                                 signal_key
                                 is not None
@@ -1287,9 +1135,9 @@ async def bot_session(
                             ):
 
                                 print(
-                                    "1ST DOT SIGNAL "
+                                    "2ND DOT SIGNAL "
                                     f"{signal} "
-                                    f"M5="
+                                    f"M1="
                                     f"{candle_time} "
                                     f"PSAR="
                                     f"{current_candle['psar']}",
@@ -1302,15 +1150,8 @@ async def bot_session(
                                     )
                                 )
 
-                                # =====================
-                                # MAX 1 OBCHOD
-                                # =====================
-
                                 if not positions:
 
-                                    # nastavime kluc
-                                    # este pred orderom,
-                                    # aby nevznikol duplikat
                                     state[
                                         "last_signal_key"
                                     ] = signal_key
@@ -1326,9 +1167,6 @@ async def bot_session(
                                         "last_signal_key"
                                     ] = signal_key
 
-                # Ak cely cyklus presiel,
-                # pocitadlo chyb vynulujeme.
-
                 loop_errors = 0
 
             except Exception as exc:
@@ -1343,11 +1181,6 @@ async def bot_session(
                     f"{exc}",
                     flush=True
                 )
-
-                # Jedna kratka chyba/timeout
-                # robota hned nevypne.
-                # Po troch po sebe iducich
-                # chybach spravi komplet reconnect.
 
                 if (
                     loop_errors
@@ -1375,6 +1208,9 @@ async def bot_session(
                     timeout=10
                 )
 
+            except asyncio.CancelledError:
+                pass
+
             except Exception as exc:
 
                 print(
@@ -1384,10 +1220,6 @@ async def bot_session(
                     flush=True
                 )
 
-
-# =========================================================
-# MAIN / AUTO RECONNECT
-# =========================================================
 
 async def main():
 
@@ -1413,19 +1245,19 @@ async def main():
         "last_signal_key":
             None,
 
-        "m5_candles":
+        "m1_candles":
             load_cache(),
 
         "last_warmup_count":
             -1,
 
         "meta_region":
-            None,
+            DEFAULT_META_REGION
     }
 
     print(
-        "M5 CACHE LOADED: "
-        f"{len(state['m5_candles'])} "
+        "M1 CACHE LOADED: "
+        f"{len(state['m1_candles'])} "
         "bars",
         flush=True
     )
@@ -1466,12 +1298,8 @@ async def main():
             )
 
 
-# =========================================================
-# START
-# =========================================================
-
 if __name__ == "__main__":
 
     asyncio.run(
         main()
-    )
+            )
