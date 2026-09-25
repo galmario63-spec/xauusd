@@ -5,57 +5,57 @@ import time
 from datetime import datetime
 from threading import Thread
 
-import pandas as pd
 import requests
 from flask import Flask
 from metaapi_cloud_sdk import MetaApi
 
+# =========================================================
+# RIObot GOLD
+# XAUUSD | M1 | LIVE PSAR 1st DOT + 10s CONFIRM
+# MAX 1 trade | TP +8 | SL -10 | BE +7 -> +5
+# NEWS: HIGH USD -15 min / +30 min
+# =========================================================
 
 SYMBOL = "XAUUSD"
-LOT_SIZE = 1.0
+LOT_SIZE = 1.00
 
 PSAR_STEP = 0.02
-PSAR_MAX = 0.2
+PSAR_MAX = 0.20
 
-TP_DISTANCE = 8.0
-SL_DISTANCE = 10.0
+TP_DISTANCE = 8.00
+SL_DISTANCE = 10.00
+BE_TRIGGER = 7.00
+BE_LOCK = 5.00
 
-BE_TRIGGER_DISTANCE = 7.0
-BE_LOCK_DISTANCE = 5.0
-
-COMMENT = "RIObot GOLD M1 PSAR 1DOT 10S NEWS"
-
+SIGNAL_CONFIRM_SECONDS = 10
 LOOP_SECONDS = 10
 RECONNECT_SECONDS = 15
 META_TIMEOUT = 30
 MAX_LOOP_ERRORS = 3
 
-# Prvá PSAR bodka musí zostať platná 10 sekúnd
-SIGNAL_CONFIRM_SECONDS = 10
+DEFAULT_META_REGION = "london"
+MIN_PSAR_BARS = 6
+MAX_CACHE_BARS = 120
+CACHE_FILE = "m1_cache.json"
 
-# HIGH USD NEWS
 NEWS_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 NEWS_BEFORE_MINUTES = 15
 NEWS_AFTER_MINUTES = 30
 NEWS_FETCH_SECONDS = 30 * 60
 NEWS_STALE_SECONDS = 3 * 60 * 60
 
-DEFAULT_META_REGION = "london"
-
-MIN_PSAR_BARS = 6
-MAX_CACHE_BARS = 120
-CACHE_FILE = "m1_cache.json"
-
+COMMENT = "RIObot GOLD M1 PSAR 1DOT 10S NEWS"
 
 M_TOKEN = os.getenv("M_TOKEN")
 M_ACC = os.getenv("M_ACC")
-
 T_TOKEN = os.getenv("T_TOKEN")
 T_CHAT = os.getenv("T_CHAT")
 
+# =========================================================
+# RENDER KEEP ALIVE
+# =========================================================
 
 app = Flask(__name__)
-
 
 @app.route("/")
 def home():
@@ -63,589 +63,296 @@ def home():
 
 
 def run_server():
-    port = int(
-        os.environ.get(
-            "PORT",
-            10000
-        )
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 
 def keep_alive():
-    Thread(
-        target=run_server,
-        daemon=True
-    ).start()
+    Thread(target=run_server, daemon=True).start()
 
+# =========================================================
+# TELEGRAM
+# =========================================================
 
 def telegram(message):
-
     if not T_TOKEN or not T_CHAT:
         return
-
     try:
         requests.post(
             f"https://api.telegram.org/bot{T_TOKEN}/sendMessage",
-            data={
-                "chat_id": T_CHAT,
-                "text": message
-            },
-            timeout=10
+            data={"chat_id": T_CHAT, "text": message},
+            timeout=10,
         )
-
     except Exception as exc:
-        print(
-            f"TELEGRAM WARNING: "
-            f"{type(exc).__name__}: {exc}",
-            flush=True
-        )
+        print(f"TELEGRAM WARNING: {type(exc).__name__}: {exc}", flush=True)
 
+# =========================================================
+# M1 CACHE
+# =========================================================
 
 def load_cache():
-
     try:
-        if not os.path.exists(
-            CACHE_FILE
-        ):
+        if not os.path.exists(CACHE_FILE):
             return []
-
-        with open(
-            CACHE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
-            data = json.load(
-                file
-            )
-
-        if not isinstance(
-            data,
-            list
-        ):
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
             return []
-
         clean = []
-
-        for candle in data[
-            -MAX_CACHE_BARS:
-        ]:
-
-            if all(
-                key in candle
-                for key in (
-                    "time",
-                    "open",
-                    "high",
-                    "low",
-                    "close"
-                )
-            ):
-                clean.append(
-                    candle
-                )
-
+        for c in data[-MAX_CACHE_BARS:]:
+            if all(k in c for k in ("time", "open", "high", "low", "close")):
+                clean.append(c)
         return clean
-
     except Exception as exc:
-        print(
-            f"CACHE LOAD WARNING: "
-            f"{type(exc).__name__}: {exc}",
-            flush=True
-        )
-
+        print(f"CACHE LOAD WARNING: {type(exc).__name__}: {exc}", flush=True)
         return []
 
 
 def save_cache(candles):
-
     try:
-        with open(
-            CACHE_FILE,
-            "w",
-            encoding="utf-8"
-        ) as file:
-
-            json.dump(
-                candles[
-                    -MAX_CACHE_BARS:
-                ],
-                file
-            )
-
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(candles[-MAX_CACHE_BARS:], f)
     except Exception as exc:
-        print(
-            f"CACHE SAVE WARNING: "
-            f"{type(exc).__name__}: {exc}",
-            flush=True
-        )
+        print(f"CACHE SAVE WARNING: {type(exc).__name__}: {exc}", flush=True)
 
 
-def update_candle_cache(
-    candles,
-    candle
-):
-
+def update_cache(candles, candle):
     if candle is None:
         return
-
     if not candles:
-        candles.append(
-            candle
-        )
-
-    elif (
-        candles[-1]["time"]
-        == candle["time"]
-    ):
+        candles.append(candle)
+    elif candles[-1]["time"] == candle["time"]:
         candles[-1] = candle
-
     else:
-        candles.append(
-            candle
-        )
+        candles.append(candle)
+    del candles[:-MAX_CACHE_BARS]
+    save_cache(candles)
 
-    del candles[
-        :-MAX_CACHE_BARS
-    ]
+# =========================================================
+# MARKET DATA
+# =========================================================
 
-    save_cache(
-        candles
-    )
-
-
-async def get_current_m1_candle(
-    region
-):
-
+async def get_current_m1_candle(region):
     url = (
-        f"https://mt-client-api-v1."
-        f"{region}."
-        f"agiliumtrade.ai/"
-        f"users/current/accounts/"
-        f"{M_ACC}/symbols/"
-        f"{SYMBOL}/"
-        f"current-candles/1m"
-        f"?keepSubscription=true"
+        f"https://mt-client-api-v1.{region}.agiliumtrade.ai/"
+        f"users/current/accounts/{M_ACC}/symbols/{SYMBOL}/"
+        f"current-candles/1m?keepSubscription=true"
     )
 
     def fetch():
-
-        response = requests.get(
+        r = requests.get(
             url,
-            headers={
-                "Accept":
-                    "application/json",
-
-                "auth-token":
-                    M_TOKEN
-            },
-            timeout=20
+            headers={"Accept": "application/json", "auth-token": M_TOKEN},
+            timeout=20,
         )
-
-        if (
-            response.status_code
-            != 200
-        ):
-            raise RuntimeError(
-                f"M1 candle HTTP "
-                f"{response.status_code}: "
-                f"{response.text[:250]}"
-            )
-
-        return response.json()
+        if r.status_code != 200:
+            raise RuntimeError(f"M1 candle HTTP {r.status_code}: {r.text[:250]}")
+        return r.json()
 
     try:
-        candle = (
-            await asyncio.to_thread(
-                fetch
-            )
-        )
+        c = await asyncio.to_thread(fetch)
 
-        if not candle:
-            return None
-
-        required = (
-            "time",
-            "open",
-            "high",
-            "low",
-            "close"
-        )
-
-        if not all(
-            key in candle
-            for key in required
+        if not c or not all(
+            k in c
+            for k in ("time", "open", "high", "low", "close")
         ):
-            print(
-                "M1 CANDLE WARNING: "
-                f"missing fields: "
-                f"{candle}",
-                flush=True
-            )
-
             return None
 
         return {
-            "time":
-                str(
-                    candle["time"]
-                ),
-
-            "open":
-                float(
-                    candle["open"]
-                ),
-
-            "high":
-                float(
-                    candle["high"]
-                ),
-
-            "low":
-                float(
-                    candle["low"]
-                ),
-
-            "close":
-                float(
-                    candle["close"]
-                )
+            "time": str(c["time"]),
+            "open": float(c["open"]),
+            "high": float(c["high"]),
+            "low": float(c["low"]),
+            "close": float(c["close"]),
         }
 
     except Exception as exc:
         print(
             f"M1 CANDLE WARNING: "
-            f"{type(exc).__name__}: "
-            f"{exc}",
+            f"{type(exc).__name__}: {exc}",
             flush=True
         )
-
         return None
 
 
-def psar_values(df):
-
-    highs = (
-        df["high"]
-        .astype(float)
-        .tolist()
+async def get_positions(connection):
+    positions = await asyncio.wait_for(
+        connection.get_positions(),
+        timeout=META_TIMEOUT
     )
 
-    lows = (
-        df["low"]
-        .astype(float)
-        .tolist()
+    return [
+        p for p in positions
+        if str(p.get("symbol", "")).upper() == SYMBOL
+    ]
+
+
+async def get_market(connection):
+    spec = await asyncio.wait_for(
+        connection.get_symbol_specification(SYMBOL),
+        timeout=META_TIMEOUT
     )
 
-    count = len(df)
-
-    if count < 3:
-        return [None] * count
-
-    psar = (
-        [None] * count
+    price = await asyncio.wait_for(
+        connection.get_symbol_price(SYMBOL),
+        timeout=META_TIMEOUT
     )
+
+    digits = int(spec.get("digits", 2))
+    tick_size = float(
+        spec.get("tickSize")
+        or (10 ** (-digits))
+    )
+
+    bid = float(price["bid"])
+    ask = float(price["ask"])
+
+    return tick_size, digits, bid, ask
+
+# =========================================================
+# PSAR
+# =========================================================
+
+def psar_values(candles):
+    n = len(candles)
+
+    if n < 3:
+        return [None] * n
+
+    highs = [
+        float(c["high"])
+        for c in candles
+    ]
+
+    lows = [
+        float(c["low"])
+        for c in candles
+    ]
+
+    out = [None] * n
 
     bull = True
-
     af = PSAR_STEP
-
     ep = highs[0]
-
     sar = lows[0]
 
-    psar[0] = sar
+    out[0] = sar
 
-    for i in range(
-        1,
-        count
-    ):
-
-        sar = (
-            sar
-            + af
-            * (
-                ep
-                - sar
-            )
-        )
+    for i in range(1, n):
+        sar = sar + af * (ep - sar)
 
         if bull:
+            sar = min(
+                sar,
+                lows[i - 1]
+            )
 
             if i >= 2:
                 sar = min(
                     sar,
-                    lows[i - 1],
                     lows[i - 2]
                 )
 
-            else:
-                sar = min(
-                    sar,
-                    lows[i - 1]
-                )
-
             if lows[i] < sar:
-
                 bull = False
-
                 sar = ep
-
                 ep = lows[i]
-
                 af = PSAR_STEP
 
             elif highs[i] > ep:
-
                 ep = highs[i]
-
                 af = min(
-                    af
-                    + PSAR_STEP,
+                    af + PSAR_STEP,
                     PSAR_MAX
                 )
 
         else:
+            sar = max(
+                sar,
+                highs[i - 1]
+            )
 
             if i >= 2:
                 sar = max(
                     sar,
-                    highs[i - 1],
                     highs[i - 2]
                 )
 
-            else:
-                sar = max(
-                    sar,
-                    highs[i - 1]
-                )
-
             if highs[i] > sar:
-
                 bull = True
-
                 sar = ep
-
                 ep = highs[i]
-
                 af = PSAR_STEP
 
             elif lows[i] < ep:
-
                 ep = lows[i]
-
                 af = min(
-                    af
-                    + PSAR_STEP,
+                    af + PSAR_STEP,
                     PSAR_MAX
                 )
 
-        psar[i] = sar
+        out[i] = sar
 
-    return psar
+    return out
 
 
-def make_m1_dataframe(
-    candles
-):
+def get_live_signal(candles):
+    if len(candles) < MIN_PSAR_BARS:
+        return None, None
 
+    psar = psar_values(candles)
+
+    if psar[-2] is None or psar[-1] is None:
+        return None, None
+
+    prev_close = float(
+        candles[-2]["close"]
+    )
+
+    curr_close = float(
+        candles[-1]["close"]
+    )
+
+    prev_psar = float(
+        psar[-2]
+    )
+
+    curr_psar = float(
+        psar[-1]
+    )
+
+    # Prvá LIVE bodka pod cenou = BUY
     if (
-        len(candles)
-        < MIN_PSAR_BARS
+        prev_psar > prev_close
+        and curr_psar < curr_close
     ):
-        return None
+        return "BUY", curr_psar
 
-    df = pd.DataFrame(
-        candles
-    )
-
-    for col in (
-        "open",
-        "high",
-        "low",
-        "close"
-    ):
-
-        df[col] = (
-            pd.to_numeric(
-                df[col],
-                errors="coerce"
-            )
-        )
-
-    df = (
-        df.dropna(
-            subset=[
-                "open",
-                "high",
-                "low",
-                "close"
-            ]
-        )
-        .reset_index(
-            drop=True
-        )
-    )
-
+    # Prvá LIVE bodka nad cenou = SELL
     if (
-        len(df)
-        < MIN_PSAR_BARS
+        prev_psar < prev_close
+        and curr_psar > curr_close
     ):
-        return None
+        return "SELL", curr_psar
 
-    df["psar"] = (
-        psar_values(
-            df
-        )
-    )
+    return None, curr_psar
 
-    return df
+# =========================================================
+# SL / TP / BE
+# =========================================================
 
+def normalize_side(value):
+    text = str(
+        value or ""
+    ).upper()
 
-def get_live_signal(df):
-
-    if (
-        df is None
-        or len(df) < 3
-    ):
-        return None
-
-    previous = df.iloc[-2]
-    current = df.iloc[-1]
-
-    previous_close = float(
-        previous["close"]
-    )
-
-    current_close = float(
-        current["close"]
-    )
-
-    previous_psar = float(
-        previous["psar"]
-    )
-
-    current_psar = float(
-        current["psar"]
-    )
-
-    # BUY:
-    # PSAR bol nad cenou
-    # a nová LIVE bodka je pod cenou
-    if (
-        previous_psar
-        > previous_close
-        and
-        current_psar
-        < current_close
-    ):
+    if "BUY" in text:
         return "BUY"
 
-    # SELL:
-    # PSAR bol pod cenou
-    # a nová LIVE bodka je nad cenou
-    if (
-        previous_psar
-        < previous_close
-        and
-        current_psar
-        > current_close
-    ):
+    if "SELL" in text:
         return "SELL"
 
     return None
-
-
-async def get_positions(
-    connection
-):
-
-    positions = (
-        await asyncio.wait_for(
-            connection.get_positions(),
-            timeout=META_TIMEOUT
-        )
-    )
-
-    return [
-        position
-        for position in positions
-        if str(
-            position.get(
-                "symbol",
-                ""
-            )
-        ).upper()
-        == SYMBOL.upper()
-    ]
-
-
-async def get_market(
-    connection
-):
-
-    specification = (
-        await asyncio.wait_for(
-            connection
-            .get_symbol_specification(
-                SYMBOL
-            ),
-            timeout=META_TIMEOUT
-        )
-    )
-
-    price = (
-        await asyncio.wait_for(
-            connection
-            .get_symbol_price(
-                SYMBOL
-            ),
-            timeout=META_TIMEOUT
-        )
-    )
-
-    digits = int(
-        specification.get(
-            "digits",
-            2
-        )
-    )
-
-    point = (
-        specification.get(
-            "tickSize"
-        )
-    )
-
-    if not point:
-        point = (
-            10
-            ** (-digits)
-        )
-
-    point = float(
-        point
-    )
-
-    bid = float(
-        price["bid"]
-    )
-
-    ask = float(
-        price["ask"]
-    )
-
-    return (
-        point,
-        digits,
-        bid,
-        ask
-    )
 
 
 def exact_levels(
@@ -653,92 +360,44 @@ def exact_levels(
     entry,
     digits
 ):
-
-    if side in (
-        "BUY",
-        "POSITION_TYPE_BUY"
-    ):
-
-        sl = round(
-            entry
-            - SL_DISTANCE,
-            digits
-        )
-
-        tp = round(
-            entry
-            + TP_DISTANCE,
-            digits
-        )
-
-    else:
-
-        sl = round(
-            entry
-            + SL_DISTANCE,
-            digits
-        )
-
-        tp = round(
-            entry
-            - TP_DISTANCE,
-            digits
+    if side == "BUY":
+        return (
+            round(
+                entry - SL_DISTANCE,
+                digits
+            ),
+            round(
+                entry + TP_DISTANCE,
+                digits
+            ),
         )
 
     return (
-        sl,
-        tp
+        round(
+            entry + SL_DISTANCE,
+            digits
+        ),
+        round(
+            entry - TP_DISTANCE,
+            digits
+        ),
     )
 
 
-async def wait_for_symbol_position(
+async def wait_for_position(
     connection,
     side,
     attempts=20
 ):
+    for _ in range(attempts):
 
-    buy_types = (
-        "BUY",
-        "POSITION_TYPE_BUY"
-    )
-
-    sell_types = (
-        "SELL",
-        "POSITION_TYPE_SELL"
-    )
-
-    for _ in range(
-        attempts
-    ):
-
-        positions = (
-            await get_positions(
-                connection
-            )
-        )
-
-        for position in positions:
-
-            pside = str(
-                position.get(
-                    "type",
-                    ""
-                )
-            ).upper()
-
-            if (
-                side == "BUY"
-                and pside
-                in buy_types
-            ):
-                return position
-
-            if (
-                side == "SELL"
-                and pside
-                in sell_types
-            ):
-                return position
+        for p in await get_positions(
+            connection
+        ):
+            if normalize_side(
+                p.get("type")
+            ) == side:
+                return p
 
         await asyncio.sleep(
             0.25
@@ -750,46 +409,32 @@ async def wait_for_symbol_position(
 async def ensure_exact_stops(
     connection
 ):
-
-    positions = (
-        await get_positions(
-            connection
-        )
+    positions = await get_positions(
+        connection
     )
 
     if not positions:
         return
 
-    (
-        _,
-        digits,
-        _,
-        _
-    ) = await get_market(
+    _, digits, _, _ = await get_market(
         connection
     )
 
     epsilon = (
-        10
-        ** (-digits)
-        / 2
-    )
+        10 ** (-digits)
+    ) / 2
 
-    for position in positions:
-
-        position_id = (
-            position.get("id")
+    for p in positions:
+        position_id = p.get(
+            "id"
         )
 
-        side = str(
-            position.get(
-                "type",
-                ""
-            )
-        ).upper()
+        side = normalize_side(
+            p.get("type")
+        )
 
         entry = float(
-            position.get(
+            p.get(
                 "openPrice",
                 0
             )
@@ -798,120 +443,74 @@ async def ensure_exact_stops(
 
         if (
             not position_id
+            or side not in ("BUY", "SELL")
             or entry <= 0
         ):
             continue
 
-        (
-            exact_sl,
-            exact_tp
-        ) = exact_levels(
+        exact_sl, exact_tp = exact_levels(
             side,
             entry,
             digits
         )
 
-        current_sl_raw = (
-            position.get(
-                "stopLoss"
-            )
+        sl_raw = p.get(
+            "stopLoss"
         )
 
-        current_tp_raw = (
-            position.get(
-                "takeProfit"
-            )
+        tp_raw = p.get(
+            "takeProfit"
         )
 
         current_sl = (
-            float(
-                current_sl_raw
-            )
-            if current_sl_raw
-            not in (
-                None,
-                0
-            )
+            float(sl_raw)
+            if sl_raw not in (None, 0)
             else None
         )
 
         current_tp = (
-            float(
-                current_tp_raw
-            )
-            if current_tp_raw
-            not in (
-                None,
-                0
-            )
+            float(tp_raw)
+            if tp_raw not in (None, 0)
             else None
         )
 
-        # Ak si ručne posunieš BUY SL
-        # na BE alebo do zisku,
-        # robot ho nevráti späť.
-        if side in (
-            "BUY",
-            "POSITION_TYPE_BUY"
+        # Ak si ručne dáš lepší SL,
+        # RIObot ho NEZHORŠÍ.
+        if (
+            side == "BUY"
+            and current_sl is not None
+            and current_sl >= entry
         ):
+            target_sl = current_sl
 
-            target_sl = (
-                current_sl
-                if (
-                    current_sl
-                    is not None
-                    and current_sl
-                    >= entry
-                )
-                else exact_sl
-            )
-
-        # Rovnako pri SELL.
-        elif side in (
-            "SELL",
-            "POSITION_TYPE_SELL"
+        elif (
+            side == "SELL"
+            and current_sl is not None
+            and current_sl <= entry
         ):
-
-            target_sl = (
-                current_sl
-                if (
-                    current_sl
-                    is not None
-                    and current_sl
-                    <= entry
-                )
-                else exact_sl
-            )
+            target_sl = current_sl
 
         else:
-            continue
+            target_sl = exact_sl
 
         needs_sl = (
             current_sl is None
             or abs(
-                current_sl
-                - target_sl
-            )
-            > epsilon
+                current_sl - target_sl
+            ) > epsilon
         )
 
         needs_tp = (
             current_tp is None
             or abs(
-                current_tp
-                - exact_tp
-            )
-            > epsilon
+                current_tp - exact_tp
+            ) > epsilon
         )
 
-        if (
-            needs_sl
-            or needs_tp
-        ):
+        if needs_sl or needs_tp:
 
             await asyncio.wait_for(
-                connection
-                .modify_position(
+                connection.modify_position(
                     position_id,
                     target_sl,
                     exact_tp
@@ -920,26 +519,144 @@ async def ensure_exact_stops(
             )
 
             print(
-                f"EXACT LEVELS "
-                f"{side} "
-                f"ENTRY={entry} "
-                f"SL={target_sl} "
-                f"TP={exact_tp}",
+                f"LEVELS {side} "
+                f"ENTRY={entry:.2f} "
+                f"SL={target_sl:.2f} "
+                f"TP={exact_tp:.2f}",
                 flush=True
             )
 
+
+async def manage_be(
+    connection
+):
+    positions = await get_positions(
+        connection
+    )
+
+    if not positions:
+        return
+
+    _, digits, bid, ask = await get_market(
+        connection
+    )
+
+    for p in positions:
+        position_id = p.get(
+            "id"
+        )
+
+        side = normalize_side(
+            p.get("type")
+        )
+
+        entry = float(
+            p.get(
+                "openPrice",
+                0
+            )
+            or 0
+        )
+
+        if (
+            not position_id
+            or side not in ("BUY", "SELL")
+            or entry <= 0
+        ):
+            continue
+
+        sl_raw = p.get(
+            "stopLoss"
+        )
+
+        tp_raw = p.get(
+            "takeProfit"
+        )
+
+        current_sl = (
+            float(sl_raw)
+            if sl_raw not in (None, 0)
+            else None
+        )
+
+        current_tp = (
+            float(tp_raw)
+            if tp_raw not in (None, 0)
+            else None
+        )
+
+        if side == "BUY":
+
+            profit_distance = (
+                bid - entry
+            )
+
+            new_sl = round(
+                entry + BE_LOCK,
+                digits
+            )
+
+            should_move = (
+                profit_distance >= BE_TRIGGER
+                and (
+                    current_sl is None
+                    or current_sl < new_sl
+                )
+            )
+
+        else:
+
+            profit_distance = (
+                entry - ask
+            )
+
+            new_sl = round(
+                entry - BE_LOCK,
+                digits
+            )
+
+            should_move = (
+                profit_distance >= BE_TRIGGER
+                and (
+                    current_sl is None
+                    or current_sl > new_sl
+                )
+            )
+
+        if should_move:
+
+            await asyncio.wait_for(
+                connection.modify_position(
+                    position_id,
+                    new_sl,
+                    current_tp
+                ),
+                timeout=META_TIMEOUT
+            )
+
+            print(
+                f"BE {side} -> "
+                f"{new_sl:.2f}",
+                flush=True
+            )
+
+            telegram(
+                "RIObot GOLD BE\n\n"
+                f"{side} {SYMBOL}\n"
+                "+7.00 reached\n"
+                "SL locked +5.00\n"
+                f"SL: {new_sl:.2f}"
+            )
+
+# =========================================================
+# OPEN TRADE
+# =========================================================
 
 async def open_trade(
     connection,
     side
 ):
-
-    (
-        _,
-        digits,
-        bid,
-        ask
-    ) = await get_market(
+    _, digits, bid, ask = await get_market(
         connection
     )
 
@@ -949,10 +666,7 @@ async def open_trade(
         else bid
     )
 
-    (
-        provisional_sl,
-        provisional_tp
-    ) = exact_levels(
+    provisional_sl, provisional_tp = exact_levels(
         side,
         provisional_entry,
         digits
@@ -960,127 +674,49 @@ async def open_trade(
 
     if side == "BUY":
 
-        result = (
-            await asyncio.wait_for(
-                connection
-                .create_market_buy_order(
-                    SYMBOL,
-                    LOT_SIZE,
-                    provisional_sl,
-                    provisional_tp,
-                    {
-                        "comment":
-                            COMMENT
-                    }
-                ),
-                timeout=META_TIMEOUT
-            )
-        )
-
-    else:
-
-        result = (
-            await asyncio.wait_for(
-                connection
-                .create_market_sell_order(
-                    SYMBOL,
-                    LOT_SIZE,
-                    provisional_sl,
-                    provisional_tp,
-                    {
-                        "comment":
-                            COMMENT
-                    }
-                ),
-                timeout=META_TIMEOUT
-            )
-        )
-
-    position = (
-        await wait_for_symbol_position(
-            connection,
-            side
-        )
-    )
-
-    if position is not None:
-
-        position_id = (
-            position.get("id")
-        )
-
-        actual_entry = float(
-            position.get(
-                "openPrice",
-                0
-            )
-            or 0
-        )
-
-        (
-            exact_sl,
-            exact_tp
-        ) = exact_levels(
-            side,
-            actual_entry,
-            digits
-        )
-
         await asyncio.wait_for(
-            connection
-            .modify_position(
-                position_id,
-                exact_sl,
-                exact_tp
+            connection.create_market_buy_order(
+                SYMBOL,
+                LOT_SIZE,
+                provisional_sl,
+                provisional_tp,
+                {
+                    "comment":
+                        COMMENT
+                },
             ),
             timeout=META_TIMEOUT
         )
 
-        print(
-            f"ORDER OK "
-            f"{side} "
-            f"{SYMBOL} "
-            f"REAL ENTRY="
-            f"{actual_entry} "
-            f"SL={exact_sl} "
-            f"TP={exact_tp}",
-            flush=True
-        )
-
-        telegram(
-            "RIObot GOLD\n\n"
-            f"{side} {SYMBOL}\n"
-            f"Lot: {LOT_SIZE}\n"
-            f"Entry: "
-            f"{actual_entry:.2f}\n"
-            f"SL: {exact_sl:.2f}\n"
-            f"TP: {exact_tp:.2f}\n"
-            "Timeframe: M1\n"
-            "PSAR: LIVE 1st DOT "
-            "+ 10s confirm\n"
-            "BE: +7.00 -> +5.00\n"
-            "NEWS: HIGH USD "
-            "-15m / +30m"
-        )
-
     else:
 
-        print(
-            f"ORDER OK "
-            f"{side} "
-            f"{SYMBOL}; "
-            "waiting for exact "
-            "openPrice sync",
-            flush=True
+        await asyncio.wait_for(
+            connection.create_market_sell_order(
+                SYMBOL,
+                LOT_SIZE,
+                provisional_sl,
+                provisional_tp,
+                {
+                    "comment":
+                        COMMENT
+                },
+            ),
+            timeout=META_TIMEOUT
         )
+
+    position = await wait_for_position(
+        connection,
+        side
+    )
+
+    if position is None:
 
         telegram(
             "RIObot GOLD\n\n"
             f"{side} {SYMBOL}\n"
             f"Lot: {LOT_SIZE}\n"
-            "Order opened. "
-            "Exact SL/TP sync "
-            "on next cycle.\n"
+            "Order opened; exact SL/TP "
+            "will sync next cycle.\n"
             "Timeframe: M1\n"
             "PSAR: LIVE 1st DOT "
             "+ 10s confirm\n"
@@ -1089,235 +725,82 @@ async def open_trade(
             "-15m / +30m"
         )
 
-    return result
-
-
-async def manage_be(
-    connection
-):
-
-    positions = (
-        await get_positions(
-            connection
-        )
-    )
-
-    if not positions:
         return
 
-    (
-        _,
-        digits,
-        bid,
-        ask
-    ) = await get_market(
-        connection
+    position_id = position.get(
+        "id"
     )
 
-    for position in positions:
-
-        position_id = (
-            position.get("id")
+    actual_entry = float(
+        position.get(
+            "openPrice",
+            0
         )
+        or 0
+    )
 
-        side = str(
-            position.get(
-                "type",
-                ""
-            )
-        ).upper()
+    exact_sl, exact_tp = exact_levels(
+        side,
+        actual_entry,
+        digits
+    )
 
-        entry = float(
-            position.get(
-                "openPrice",
-                0
-            )
-            or 0
-        )
+    await asyncio.wait_for(
+        connection.modify_position(
+            position_id,
+            exact_sl,
+            exact_tp
+        ),
+        timeout=META_TIMEOUT
+    )
 
-        if (
-            not position_id
-            or entry <= 0
-        ):
-            continue
+    print(
+        f"ORDER OK {side} {SYMBOL} "
+        f"ENTRY={actual_entry:.2f} "
+        f"SL={exact_sl:.2f} "
+        f"TP={exact_tp:.2f}",
+        flush=True
+    )
 
-        current_sl_raw = (
-            position.get(
-                "stopLoss"
-            )
-        )
+    telegram(
+        "RIObot GOLD\n\n"
+        f"{side} {SYMBOL}\n"
+        f"Lot: {LOT_SIZE}\n"
+        f"Entry: {actual_entry:.2f}\n"
+        f"SL: {exact_sl:.2f}\n"
+        f"TP: {exact_tp:.2f}\n"
+        "Timeframe: M1\n"
+        "PSAR: LIVE 1st DOT "
+        "+ 10s confirm\n"
+        "BE: +7.00 -> +5.00\n"
+        "NEWS: HIGH USD "
+        "-15m / +30m"
+    )
 
-        current_tp_raw = (
-            position.get(
-                "takeProfit"
-            )
-        )
+# =========================================================
+# NEWS FILTER
+# =========================================================
 
-        current_sl = (
-            float(
-                current_sl_raw
-            )
-            if current_sl_raw
-            not in (
-                None,
-                0
-            )
-            else None
-        )
-
-        current_tp = (
-            float(
-                current_tp_raw
-            )
-            if current_tp_raw
-            not in (
-                None,
-                0
-            )
-            else None
-        )
-
-        if side in (
-            "BUY",
-            "POSITION_TYPE_BUY"
-        ):
-
-            profit_distance = (
-                bid
-                - entry
-            )
-
-            new_sl = round(
-                entry
-                + BE_LOCK_DISTANCE,
-                digits
-            )
-
-            should_move = (
-                profit_distance
-                >= BE_TRIGGER_DISTANCE
-                and
-                (
-                    current_sl
-                    is None
-                    or current_sl
-                    < new_sl
-                )
-            )
-
-            if should_move:
-
-                await asyncio.wait_for(
-                    connection
-                    .modify_position(
-                        position_id,
-                        new_sl,
-                        current_tp
-                    ),
-                    timeout=META_TIMEOUT
-                )
-
-                print(
-                    f"BE BUY -> "
-                    f"{new_sl}",
-                    flush=True
-                )
-
-                telegram(
-                    "RIObot GOLD BE\n\n"
-                    f"BUY {SYMBOL}\n"
-                    "+7.00 reached\n"
-                    "SL locked +5.00\n"
-                    f"SL: {new_sl:.2f}"
-                )
-
-        elif side in (
-            "SELL",
-            "POSITION_TYPE_SELL"
-        ):
-
-            profit_distance = (
-                entry
-                - ask
-            )
-
-            new_sl = round(
-                entry
-                - BE_LOCK_DISTANCE,
-                digits
-            )
-
-            should_move = (
-                profit_distance
-                >= BE_TRIGGER_DISTANCE
-                and
-                (
-                    current_sl
-                    is None
-                    or current_sl
-                    > new_sl
-                )
-            )
-
-            if should_move:
-
-                await asyncio.wait_for(
-                    connection
-                    .modify_position(
-                        position_id,
-                        new_sl,
-                        current_tp
-                    ),
-                    timeout=META_TIMEOUT
-                )
-
-                print(
-                    f"BE SELL -> "
-                    f"{new_sl}",
-                    flush=True
-                )
-
-                telegram(
-                    "RIObot GOLD BE\n\n"
-                    f"SELL {SYMBOL}\n"
-                    "+7.00 reached\n"
-                    "SL locked +5.00\n"
-                    f"SL: {new_sl:.2f}"
-                )
-
-
-def parse_news_datetime(
-    value
-):
-
+def parse_news_time(value):
     if not value:
         return None
 
-    text = str(
-        value
-    ).strip()
-
     try:
-        return (
-            datetime
-            .fromisoformat(
-                text.replace(
-                    "Z",
-                    "+00:00"
-                )
+        return datetime.fromisoformat(
+            str(value).replace(
+                "Z",
+                "+00:00"
             )
-            .timestamp()
-        )
+        ).timestamp()
 
     except Exception:
         return None
 
 
-async def refresh_news_calendar(
+async def refresh_news(
     state,
     force=False
 ):
-
     now = time.time()
 
     if (
@@ -1338,28 +821,24 @@ async def refresh_news_calendar(
     )
 
     def fetch():
-
-        response = requests.get(
+        r = requests.get(
             NEWS_URL,
             headers={
                 "Accept":
                     "application/json",
-
                 "User-Agent":
                     "RIObot-GOLD/1.0"
             },
             timeout=20
         )
 
-        response.raise_for_status()
+        r.raise_for_status()
 
-        return response.json()
+        return r.json()
 
     try:
-        raw = (
-            await asyncio.to_thread(
-                fetch
-            )
+        raw = await asyncio.to_thread(
+            fetch
         )
 
         events = []
@@ -1397,35 +876,31 @@ async def refresh_news_calendar(
                 ):
                     continue
 
-                ts = (
-                    parse_news_datetime(
-                        item.get("date")
-                    )
+                ts = parse_news_time(
+                    item.get("date")
                 )
 
                 if ts is None:
                     continue
 
-                title = str(
-                    item.get(
-                        "title",
-                        "HIGH USD"
-                    )
-                ).strip()
-
-                if not title:
-                    title = "HIGH USD"
-
                 events.append(
                     {
-                        "ts": ts,
-                        "title": title
+                        "ts":
+                            ts,
+                        "title":
+                            str(
+                                item.get(
+                                    "title",
+                                    "HIGH USD"
+                                )
+                            ).strip()
+                            or "HIGH USD",
                     }
                 )
 
         events.sort(
-            key=lambda event:
-                event["ts"]
+            key=lambda x:
+                x["ts"]
         )
 
         state[
@@ -1441,7 +916,7 @@ async def refresh_news_calendar(
         ] = False
 
         print(
-            "NEWS CALENDAR OK: "
+            f"NEWS CALENDAR OK: "
             f"{len(events)} "
             "HIGH USD events",
             flush=True
@@ -1450,7 +925,7 @@ async def refresh_news_calendar(
     except Exception as exc:
 
         print(
-            "NEWS CALENDAR WARNING: "
+            f"NEWS CALENDAR WARNING: "
             f"{type(exc).__name__}: "
             f"{exc}",
             flush=True
@@ -1481,7 +956,6 @@ async def refresh_news_calendar(
 def news_block_status(
     state
 ):
-
     now = time.time()
 
     last_ok = float(
@@ -1518,7 +992,7 @@ def news_block_status(
         []
     ):
 
-        event_ts = float(
+        ts = float(
             event.get(
                 "ts",
                 0.0
@@ -1527,9 +1001,9 @@ def news_block_status(
         )
 
         if (
-            event_ts - before
+            ts - before
             <= now
-            <= event_ts + after
+            <= ts + after
         ):
             return (
                 True,
@@ -1543,11 +1017,13 @@ def news_block_status(
         None
     )
 
+# =========================================================
+# METAAPI SESSION
+# =========================================================
 
 async def bot_session(
     state
 ):
-
     api = MetaApi(
         M_TOKEN
     )
@@ -1555,30 +1031,22 @@ async def bot_session(
     connection = None
 
     try:
-        account = (
-            await asyncio.wait_for(
-                api
-                .metatrader_account_api
-                .get_account(
-                    M_ACC
-                ),
-                timeout=META_TIMEOUT
-            )
+        account = await asyncio.wait_for(
+            api
+            .metatrader_account_api
+            .get_account(
+                M_ACC
+            ),
+            timeout=META_TIMEOUT
         )
-
-        region = getattr(
-            account,
-            "region",
-            None
-        )
-
-        if not region:
-            region = (
-                DEFAULT_META_REGION
-            )
 
         region = str(
-            region
+            getattr(
+                account,
+                "region",
+                None
+            )
+            or DEFAULT_META_REGION
         ).lower()
 
         state[
@@ -1624,25 +1092,16 @@ async def bot_session(
             telegram(
                 "RIObot GOLD "
                 "START / CONNECTED\n\n"
-
                 f"Symbol: {SYMBOL}\n"
                 f"Lot: {LOT_SIZE}\n"
-
                 "Timeframe: M1\n"
-
                 "Strategy: LIVE PSAR "
                 "1st DOT + 10s confirm\n"
-
-                "MT5 cloud-g2\n"
-
                 "MAX: 1 XAUUSD "
                 "position\n"
-
                 "TP: +8.00\n"
                 "SL: -10.00\n"
-
                 "BE: +7.00 -> +5.00\n"
-
                 "NEWS: HIGH USD "
                 "-15m / +30m"
             )
@@ -1656,14 +1115,12 @@ async def bot_session(
             telegram(
                 "RIObot GOLD "
                 "RECONNECTED\n\n"
-
                 f"{SYMBOL} M1\n"
-
                 "MetaApi connection "
                 "restored."
             )
 
-        await refresh_news_calendar(
+        await refresh_news(
             state,
             force=True
         )
@@ -1673,9 +1130,8 @@ async def bot_session(
         while True:
 
             try:
-
-                # Existujúci obchod ostáva
-                # plne spravovaný.
+                # Otvorený obchod sa vždy
+                # spravuje aj počas NEWS.
                 await ensure_exact_stops(
                     connection
                 )
@@ -1684,438 +1140,374 @@ async def bot_session(
                     connection
                 )
 
-                await refresh_news_calendar(
+                await refresh_news(
                     state
                 )
 
-                candle = (
-                    await get_current_m1_candle(
-                        state[
-                            "meta_region"
-                        ]
-                    )
+                candle = await get_current_m1_candle(
+                    state[
+                        "meta_region"
+                    ]
                 )
 
                 if candle is not None:
 
-                    update_candle_cache(
+                    update_cache(
                         state[
                             "m1_candles"
                         ],
                         candle
                     )
 
-                    count = len(
-                        state[
-                            "m1_candles"
+                candles = state[
+                    "m1_candles"
+                ]
+
+                if (
+                    len(candles)
+                    < MIN_PSAR_BARS
+                ):
+
+                    if (
+                        len(candles)
+                        != state[
+                            "last_warmup_count"
                         ]
+                    ):
+
+                        print(
+                            f"M1 WARMUP "
+                            f"{len(candles)}/"
+                            f"{MIN_PSAR_BARS}",
+                            flush=True
+                        )
+
+                        state[
+                            "last_warmup_count"
+                        ] = len(candles)
+
+                    loop_errors = 0
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                signal, live_psar = get_live_signal(
+                    candles
+                )
+
+                candle_time = str(
+                    candles[-1][
+                        "time"
+                    ]
+                )
+
+                signal_key = (
+                    f"{candle_time}|"
+                    f"{signal}"
+                    if signal
+                    else None
+                )
+
+                positions = await get_positions(
+                    connection
+                )
+
+                # Ak je obchod otvorený,
+                # neotvorí ďalší.
+                if positions:
+
+                    state[
+                        "pending_signal_key"
+                    ] = None
+
+                    state[
+                        "pending_signal_side"
+                    ] = None
+
+                    state[
+                        "pending_signal_started"
+                    ] = 0.0
+
+                    if signal_key:
+
+                        state[
+                            "last_signal_key"
+                        ] = signal_key
+
+                    loop_errors = 0
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                # Ak PSAR bodka zmizla
+                # počas 10 s, signál sa ruší.
+                if signal_key is None:
+
+                    if (
+                        state.get(
+                            "pending_signal_key"
+                        )
+                        is not None
+                    ):
+
+                        print(
+                            "10S CONFIRM CANCELLED: "
+                            "PSAR signal disappeared",
+                            flush=True
+                        )
+
+                    state[
+                        "pending_signal_key"
+                    ] = None
+
+                    state[
+                        "pending_signal_side"
+                    ] = None
+
+                    state[
+                        "pending_signal_started"
+                    ] = 0.0
+
+                    loop_errors = 0
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                # Rovnaký signál už
+                # druhýkrát nepoužije.
+                if (
+                    signal_key
+                    == state.get(
+                        "last_signal_key"
+                    )
+                ):
+
+                    loop_errors = 0
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                (
+                    news_blocked,
+                    news_reason,
+                    news_event
+                ) = news_block_status(
+                    state
+                )
+
+                if news_blocked:
+
+                    state[
+                        "pending_signal_key"
+                    ] = None
+
+                    state[
+                        "pending_signal_side"
+                    ] = None
+
+                    state[
+                        "pending_signal_started"
+                    ] = 0.0
+
+                    event_key = (
+                        f"{int(news_event['ts'])}|"
+                        f"{news_event['title']}"
+                        if news_event
+                        else news_reason
                     )
 
                     if (
-                        count
-                        < MIN_PSAR_BARS
+                        state.get(
+                            "news_block_notified"
+                        )
+                        != event_key
                     ):
 
+                        if news_event:
+
+                            event_time = datetime.fromtimestamp(
+                                news_event[
+                                    "ts"
+                                ]
+                            ).astimezone().strftime(
+                                "%H:%M"
+                            )
+
+                            telegram(
+                                "RIObot GOLD "
+                                "NEWS BLOCK\n\n"
+                                f"HIGH USD: "
+                                f"{news_event['title']}\n"
+                                f"Time: "
+                                f"{event_time}\n"
+                                "No new trade "
+                                "-15m / +30m.\n"
+                                "Open trades keep "
+                                "SL / TP / BE."
+                            )
+
+                        else:
+
+                            telegram(
+                                "RIObot GOLD "
+                                "NEWS BLOCK\n\n"
+                                "Calendar "
+                                "unavailable/stale.\n"
+                                "No new trades "
+                                "until calendar "
+                                "is valid.\n"
+                                "Open trades keep "
+                                "SL / TP / BE."
+                            )
+
+                        state[
+                            "news_block_notified"
+                        ] = event_key
+
+                    print(
+                        f"NEWS BLOCK: "
+                        f"{news_reason}",
+                        flush=True
+                    )
+
+                    loop_errors = 0
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+
+                    continue
+
+                state[
+                    "news_block_notified"
+                ] = None
+
+                now_mono = time.monotonic()
+
+                # Prvá bodka:
+                # iba spustí 10-sekundové čakanie.
+                if (
+                    state.get(
+                        "pending_signal_key"
+                    )
+                    != signal_key
+                ):
+
+                    state[
+                        "pending_signal_key"
+                    ] = signal_key
+
+                    state[
+                        "pending_signal_side"
+                    ] = signal
+
+                    state[
+                        "pending_signal_started"
+                    ] = now_mono
+
+                    print(
+                        f"1ST DOT PENDING 10S "
+                        f"{signal} "
+                        f"M1={candle_time} "
+                        f"PSAR={live_psar}",
+                        flush=True
+                    )
+
+                else:
+
+                    elapsed = (
+                        now_mono
+                        - float(
+                            state.get(
+                                "pending_signal_started",
+                                0.0
+                            )
+                            or 0.0
+                        )
+                    )
+
+                    if (
+                        elapsed
+                        >= SIGNAL_CONFIRM_SECONDS
+                        and signal
+                        == state.get(
+                            "pending_signal_side"
+                        )
+                    ):
+
+                        # Tesne pred otvorením
+                        # ešte raz skontroluje
+                        # NEWS a pozície.
+                        (
+                            news_blocked2,
+                            _,
+                            _
+                        ) = news_block_status(
+                            state
+                        )
+
+                        positions2 = await get_positions(
+                            connection
+                        )
+
                         if (
-                            count
-                            != state[
-                                "last_warmup_count"
-                            ]
+                            not news_blocked2
+                            and not positions2
                         ):
 
                             print(
-                                "M1 WARMUP "
-                                f"{count}/"
-                                f"{MIN_PSAR_BARS}",
+                                f"1ST DOT CONFIRMED 10S "
+                                f"{signal} "
+                                f"M1={candle_time}",
                                 flush=True
                             )
 
                             state[
-                                "last_warmup_count"
-                            ] = count
+                                "last_signal_key"
+                            ] = signal_key
 
-                    else:
+                            state[
+                                "pending_signal_key"
+                            ] = None
 
-                        df = (
-                            make_m1_dataframe(
-                                state[
-                                    "m1_candles"
-                                ]
-                            )
-                        )
+                            state[
+                                "pending_signal_side"
+                            ] = None
 
-                        if df is not None:
+                            state[
+                                "pending_signal_started"
+                            ] = 0.0
 
-                            current_candle = (
-                                df.iloc[-1]
-                            )
-
-                            candle_time = str(
-                                current_candle.get(
-                                    "time"
-                                )
+                            await open_trade(
+                                connection,
+                                signal
                             )
 
-                            signal = (
-                                get_live_signal(
-                                    df
-                                )
-                            )
-
-                            signal_key = None
-
-                            if signal in (
-                                "BUY",
-                                "SELL"
-                            ):
-
-                                signal_key = (
-                                    f"{candle_time}|"
-                                    f"{signal}"
-                                )
-
-                            positions = (
-                                await get_positions(
-                                    connection
-                                )
-                            )
-
-                            # =========================
-                            # UŽ JE OTVORENÝ OBCHOD
-                            # =========================
-
-                            if positions:
-
-                                state[
-                                    "pending_signal_key"
-                                ] = None
-
-                                state[
-                                    "pending_signal_side"
-                                ] = None
-
-                                state[
-                                    "pending_signal_started"
-                                ] = 0.0
-
-                                # Rovnaký M1 signál už po
-                                # zavretí obchodu nepoužije.
-                                if (
-                                    signal_key
-                                    is not None
-                                ):
-
-                                    state[
-                                        "last_signal_key"
-                                    ] = signal_key
-
-                            # =========================
-                            # PSAR SIGNÁL ZMIZOL
-                            # =========================
-
-                            elif (
-                                signal_key
-                                is None
-                            ):
-
-                                if (
-                                    state.get(
-                                        "pending_signal_key"
-                                    )
-                                    is not None
-                                ):
-
-                                    print(
-                                        "10S CONFIRM "
-                                        "CANCELLED: "
-                                        "PSAR signal "
-                                        "disappeared",
-                                        flush=True
-                                    )
-
-                                state[
-                                    "pending_signal_key"
-                                ] = None
-
-                                state[
-                                    "pending_signal_side"
-                                ] = None
-
-                                state[
-                                    "pending_signal_started"
-                                ] = 0.0
-
-                            # =========================
-                            # TENTO SIGNÁL UŽ BOL POUŽITÝ
-                            # =========================
-
-                            elif (
-                                signal_key
-                                == state.get(
-                                    "last_signal_key"
-                                )
-                            ):
-
-                                pass
-
-                            # =========================
-                            # NOVÝ PSAR SIGNÁL
-                            # =========================
-
-                            else:
-
-                                (
-                                    news_blocked,
-                                    news_reason,
-                                    news_event
-                                ) = (
-                                    news_block_status(
-                                        state
-                                    )
-                                )
-
-                                # =====================
-                                # NEWS BLOK
-                                # =====================
-
-                                if news_blocked:
-
-                                    state[
-                                        "pending_signal_key"
-                                    ] = None
-
-                                    state[
-                                        "pending_signal_side"
-                                    ] = None
-
-                                    state[
-                                        "pending_signal_started"
-                                    ] = 0.0
-
-                                    if (
-                                        news_event
-                                        is not None
-                                    ):
-
-                                        event_key = (
-                                            f"{int(news_event['ts'])}|"
-                                            f"{news_event['title']}"
-                                        )
-
-                                    else:
-
-                                        event_key = (
-                                            news_reason
-                                        )
-
-                                    if (
-                                        state.get(
-                                            "news_block_notified"
-                                        )
-                                        != event_key
-                                    ):
-
-                                        if (
-                                            news_event
-                                            is not None
-                                        ):
-
-                                            event_time = (
-                                                datetime
-                                                .fromtimestamp(
-                                                    news_event[
-                                                        "ts"
-                                                    ]
-                                                )
-                                                .astimezone()
-                                                .strftime(
-                                                    "%H:%M"
-                                                )
-                                            )
-
-                                            telegram(
-                                                "RIObot GOLD "
-                                                "NEWS BLOCK\n\n"
-
-                                                "HIGH USD: "
-                                                f"{news_event['title']}\n"
-
-                                                "Time: "
-                                                f"{event_time}\n"
-
-                                                "No new trade "
-                                                "-15m / +30m.\n"
-
-                                                "Open trades keep "
-                                                "SL / TP / BE."
-                                            )
-
-                                        else:
-
-                                            telegram(
-                                                "RIObot GOLD "
-                                                "NEWS BLOCK\n\n"
-
-                                                "Calendar "
-                                                "unavailable/stale.\n"
-
-                                                "No new trades "
-                                                "until calendar "
-                                                "is valid.\n"
-
-                                                "Open trades keep "
-                                                "SL / TP / BE."
-                                            )
-
-                                        state[
-                                            "news_block_notified"
-                                        ] = event_key
-
-                                    print(
-                                        "NEWS BLOCK: "
-                                        f"{news_reason}",
-                                        flush=True
-                                    )
-
-                                # =====================
-                                # SIGNÁL JE POVOLENÝ
-                                # =====================
-
-                                else:
-
-                                    state[
-                                        "news_block_notified"
-                                    ] = None
-
-                                    now_mono = (
-                                        time.monotonic()
-                                    )
-
-                                    # Prvýkrát sa objavila
-                                    # 1. PSAR bodka.
-                                    # Ešte NEOTVORÍ obchod.
-                                    if (
-                                        state.get(
-                                            "pending_signal_key"
-                                        )
-                                        != signal_key
-                                    ):
-
-                                        state[
-                                            "pending_signal_key"
-                                        ] = signal_key
-
-                                        state[
-                                            "pending_signal_side"
-                                        ] = signal
-
-                                        state[
-                                            "pending_signal_started"
-                                        ] = now_mono
-
-                                        print(
-                                            "1ST DOT "
-                                            "PENDING 10S "
-                                            f"{signal} "
-                                            f"M1={candle_time} "
-                                            "PSAR="
-                                            f"{current_candle['psar']}",
-                                            flush=True
-                                        )
-
-                                    else:
-
-                                        elapsed = (
-                                            now_mono
-                                            - float(
-                                                state.get(
-                                                    "pending_signal_started",
-                                                    0.0
-                                                )
-                                                or 0.0
-                                            )
-                                        )
-
-                                        # Po 10 sekundách musí
-                                        # rovnaká PSAR bodka
-                                        # stále existovať.
-                                        if (
-                                            elapsed
-                                            >= SIGNAL_CONFIRM_SECONDS
-                                            and signal
-                                            == state.get(
-                                                "pending_signal_side"
-                                            )
-                                        ):
-
-                                            # News ešte raz tesne
-                                            # pred orderom.
-                                            (
-                                                news_blocked2,
-                                                _,
-                                                _
-                                            ) = (
-                                                news_block_status(
-                                                    state
-                                                )
-                                            )
-
-                                            # Ešte raz overíme,
-                                            # že nie je otvorený
-                                            # žiadny obchod.
-                                            positions2 = (
-                                                await get_positions(
-                                                    connection
-                                                )
-                                            )
-
-                                            if (
-                                                not news_blocked2
-                                                and not positions2
-                                            ):
-
-                                                print(
-                                                    "1ST DOT "
-                                                    "CONFIRMED 10S "
-                                                    f"{signal} "
-                                                    f"M1={candle_time}",
-                                                    flush=True
-                                                )
-
-                                                state[
-                                                    "last_signal_key"
-                                                ] = signal_key
-
-                                                state[
-                                                    "pending_signal_key"
-                                                ] = None
-
-                                                state[
-                                                    "pending_signal_side"
-                                                ] = None
-
-                                                state[
-                                                    "pending_signal_started"
-                                                ] = 0.0
-
-                                                await open_trade(
-                                                    connection,
-                                                    signal
-                                                )
-
-                                            else:
-
-                                                state[
-                                                    "pending_signal_key"
-                                                ] = None
-
-                                                state[
-                                                    "pending_signal_side"
-                                                ] = None
-
-                                                state[
-                                                    "pending_signal_started"
-                                                ] = 0.0
+                        else:
+
+                            state[
+                                "pending_signal_key"
+                            ] = None
+
+                            state[
+                                "pending_signal_side"
+                            ] = None
+
+                            state[
+                                "pending_signal_started"
+                            ] = 0.0
 
                 loop_errors = 0
 
@@ -2124,7 +1516,7 @@ async def bot_session(
                 loop_errors += 1
 
                 print(
-                    "LOOP WARNING "
+                    f"LOOP WARNING "
                     f"{loop_errors}/"
                     f"{MAX_LOOP_ERRORS}: "
                     f"{type(exc).__name__}: "
@@ -2151,22 +1543,26 @@ async def bot_session(
         if connection is not None:
 
             try:
+
                 await asyncio.wait_for(
                     connection.close(),
                     timeout=10
                 )
 
             except Exception as exc:
+
                 print(
-                    "CLOSE WARNING: "
+                    f"CLOSE WARNING: "
                     f"{type(exc).__name__}: "
                     f"{exc}",
                     flush=True
                 )
 
+# =========================================================
+# MAIN
+# =========================================================
 
 async def main():
-
     keep_alive()
 
     if not M_TOKEN:
@@ -2180,7 +1576,6 @@ async def main():
         )
 
     state = {
-
         "ever_connected":
             False,
 
@@ -2218,187 +1613,11 @@ async def main():
             False,
 
         "news_block_notified":
-            None
-    }
-
-    print(
-        "M1 CACHE LOADED: "
-        f"{len(state['m1_candles'])} "
-        "bars",
-        flush=True
-    )
-
-    while True:
-
-        try:
-
-            await bot_session(
-                state
-            )
-
-        except Exception as exc:
-
-            print(
-                "BOT SESSION ERROR: "
-                f"{type(exc).__name__}: "
-                f"{exc}",
-                flush=True
-            )
-
-            print(
-                "RECONNECT IN "
-                f"{RECONNECT_SECONDS} "
-                "SECONDS...",
-                flush=True
-            )
-
-            telegram(
-                "RIObot GOLD "
-                "CONNECTION ERROR\n\n"
-
-                "Reconnect in "
-                f"{RECONNECT_SECONDS} "
-                "seconds."
-            )
-
-            await asyncio.sleep(
-                RECONNECT_SECONDS
-            )
-
-
-if __name__ == "__main__":
-
-    asyncio.run(
-        main()
-                    )                                        "15 min before / "
-                                                "30 min after.\n"
-
-                                                "Open trades keep "
-                                                "SL / TP / BE."
-                                            )
-
-                                            state[
-                                                "news_block_notified"
-                                            ] = event_key
-
-                                    # =================
-                                    # CALENDAR ERROR
-                                    # =================
-
-                                    else:
-
-                                        print(
-                                            "NEWS BLOCK: "
-                                            "calendar unavailable/stale",
-                                            flush=True
-                                        )
-
-                loop_errors = 0
-
-            except Exception as exc:
-
-                loop_errors += 1
-
-                print(
-                    "LOOP WARNING "
-                    f"{loop_errors}/"
-                    f"{MAX_LOOP_ERRORS}: "
-                    f"{type(exc).__name__}: "
-                    f"{exc}",
-                    flush=True
-                )
-
-                if (
-                    loop_errors
-                    >= MAX_LOOP_ERRORS
-                ):
-
-                    raise
-
-                await asyncio.sleep(
-                    RECONNECT_SECONDS
-                )
-
-            await asyncio.sleep(
-                LOOP_SECONDS
-            )
-
-    finally:
-
-        if connection is not None:
-
-            try:
-
-                await asyncio.wait_for(
-                    connection.close(),
-                    timeout=10
-                )
-
-            except Exception as exc:
-
-                print(
-                    "CLOSE WARNING: "
-                    f"{type(exc).__name__}: "
-                    f"{exc}",
-                    flush=True
-                )
-
-
-# =========================================================
-# MAIN
-# =========================================================
-
-async def main():
-
-    keep_alive()
-
-    if not M_TOKEN:
-
-        raise RuntimeError(
-            "M_TOKEN is missing"
-        )
-
-    if not M_ACC:
-
-        raise RuntimeError(
-            "M_ACC is missing"
-        )
-
-    state = {
-
-        "ever_connected":
-            False,
-
-        "last_signal_key":
             None,
-
-        "m1_candles":
-            load_cache(),
-
-        "last_warmup_count":
-            -1,
-
-        "meta_region":
-            DEFAULT_META_REGION,
-
-        "news_events":
-            [],
-
-        "news_last_success":
-            0.0,
-
-        "news_next_fetch":
-            0.0,
-
-        "news_error_notified":
-            False,
-
-        "news_block_notified":
-            None
     }
 
     print(
-        "M1 CACHE LOADED: "
+        f"M1 CACHE LOADED: "
         f"{len(state['m1_candles'])} "
         "bars",
         flush=True
@@ -2415,14 +1634,14 @@ async def main():
         except Exception as exc:
 
             print(
-                "BOT SESSION ERROR: "
+                f"BOT SESSION ERROR: "
                 f"{type(exc).__name__}: "
                 f"{exc}",
                 flush=True
             )
 
             print(
-                "RECONNECT IN "
+                f"RECONNECT IN "
                 f"{RECONNECT_SECONDS} "
                 "SECONDS...",
                 flush=True
@@ -2431,8 +1650,7 @@ async def main():
             telegram(
                 "RIObot GOLD "
                 "CONNECTION ERROR\n\n"
-
-                "Reconnect in "
+                f"Reconnect in "
                 f"{RECONNECT_SECONDS} "
                 "seconds."
             )
@@ -2442,12 +1660,7 @@ async def main():
             )
 
 
-# =========================================================
-# START
-# =========================================================
-
 if __name__ == "__main__":
-
     asyncio.run(
         main()
-    )
+                )
