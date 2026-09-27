@@ -16,19 +16,26 @@ from metaapi_cloud_sdk import MetaApi
 # =========================================================
 
 SYMBOL = "XAUUSD"
-LOT_SIZE = 1.00
+LOT_SIZE = 1.50
 
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
-TP_DISTANCE = 8.00
+TP_DISTANCE = 10.00
 SL_DISTANCE = 10.00
 
 BE1_TRIGGER = 4.00
 BE1_LOCK = 1.00
 
 BE2_TRIGGER = 7.00
-BE2_LOCK = 5.00
+BE2_LOCK = 4.00
+
+BE3_TRIGGER = 9.00
+BE3_LOCK = 7.00
+
+EMA_PERIOD = 50
+ADX_PERIOD = 14
+ADX_MIN = 20.0
 
 SIGNAL_CONFIRM_SECONDS = 10
 
@@ -57,7 +64,7 @@ HISTORY_SEED_BARS = 180
 
 CACHE_FILE = "m1_cache.json"
 
-COMMENT = "RIO M1 M5 RETEST"
+COMMENT = "RIO M1 M5 RETEST EMA50 ADX"
 
 
 # =========================================================
@@ -296,6 +303,87 @@ def psar_values(df):
 
 
 # =========================================================
+# EMA + ADX
+# =========================================================
+
+def add_trend_filters(df):
+    df = df.copy()
+
+    df["ema50"] = df["close"].astype(float).ewm(
+        span=EMA_PERIOD,
+        adjust=False
+    ).mean()
+
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+
+    prev_close = close.shift(1)
+
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    up_move = high.diff()
+    down_move = -low.diff()
+
+    plus_dm = pd.Series(0.0, index=df.index)
+    minus_dm = pd.Series(0.0, index=df.index)
+
+    plus_dm[(up_move > down_move) & (up_move > 0)] = up_move
+    minus_dm[(down_move > up_move) & (down_move > 0)] = down_move
+
+    alpha = 1.0 / ADX_PERIOD
+
+    atr = tr.ewm(alpha=alpha, adjust=False).mean()
+    plus_smoothed = plus_dm.ewm(alpha=alpha, adjust=False).mean()
+    minus_smoothed = minus_dm.ewm(alpha=alpha, adjust=False).mean()
+
+    safe_atr = atr.replace(0, float("nan"))
+
+    plus_di = 100.0 * plus_smoothed / safe_atr
+    minus_di = 100.0 * minus_smoothed / safe_atr
+
+    denominator = (plus_di + minus_di).replace(0, float("nan"))
+    dx = 100.0 * (plus_di - minus_di).abs() / denominator
+
+    df["plus_di"] = plus_di.fillna(0.0)
+    df["minus_di"] = minus_di.fillna(0.0)
+    df["adx"] = dx.ewm(alpha=alpha, adjust=False).mean().fillna(0.0)
+
+    return df
+
+
+def trend_filter_ok(df5, side):
+    if df5 is None or df5.empty:
+        return False
+
+    row = df5.iloc[-1]
+
+    close = float(row["close"])
+    ema50 = float(row["ema50"])
+    adx = float(row["adx"])
+    plus_di = float(row["plus_di"])
+    minus_di = float(row["minus_di"])
+
+    if adx < ADX_MIN:
+        return False
+
+    if side == "BUY":
+        return close > ema50 and plus_di > minus_di
+
+    if side == "SELL":
+        return close < ema50 and minus_di > plus_di
+
+    return False
+
+
+# =========================================================
 # DATAFRAMES
 # =========================================================
 
@@ -308,7 +396,9 @@ def make_m1_df(candles):
     for col in ("open", "high", "low", "close"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
+    df = df.dropna(
+        subset=["open", "high", "low", "close"]
+    ).reset_index(drop=True)
 
     if len(df) < MIN_PSAR_BARS:
         return None
@@ -327,7 +417,9 @@ def make_m5_df(m1_candles):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["dt"] = pd.to_datetime(df["time"], utc=True, errors="coerce")
-    df = df.dropna(subset=["dt", "open", "high", "low", "close"]).sort_values("dt")
+    df = df.dropna(
+        subset=["dt", "open", "high", "low", "close"]
+    ).sort_values("dt")
 
     if df.empty:
         return None
@@ -348,8 +440,13 @@ def make_m5_df(m1_candles):
         return None
 
     m5["time"] = m5["bucket"].dt.strftime("%Y-%m-%dT%H:%M:%S%z")
-    m5 = m5[["time", "open", "high", "low", "close"]].reset_index(drop=True)
+    m5 = m5[
+        ["time", "open", "high", "low", "close"]
+    ].reset_index(drop=True)
+
     m5["psar"] = psar_values(m5)
+    m5 = add_trend_filters(m5)
+
     return m5
 
 
@@ -374,7 +471,8 @@ async def seed_history(state):
 
     if state["history_seeded"]:
         print(
-            f"HISTORY READY: M1={len(df1)} M5={len(df5)} (M5 derived from M1)",
+            f"HISTORY READY: M1={len(df1)} M5={len(df5)} "
+            f"(M5 derived from M1)",
             flush=True,
         )
 
@@ -472,6 +570,7 @@ def big_impulse(df1):
 
 def params_for_setup(df1):
     avg = average_range(df1) or 0.80
+
     return {
         "max_chase": min(max(avg * 0.90, 0.50), 1.80),
         "retest": min(max(avg * 0.30, 0.15), 0.55),
@@ -486,7 +585,11 @@ def params_for_setup(df1):
 # =========================================================
 
 async def get_positions(connection):
-    positions = await asyncio.wait_for(connection.get_positions(), timeout=META_TIMEOUT)
+    positions = await asyncio.wait_for(
+        connection.get_positions(),
+        timeout=META_TIMEOUT,
+    )
+
     return [
         p for p in positions
         if str(p.get("symbol", "")).upper() == SYMBOL.upper()
@@ -496,17 +599,19 @@ async def get_positions(connection):
 async def get_market(connection):
     specification = await asyncio.wait_for(
         connection.get_symbol_specification(SYMBOL),
-        timeout=META_TIMEOUT
+        timeout=META_TIMEOUT,
     )
+
     price = await asyncio.wait_for(
         connection.get_symbol_price(SYMBOL),
-        timeout=META_TIMEOUT
+        timeout=META_TIMEOUT,
     )
 
     digits = int(specification.get("digits", 2))
     tick = float(specification.get("tickSize") or 10 ** (-digits))
     bid = float(price["bid"])
     ask = float(price["ask"])
+
     return tick, digits, bid, ask
 
 
@@ -516,8 +621,15 @@ async def get_market(connection):
 
 def levels(side, entry, digits):
     if side in ("BUY", "POSITION_TYPE_BUY"):
-        return round(entry - SL_DISTANCE, digits), round(entry + TP_DISTANCE, digits)
-    return round(entry + SL_DISTANCE, digits), round(entry - TP_DISTANCE, digits)
+        return (
+            round(entry - SL_DISTANCE, digits),
+            round(entry + TP_DISTANCE, digits),
+        )
+
+    return (
+        round(entry + SL_DISTANCE, digits),
+        round(entry - TP_DISTANCE, digits),
+    )
 
 
 async def wait_position(connection, side, attempts=20):
@@ -527,10 +639,16 @@ async def wait_position(connection, side, attempts=20):
         for position in positions:
             position_side = str(position.get("type", "")).upper()
 
-            if side == "BUY" and position_side in ("BUY", "POSITION_TYPE_BUY"):
+            if side == "BUY" and position_side in (
+                "BUY",
+                "POSITION_TYPE_BUY",
+            ):
                 return position
 
-            if side == "SELL" and position_side in ("SELL", "POSITION_TYPE_SELL"):
+            if side == "SELL" and position_side in (
+                "SELL",
+                "POSITION_TYPE_SELL",
+            ):
                 return position
 
         await asyncio.sleep(0.25)
@@ -540,6 +658,7 @@ async def wait_position(connection, side, attempts=20):
 
 async def ensure_stops(connection):
     positions = await get_positions(connection)
+
     if not positions:
         return
 
@@ -559,22 +678,51 @@ async def ensure_stops(connection):
         current_sl_raw = position.get("stopLoss")
         current_tp_raw = position.get("takeProfit")
 
-        current_sl = float(current_sl_raw) if current_sl_raw not in (None, 0) else None
-        current_tp = float(current_tp_raw) if current_tp_raw not in (None, 0) else None
+        current_sl = (
+            float(current_sl_raw)
+            if current_sl_raw not in (None, 0)
+            else None
+        )
+
+        current_tp = (
+            float(current_tp_raw)
+            if current_tp_raw not in (None, 0)
+            else None
+        )
 
         if side in ("BUY", "POSITION_TYPE_BUY"):
-            target_sl = current_sl if (current_sl is not None and current_sl >= entry) else exact_sl
+            target_sl = (
+                current_sl
+                if current_sl is not None and current_sl >= entry
+                else exact_sl
+            )
+
         elif side in ("SELL", "POSITION_TYPE_SELL"):
-            target_sl = current_sl if (current_sl is not None and current_sl <= entry) else exact_sl
+            target_sl = (
+                current_sl
+                if current_sl is not None and current_sl <= entry
+                else exact_sl
+            )
         else:
             continue
 
-        needs_sl = current_sl is None or abs(current_sl - target_sl) > epsilon
-        needs_tp = current_tp is None or abs(current_tp - exact_tp) > epsilon
+        needs_sl = (
+            current_sl is None
+            or abs(current_sl - target_sl) > epsilon
+        )
+
+        needs_tp = (
+            current_tp is None
+            or abs(current_tp - exact_tp) > epsilon
+        )
 
         if needs_sl or needs_tp:
             await asyncio.wait_for(
-                connection.modify_position(position_id, target_sl, exact_tp),
+                connection.modify_position(
+                    position_id,
+                    target_sl,
+                    exact_tp,
+                ),
                 timeout=META_TIMEOUT,
             )
 
@@ -587,7 +735,11 @@ async def open_trade(connection, side):
     _, digits, bid, ask = await get_market(connection)
 
     provisional_entry = ask if side == "BUY" else bid
-    provisional_sl, provisional_tp = levels(side, provisional_entry, digits)
+    provisional_sl, provisional_tp = levels(
+        side,
+        provisional_entry,
+        digits,
+    )
 
     if side == "BUY":
         result = await asyncio.wait_for(
@@ -620,7 +772,11 @@ async def open_trade(connection, side):
         exact_sl, exact_tp = levels(side, actual_entry, digits)
 
         await asyncio.wait_for(
-            connection.modify_position(position_id, exact_sl, exact_tp),
+            connection.modify_position(
+                position_id,
+                exact_sl,
+                exact_tp,
+            ),
             timeout=META_TIMEOUT,
         )
 
@@ -633,11 +789,13 @@ async def open_trade(connection, side):
             f"TP: {exact_tp:.2f}\n"
             "M1 PSAR: 1st DOT + 10s\n"
             "M5: 2 PSAR dots same direction\n"
+            "FILTER: EMA50 + ADX >= 20\n"
             "ENTRY: breakout -> retest -> confirm\n"
             "NO CHASE / NO BIG IMPULSE\n"
             "SETUP EXPIRES: 4 min\n"
             "BE1: +4.00 -> +1.00\n"
-            "BE2: +7.00 -> +5.00\n"
+            "BE2: +7.00 -> +4.00\n"
+            "BE3: +9.00 -> +7.00\n"
             "NEWS: HIGH USD -15m / +30m"
         )
 
@@ -650,6 +808,7 @@ async def open_trade(connection, side):
 
 async def manage_be(connection):
     positions = await get_positions(connection)
+
     if not positions:
         return
 
@@ -666,22 +825,39 @@ async def manage_be(connection):
         current_sl_raw = position.get("stopLoss")
         current_tp_raw = position.get("takeProfit")
 
-        current_sl = float(current_sl_raw) if current_sl_raw not in (None, 0) else None
-        current_tp = float(current_tp_raw) if current_tp_raw not in (None, 0) else None
+        current_sl = (
+            float(current_sl_raw)
+            if current_sl_raw not in (None, 0)
+            else None
+        )
+
+        current_tp = (
+            float(current_tp_raw)
+            if current_tp_raw not in (None, 0)
+            else None
+        )
 
         if side in ("BUY", "POSITION_TYPE_BUY"):
             profit = bid - entry
 
-            if profit >= BE2_TRIGGER:
+            if profit >= BE3_TRIGGER:
+                new_sl = round(entry + BE3_LOCK, digits)
+                label = "BE3"
+                reached = "+9.00"
+                locked = "+7.00"
+
+            elif profit >= BE2_TRIGGER:
                 new_sl = round(entry + BE2_LOCK, digits)
                 label = "BE2"
                 reached = "+7.00"
-                locked = "+5.00"
+                locked = "+4.00"
+
             elif profit >= BE1_TRIGGER:
                 new_sl = round(entry + BE1_LOCK, digits)
                 label = "BE1"
                 reached = "+4.00"
                 locked = "+1.00"
+
             else:
                 continue
 
@@ -690,30 +866,44 @@ async def manage_be(connection):
         elif side in ("SELL", "POSITION_TYPE_SELL"):
             profit = entry - ask
 
-            if profit >= BE2_TRIGGER:
+            if profit >= BE3_TRIGGER:
+                new_sl = round(entry - BE3_LOCK, digits)
+                label = "BE3"
+                reached = "+9.00"
+                locked = "+7.00"
+
+            elif profit >= BE2_TRIGGER:
                 new_sl = round(entry - BE2_LOCK, digits)
                 label = "BE2"
                 reached = "+7.00"
-                locked = "+5.00"
+                locked = "+4.00"
+
             elif profit >= BE1_TRIGGER:
                 new_sl = round(entry - BE1_LOCK, digits)
                 label = "BE1"
                 reached = "+4.00"
                 locked = "+1.00"
+
             else:
                 continue
 
             improve = current_sl is None or current_sl > new_sl
+
         else:
             continue
 
         if improve:
             await asyncio.wait_for(
-                connection.modify_position(position_id, new_sl, current_tp),
+                connection.modify_position(
+                    position_id,
+                    new_sl,
+                    current_tp,
+                ),
                 timeout=META_TIMEOUT,
             )
 
             clean_side = side.replace("POSITION_TYPE_", "")
+
             telegram(
                 f"RIObot GOLD {label}\n\n"
                 f"{clean_side} {SYMBOL}\n"
@@ -749,10 +939,11 @@ async def refresh_news_calendar(state, force=False):
             NEWS_URL,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "RIObot-GOLD/1.0"
+                "User-Agent": "RIObot-GOLD/1.0",
             },
             timeout=20,
         )
+
         response.raise_for_status()
         return response.json()
 
@@ -765,32 +956,55 @@ async def refresh_news_calendar(state, force=False):
                 if not isinstance(item, dict):
                     continue
 
-                country = str(item.get("country", "")).upper().strip()
-                impact = str(item.get("impact", "")).upper().strip()
+                country = str(
+                    item.get("country", "")
+                ).upper().strip()
+
+                impact = str(
+                    item.get("impact", "")
+                ).upper().strip()
 
                 if country != "USD" or impact != "HIGH":
                     continue
 
-                timestamp = parse_news_datetime(item.get("date"))
+                timestamp = parse_news_datetime(
+                    item.get("date")
+                )
+
                 if timestamp is None:
                     continue
 
                 events.append(
                     {
                         "ts": timestamp,
-                        "title": str(item.get("title", "HIGH USD")).strip() or "HIGH USD",
+                        "title": (
+                            str(
+                                item.get(
+                                    "title",
+                                    "HIGH USD",
+                                )
+                            ).strip()
+                            or "HIGH USD"
+                        ),
                     }
                 )
 
         events.sort(key=lambda x: x["ts"])
+
         state["news_events"] = events
         state["news_last_success"] = now
         state["news_error_notified"] = False
 
-        print(f"NEWS CALENDAR OK: {len(events)} HIGH USD events", flush=True)
+        print(
+            f"NEWS CALENDAR OK: {len(events)} HIGH USD events",
+            flush=True,
+        )
 
     except Exception as exc:
-        print(f"NEWS WARNING: {type(exc).__name__}: {exc}", flush=True)
+        print(
+            f"NEWS WARNING: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
 
         if not state.get("news_error_notified"):
             telegram(
@@ -798,21 +1012,35 @@ async def refresh_news_calendar(state, force=False):
                 "Calendar unavailable.\n"
                 "New entries are blocked."
             )
+
             state["news_error_notified"] = True
 
 
 def news_block_status(state):
     now = time.time()
-    last_ok = float(state.get("news_last_success", 0) or 0)
+    last_ok = float(
+        state.get("news_last_success", 0) or 0
+    )
 
-    if last_ok <= 0 or now - last_ok > NEWS_STALE_SECONDS:
-        return True, "calendar unavailable/stale", None
+    if (
+        last_ok <= 0
+        or now - last_ok > NEWS_STALE_SECONDS
+    ):
+        return (
+            True,
+            "calendar unavailable/stale",
+            None,
+        )
 
     before = NEWS_BEFORE_MINUTES * 60
     after = NEWS_AFTER_MINUTES * 60
 
     for event in state.get("news_events", []):
-        if event["ts"] - before <= now <= event["ts"] + after:
+        if (
+            event["ts"] - before
+            <= now
+            <= event["ts"] + after
+        ):
             return True, "HIGH USD", event
 
     return False, None, None
@@ -842,7 +1070,14 @@ def clear_setup(state):
     state["retest_seen"] = False
 
 
-def arm_setup(state, signal_key, side, level, current_price, params):
+def arm_setup(
+    state,
+    signal_key,
+    side,
+    level,
+    current_price,
+    params,
+):
     state["armed"] = True
     state["setup_phase"] = "WAIT_BREAK"
     state["setup_side"] = side
@@ -856,10 +1091,22 @@ def arm_setup(state, signal_key, side, level, current_price, params):
     state["retest_seen"] = False
 
 
-def fresh_cross(side, previous_price, current_price, level):
+def fresh_cross(
+    side,
+    previous_price,
+    current_price,
+    level,
+):
     if side == "BUY":
-        return previous_price <= level and current_price > level
-    return previous_price >= level and current_price < level
+        return (
+            previous_price <= level
+            and current_price > level
+        )
+
+    return (
+        previous_price >= level
+        and current_price < level
+    )
 
 
 # =========================================================
@@ -872,24 +1119,55 @@ async def bot_session(state):
 
     try:
         account = await asyncio.wait_for(
-            api.metatrader_account_api.get_account(M_ACC),
+            api.metatrader_account_api.get_account(
+                M_ACC
+            ),
             timeout=META_TIMEOUT,
         )
 
-        if getattr(account, "state", None) != "DEPLOYED":
-            await asyncio.wait_for(account.deploy(), timeout=180)
+        if getattr(
+            account,
+            "state",
+            None,
+        ) != "DEPLOYED":
+            await asyncio.wait_for(
+                account.deploy(),
+                timeout=180,
+            )
 
-        if getattr(account, "connection_status", None) != "CONNECTED":
-            await asyncio.wait_for(account.wait_connected(), timeout=180)
+        if getattr(
+            account,
+            "connection_status",
+            None,
+        ) != "CONNECTED":
+            await asyncio.wait_for(
+                account.wait_connected(),
+                timeout=180,
+            )
 
-        region = getattr(account, "region", None) or DEFAULT_META_REGION
+        region = (
+            getattr(account, "region", None)
+            or DEFAULT_META_REGION
+        )
+
         state["region"] = str(region).lower()
 
         connection = account.get_rpc_connection()
-        await asyncio.wait_for(connection.connect(), timeout=60)
-        await asyncio.wait_for(connection.wait_synchronized(), timeout=120)
 
-        print("RIObot GOLD CONNECTED", flush=True)
+        await asyncio.wait_for(
+            connection.connect(),
+            timeout=60,
+        )
+
+        await asyncio.wait_for(
+            connection.wait_synchronized(),
+            timeout=120,
+        )
+
+        print(
+            "RIObot GOLD CONNECTED",
+            flush=True,
+        )
 
         if not state["ever_connected"]:
             telegram(
@@ -898,23 +1176,33 @@ async def bot_session(state):
                 f"Lot: {LOT_SIZE}\n"
                 "M1 PSAR: 1st DOT + 10s signal\n"
                 "M5: 2 PSAR dots same direction\n"
+                "FILTER: EMA50 + ADX >= 20\n"
                 "ENTRY: breakout -> retest -> confirmation\n"
                 "NO CHASE / NO BIG IMPULSE\n"
                 "SETUP EXPIRES: 4 min\n"
                 "NEW PSAR FLIP required after trade\n"
                 "MAX: 1 XAUUSD position\n"
-                "TP: +8.00\n"
+                "TP: +10.00\n"
                 "SL: -10.00\n"
                 "BE1: +4.00 -> +1.00\n"
-                "BE2: +7.00 -> +5.00\n"
+                "BE2: +7.00 -> +4.00\n"
+                "BE3: +9.00 -> +7.00\n"
                 "NEWS: HIGH USD -15m / +30m"
             )
+
             state["ever_connected"] = True
+
         else:
-            telegram("RIObot GOLD RECONNECTED\n\nMetaApi connection restored.")
+            telegram(
+                "RIObot GOLD RECONNECTED\n\n"
+                "MetaApi connection restored."
+            )
 
         await seed_history(state)
-        await refresh_news_calendar(state, force=True)
+        await refresh_news_calendar(
+            state,
+            force=True,
+        )
 
         loop_errors = 0
 
@@ -924,33 +1212,59 @@ async def bot_session(state):
                 await manage_be(connection)
                 await refresh_news_calendar(state)
 
-                candle = await get_current_m1(state["region"])
+                candle = await get_current_m1(
+                    state["region"]
+                )
+
                 if candle is None:
-                    await asyncio.sleep(LOOP_SECONDS)
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
                     continue
 
-                update_cache(state["m1_candles"], candle)
+                update_cache(
+                    state["m1_candles"],
+                    candle,
+                )
 
-                df1 = make_m1_df(state["m1_candles"])
-                df5 = make_m5_df(state["m1_candles"])
+                df1 = make_m1_df(
+                    state["m1_candles"]
+                )
+
+                df5 = make_m5_df(
+                    state["m1_candles"]
+                )
 
                 if df1 is None or df5 is None:
                     await seed_history(state)
-                    await asyncio.sleep(LOOP_SECONDS)
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
                     continue
 
                 signal = get_live_flip(df1)
-                candle_time = str(df1.iloc[-1]["time"])
+                candle_time = str(
+                    df1.iloc[-1]["time"]
+                )
 
-                positions = await get_positions(connection)
-                had_position = state.get("had_position", False)
+                positions = await get_positions(
+                    connection
+                )
+
+                had_position = state.get(
+                    "had_position",
+                    False,
+                )
 
                 if positions:
                     state["had_position"] = True
                     clear_pending(state)
                     clear_setup(state)
                     loop_errors = 0
-                    await asyncio.sleep(LOOP_SECONDS)
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
                     continue
 
                 if had_position and not positions:
@@ -958,26 +1272,47 @@ async def bot_session(state):
                     state["require_new_flip"] = True
                     clear_pending(state)
                     clear_setup(state)
-                    print("POSITION CLOSED -> NEW PSAR FLIP REQUIRED", flush=True)
 
-                news_blocked, news_reason, news_event = news_block_status(state)
+                    print(
+                        "POSITION CLOSED -> "
+                        "NEW PSAR FLIP REQUIRED",
+                        flush=True,
+                    )
+
+                news_blocked, news_reason, news_event = (
+                    news_block_status(state)
+                )
+
                 if news_blocked:
                     if state.get("armed"):
                         clear_setup(state)
 
                     event_key = (
-                        f"{news_reason}:{news_event['ts']}"
-                        if news_event else news_reason
+                        f"{news_reason}:"
+                        f"{news_event['ts']}"
+                        if news_event
+                        else news_reason
                     )
 
-                    if state.get("news_block_notified") != event_key:
+                    if (
+                        state.get(
+                            "news_block_notified"
+                        )
+                        != event_key
+                    ):
                         if news_event:
-                            event_time = datetime.fromtimestamp(
-                                news_event["ts"]
-                            ).astimezone().strftime("%H:%M")
+                            event_time = (
+                                datetime.fromtimestamp(
+                                    news_event["ts"]
+                                )
+                                .astimezone()
+                                .strftime("%H:%M")
+                            )
+
                             telegram(
                                 "RIObot GOLD NEWS BLOCK\n\n"
-                                f"HIGH USD: {news_event['title']}\n"
+                                f"HIGH USD: "
+                                f"{news_event['title']}\n"
                                 f"Time: {event_time}\n"
                                 "No new trade -15m / +30m."
                             )
@@ -987,40 +1322,130 @@ async def bot_session(state):
                                 "Calendar unavailable/stale.\n"
                                 "No new trades."
                             )
-                        state["news_block_notified"] = event_key
+
+                        state[
+                            "news_block_notified"
+                        ] = event_key
 
                     loop_errors = 0
-                    await asyncio.sleep(LOOP_SECONDS)
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
                     continue
 
                 state["news_block_notified"] = None
 
                 if signal:
-                    signal_key = f"{candle_time}:{signal}"
+                    signal_key = (
+                        f"{candle_time}:{signal}"
+                    )
 
                     if (
-                        signal_key != state.get("last_signal_key")
-                        and signal_key != state.get("setup_key")
+                        signal_key
+                        != state.get(
+                            "last_signal_key"
+                        )
+                        and signal_key
+                        != state.get(
+                            "setup_key"
+                        )
                     ):
-                        if state.get("pending_signal_key") != signal_key:
+                        if (
+                            state.get(
+                                "pending_signal_key"
+                            )
+                            != signal_key
+                        ):
                             clear_setup(state)
-                            state["pending_signal_key"] = signal_key
-                            state["pending_signal_side"] = signal
-                            state["pending_started"] = time.monotonic()
-                            print(f"1ST DOT PENDING 10S {signal}", flush=True)
+
+                            state[
+                                "pending_signal_key"
+                            ] = signal
+
+                            state[
+                                "pending_signal_key"
+                            ] = signal_key
+
+                            state[
+                                "pending_signal_side"
+                            ] = signal
+
+                            state[
+                                "pending_started"
+                            ] = time.monotonic()
+
+                            print(
+                                f"1ST DOT PENDING "
+                                f"10S {signal}",
+                                flush=True,
+                            )
+
                         else:
-                            elapsed = time.monotonic() - float(state.get("pending_started", 0) or 0)
-                            if elapsed >= SIGNAL_CONFIRM_SECONDS and signal == state.get("pending_signal_side"):
-                                if m5_confirms(df5, signal):
-                                    last_closed = df1.iloc[-2]
-                                    breakout_level = (
-                                        float(last_closed["high"])
-                                        if signal == "BUY"
-                                        else float(last_closed["low"])
+                            elapsed = (
+                                time.monotonic()
+                                - float(
+                                    state.get(
+                                        "pending_started",
+                                        0,
                                     )
-                                    _, _, bid, ask = await get_market(connection)
-                                    current_price = bid if signal == "BUY" else ask
-                                    params = params_for_setup(df1)
+                                    or 0
+                                )
+                            )
+
+                            if (
+                                elapsed
+                                >= SIGNAL_CONFIRM_SECONDS
+                                and signal
+                                == state.get(
+                                    "pending_signal_side"
+                                )
+                            ):
+                                if (
+                                    m5_confirms(
+                                        df5,
+                                        signal,
+                                    )
+                                    and trend_filter_ok(
+                                        df5,
+                                        signal,
+                                    )
+                                ):
+                                    last_closed = (
+                                        df1.iloc[-2]
+                                    )
+
+                                    breakout_level = (
+                                        float(
+                                            last_closed[
+                                                "high"
+                                            ]
+                                        )
+                                        if signal == "BUY"
+                                        else float(
+                                            last_closed[
+                                                "low"
+                                            ]
+                                        )
+                                    )
+
+                                    _, _, bid, ask = (
+                                        await get_market(
+                                            connection
+                                        )
+                                    )
+
+                                    current_price = (
+                                        bid
+                                        if signal == "BUY"
+                                        else ask
+                                    )
+
+                                    params = (
+                                        params_for_setup(
+                                            df1
+                                        )
+                                    )
 
                                     arm_setup(
                                         state,
@@ -1030,160 +1455,426 @@ async def bot_session(state):
                                         current_price,
                                         params,
                                     )
-                                    clear_pending(state)
-                                    state["require_new_flip"] = False
+
+                                    clear_pending(
+                                        state
+                                    )
+
+                                    state[
+                                        "require_new_flip"
+                                    ] = False
+
                                     print(
-                                        f"SETUP ARMED {signal} LEVEL={breakout_level:.2f} PHASE=WAIT_BREAK",
+                                        f"SETUP ARMED "
+                                        f"{signal} "
+                                        f"LEVEL="
+                                        f"{breakout_level:.2f} "
+                                        f"PHASE=WAIT_BREAK",
                                         flush=True,
                                     )
+
                                 else:
-                                    clear_pending(state)
-                                    print(f"M5 NOT CONFIRMED {signal}", flush=True)
-                elif state.get("pending_signal_key"):
+                                    clear_pending(
+                                        state
+                                    )
+
+                                    print(
+                                        f"M5/EMA/ADX "
+                                        f"NOT CONFIRMED "
+                                        f"{signal}",
+                                        flush=True,
+                                    )
+
+                elif state.get(
+                    "pending_signal_key"
+                ):
                     clear_pending(state)
 
                 if state.get("armed"):
                     side = state["setup_side"]
                     phase = state["setup_phase"]
-                    level = float(state["setup_level"])
-                    params = state["setup_params"] or {}
-                    started = float(state["setup_started"] or 0)
+
+                    level = float(
+                        state["setup_level"]
+                    )
+
+                    params = (
+                        state["setup_params"]
+                        or {}
+                    )
+
+                    started = float(
+                        state["setup_started"]
+                        or 0
+                    )
+
                     now = time.time()
 
-                    if now - started > SETUP_EXPIRY_SECONDS:
-                        print("SETUP EXPIRED", flush=True)
+                    if (
+                        now - started
+                        > SETUP_EXPIRY_SECONDS
+                    ):
+                        print(
+                            "SETUP EXPIRED",
+                            flush=True,
+                        )
+
                         clear_setup(state)
-                    elif current_psar_side(df1) != side or not m5_confirms(df5, side):
-                        print("SETUP CANCELLED: PSAR/M5 changed", flush=True)
+
+                    elif (
+                        current_psar_side(df1)
+                        != side
+                        or not m5_confirms(
+                            df5,
+                            side,
+                        )
+                        or not trend_filter_ok(
+                            df5,
+                            side,
+                        )
+                    ):
+                        print(
+                            "SETUP CANCELLED: "
+                            "PSAR/M5/EMA/ADX changed",
+                            flush=True,
+                        )
+
                         clear_setup(state)
+
                     elif big_impulse(df1):
-                        print("SETUP CANCELLED: BIG IMPULSE", flush=True)
+                        print(
+                            "SETUP CANCELLED: "
+                            "BIG IMPULSE",
+                            flush=True,
+                        )
+
                         clear_setup(state)
+
                     else:
-                        _, _, bid, ask = await get_market(connection)
-                        current_price = bid if side == "BUY" else ask
+                        _, _, bid, ask = (
+                            await get_market(
+                                connection
+                            )
+                        )
 
-                        previous_price = state.get("setup_last_price")
+                        current_price = (
+                            bid
+                            if side == "BUY"
+                            else ask
+                        )
+
+                        previous_price = (
+                            state.get(
+                                "setup_last_price"
+                            )
+                        )
+
                         if previous_price is None:
-                            previous_price = current_price
+                            previous_price = (
+                                current_price
+                            )
 
-                        state["setup_last_price"] = current_price
+                        state[
+                            "setup_last_price"
+                        ] = current_price
 
-                        max_chase = float(params.get("max_chase", 1.0))
-                        retest_band = float(params.get("retest", 0.25))
-                        invalidate = float(params.get("invalidate", 0.5))
-                        confirm_dist = float(params.get("confirm", 0.15))
-                        extension = float(params.get("extension", 0.35))
+                        max_chase = float(
+                            params.get(
+                                "max_chase",
+                                1.0,
+                            )
+                        )
+
+                        retest_band = float(
+                            params.get(
+                                "retest",
+                                0.25,
+                            )
+                        )
+
+                        invalidate = float(
+                            params.get(
+                                "invalidate",
+                                0.5,
+                            )
+                        )
+
+                        confirm_dist = float(
+                            params.get(
+                                "confirm",
+                                0.15,
+                            )
+                        )
+
+                        extension = float(
+                            params.get(
+                                "extension",
+                                0.35,
+                            )
+                        )
 
                         if phase == "WAIT_BREAK":
                             too_far = (
-                                current_price > level + max_chase
+                                current_price
+                                > level + max_chase
                                 if side == "BUY"
-                                else current_price < level - max_chase
+                                else current_price
+                                < level - max_chase
                             )
 
                             if too_far:
-                                print("SETUP CANCELLED: CHASE TOO FAR", flush=True)
-                                clear_setup(state)
-                            elif fresh_cross(side, previous_price, current_price, level):
-                                state["setup_phase"] = "WAIT_RETEST"
-                                state["setup_break_time"] = now
-                                state["setup_break_price"] = current_price
                                 print(
-                                    f"BREAKOUT {side} LEVEL={level:.2f} PRICE={current_price:.2f}",
+                                    "SETUP CANCELLED: "
+                                    "CHASE TOO FAR",
+                                    flush=True,
+                                )
+
+                                clear_setup(state)
+
+                            elif fresh_cross(
+                                side,
+                                previous_price,
+                                current_price,
+                                level,
+                            ):
+                                state[
+                                    "setup_phase"
+                                ] = "WAIT_RETEST"
+
+                                state[
+                                    "setup_break_time"
+                                ] = now
+
+                                state[
+                                    "setup_break_price"
+                                ] = current_price
+
+                                print(
+                                    f"BREAKOUT "
+                                    f"{side} "
+                                    f"LEVEL="
+                                    f"{level:.2f} "
+                                    f"PRICE="
+                                    f"{current_price:.2f}",
                                     flush=True,
                                 )
 
                         elif phase == "WAIT_RETEST":
-                            break_time = float(state.get("setup_break_time", 0) or 0)
+                            break_time = float(
+                                state.get(
+                                    "setup_break_time",
+                                    0,
+                                )
+                                or 0
+                            )
 
-                            if break_time > 0 and now - break_time > RETEST_EXPIRY_SECONDS:
-                                print("SETUP CANCELLED: RETEST TIMEOUT", flush=True)
+                            if (
+                                break_time > 0
+                                and now - break_time
+                                > RETEST_EXPIRY_SECONDS
+                            ):
+                                print(
+                                    "SETUP CANCELLED: "
+                                    "RETEST TIMEOUT",
+                                    flush=True,
+                                )
+
                                 clear_setup(state)
                                 continue
 
                             invalid_now = (
-                                current_price < level - invalidate
+                                current_price
+                                < level - invalidate
                                 if side == "BUY"
-                                else current_price > level + invalidate
+                                else current_price
+                                > level + invalidate
                             )
+
                             if invalid_now:
-                                print("SETUP CANCELLED: RETEST INVALIDATION", flush=True)
+                                print(
+                                    "SETUP CANCELLED: "
+                                    "RETEST INVALIDATION",
+                                    flush=True,
+                                )
+
                                 clear_setup(state)
                                 continue
 
                             too_extended = (
-                                current_price > level + extension and not state.get("retest_seen")
+                                (
+                                    current_price
+                                    > level + extension
+                                    and not state.get(
+                                        "retest_seen"
+                                    )
+                                )
                                 if side == "BUY"
-                                else current_price < level - extension and not state.get("retest_seen")
+                                else (
+                                    current_price
+                                    < level - extension
+                                    and not state.get(
+                                        "retest_seen"
+                                    )
+                                )
                             )
+
                             if too_extended:
-                                print("SETUP CANCELLED: NO RETEST / PRICE RAN", flush=True)
+                                print(
+                                    "SETUP CANCELLED: "
+                                    "NO RETEST / PRICE RAN",
+                                    flush=True,
+                                )
+
                                 clear_setup(state)
                                 continue
 
                             touched = (
-                                current_price <= level + retest_band
+                                current_price
+                                <= level + retest_band
                                 if side == "BUY"
-                                else current_price >= level - retest_band
+                                else current_price
+                                >= level - retest_band
                             )
+
                             if touched:
-                                state["retest_seen"] = True
-                                state["setup_phase"] = "WAIT_CONFIRM"
-                                print(f"RETEST OK {side} LEVEL={level:.2f}", flush=True)
+                                state[
+                                    "retest_seen"
+                                ] = True
+
+                                state[
+                                    "setup_phase"
+                                ] = "WAIT_CONFIRM"
+
+                                print(
+                                    f"RETEST OK "
+                                    f"{side} "
+                                    f"LEVEL="
+                                    f"{level:.2f}",
+                                    flush=True,
+                                )
 
                         elif phase == "WAIT_CONFIRM":
                             invalid_now = (
-                                current_price < level - invalidate
+                                current_price
+                                < level - invalidate
                                 if side == "BUY"
-                                else current_price > level + invalidate
+                                else current_price
+                                > level + invalidate
                             )
+
                             if invalid_now:
-                                print("SETUP CANCELLED: CONFIRM INVALIDATION", flush=True)
+                                print(
+                                    "SETUP CANCELLED: "
+                                    "CONFIRM INVALIDATION",
+                                    flush=True,
+                                )
+
                                 clear_setup(state)
                                 continue
 
                             confirmed = (
-                                current_price >= level + confirm_dist
+                                current_price
+                                >= level + confirm_dist
                                 if side == "BUY"
-                                else current_price <= level - confirm_dist
+                                else current_price
+                                <= level - confirm_dist
                             )
-                            if confirmed:
-                                blocked_again, _, _ = news_block_status(state)
-                                positions_again = await get_positions(connection)
 
-                                if not blocked_again and not positions_again:
-                                    used_key = state.get("setup_key")
+                            if confirmed:
+                                blocked_again, _, _ = (
+                                    news_block_status(
+                                        state
+                                    )
+                                )
+
+                                positions_again = (
+                                    await get_positions(
+                                        connection
+                                    )
+                                )
+
+                                filters_still_ok = (
+                                    m5_confirms(
+                                        df5,
+                                        side,
+                                    )
+                                    and trend_filter_ok(
+                                        df5,
+                                        side,
+                                    )
+                                )
+
+                                if (
+                                    not blocked_again
+                                    and not positions_again
+                                    and filters_still_ok
+                                ):
+                                    used_key = (
+                                        state.get(
+                                            "setup_key"
+                                        )
+                                    )
+
                                     print(
-                                        f"ENTRY CONFIRMED {side} LEVEL={level:.2f} PRICE={current_price:.2f}",
+                                        f"ENTRY CONFIRMED "
+                                        f"{side} "
+                                        f"LEVEL="
+                                        f"{level:.2f} "
+                                        f"PRICE="
+                                        f"{current_price:.2f}",
                                         flush=True,
                                     )
+
                                     clear_setup(state)
-                                    await open_trade(connection, side)
-                                    state["last_signal_key"] = used_key
-                                    state["require_new_flip"] = True
+
+                                    await open_trade(
+                                        connection,
+                                        side,
+                                    )
+
+                                    state[
+                                        "last_signal_key"
+                                    ] = used_key
+
+                                    state[
+                                        "require_new_flip"
+                                    ] = True
 
                 loop_errors = 0
 
             except Exception as exc:
                 loop_errors += 1
+
                 print(
-                    f"LOOP WARNING {loop_errors}/{MAX_LOOP_ERRORS}: "
-                    f"{type(exc).__name__}: {exc}",
+                    f"LOOP WARNING "
+                    f"{loop_errors}/"
+                    f"{MAX_LOOP_ERRORS}: "
+                    f"{type(exc).__name__}: "
+                    f"{exc}",
                     flush=True,
                 )
 
-                if loop_errors >= MAX_LOOP_ERRORS:
+                if (
+                    loop_errors
+                    >= MAX_LOOP_ERRORS
+                ):
                     raise
 
-                await asyncio.sleep(RECONNECT_SECONDS)
+                await asyncio.sleep(
+                    RECONNECT_SECONDS
+                )
 
-            await asyncio.sleep(LOOP_SECONDS)
+            await asyncio.sleep(
+                LOOP_SECONDS
+            )
 
     finally:
         if connection is not None:
             try:
-                await asyncio.wait_for(connection.close(), timeout=10)
+                await asyncio.wait_for(
+                    connection.close(),
+                    timeout=10,
+                )
             except Exception:
                 pass
 
@@ -1196,10 +1887,14 @@ async def main():
     keep_alive()
 
     if not M_TOKEN:
-        raise RuntimeError("M_TOKEN is missing")
+        raise RuntimeError(
+            "M_TOKEN is missing"
+        )
 
     if not M_ACC:
-        raise RuntimeError("M_ACC is missing")
+        raise RuntimeError(
+            "M_ACC is missing"
+        )
 
     state = {
         "ever_connected": False,
@@ -1233,13 +1928,24 @@ async def main():
     while True:
         try:
             await bot_session(state)
+
         except Exception as exc:
-            print(f"BOT SESSION ERROR: {type(exc).__name__}: {exc}", flush=True)
+            print(
+                f"BOT SESSION ERROR: "
+                f"{type(exc).__name__}: "
+                f"{exc}",
+                flush=True,
+            )
+
             telegram(
                 "RIObot GOLD CONNECTION ERROR\n\n"
-                f"Reconnect in {RECONNECT_SECONDS} seconds."
+                f"Reconnect in "
+                f"{RECONNECT_SECONDS} seconds."
             )
-            await asyncio.sleep(RECONNECT_SECONDS)
+
+            await asyncio.sleep(
+                RECONNECT_SECONDS
+            )
 
 
 # =========================================================
