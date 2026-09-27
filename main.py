@@ -12,8 +12,7 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =========================================================
-# RIObot GOLD - FINAL
-# M1 PSAR + M5 CONFIRM + EMA50 + ADX + PRICE ACTION
+# RIObot GOLD - M1 + M5 + EMA50 + ADX + RETEST
 # =========================================================
 
 SYMBOL = "XAUUSD"
@@ -74,6 +73,7 @@ COMMENT = "RIO M1 M5 RETEST EMA50 ADX"
 
 M_TOKEN = os.getenv("M_TOKEN")
 M_ACC = os.getenv("M_ACC")
+
 T_TOKEN = os.getenv("T_TOKEN")
 T_CHAT = os.getenv("T_CHAT")
 
@@ -102,51 +102,46 @@ def keep_alive():
 
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM - OPRAVENÉ + DIAGNOSTIKA
 # =========================================================
 
 def telegram(message):
     if not T_TOKEN:
-        print("TELEGRAM ERROR: T_TOKEN is missing", flush=True)
+        print("TELEGRAM ERROR: T_TOKEN missing", flush=True)
         return False
 
     if not T_CHAT:
-        print("TELEGRAM ERROR: T_CHAT is missing", flush=True)
+        print("TELEGRAM ERROR: T_CHAT missing", flush=True)
         return False
 
     try:
+        url = f"https://api.telegram.org/bot{T_TOKEN}/sendMessage"
+
         response = requests.post(
-            f"https://api.telegram.org/bot{T_TOKEN}/sendMessage",
+            url,
             data={
-                "chat_id": T_CHAT,
+                "chat_id": str(T_CHAT).strip(),
                 "text": message,
             },
-            timeout=10,
+            timeout=15,
         )
 
-        if response.status_code != 200:
-            print(
-                f"TELEGRAM ERROR HTTP {response.status_code}: "
-                f"{response.text[:300]}",
-                flush=True,
-            )
-            return False
+        print(
+            f"TELEGRAM HTTP {response.status_code}: "
+            f"{response.text[:500]}",
+            flush=True,
+        )
 
-        data = response.json()
+        if response.status_code == 200:
+            print("TELEGRAM OK", flush=True)
+            return True
 
-        if not data.get("ok"):
-            print(
-                f"TELEGRAM API ERROR: {data}",
-                flush=True,
-            )
-            return False
-
-        print("TELEGRAM OK", flush=True)
-        return True
+        print("TELEGRAM SEND FAILED", flush=True)
+        return False
 
     except Exception as exc:
         print(
-            f"TELEGRAM WARNING: {type(exc).__name__}: {exc}",
+            f"TELEGRAM ERROR: {type(exc).__name__}: {exc}",
             flush=True,
         )
         return False
@@ -159,7 +154,10 @@ def telegram(message):
 def clean_candle(c):
     if (
         not c
-        or not all(k in c for k in ("time", "open", "high", "low", "close"))
+        or not all(
+            k in c
+            for k in ("time", "open", "high", "low", "close")
+        )
     ):
         return None
 
@@ -183,7 +181,11 @@ def load_cache():
         if not isinstance(data, list):
             return []
 
-        out = [clean_candle(c) for c in data[-MAX_CACHE_BARS:]]
+        out = [
+            clean_candle(c)
+            for c in data[-MAX_CACHE_BARS:]
+        ]
+
         out = [c for c in out if c]
         out.sort(key=lambda x: x["time"])
 
@@ -191,7 +193,8 @@ def load_cache():
 
     except Exception as exc:
         print(
-            f"CACHE LOAD WARNING: {type(exc).__name__}: {exc}",
+            f"CACHE LOAD WARNING: "
+            f"{type(exc).__name__}: {exc}",
             flush=True,
         )
         return []
@@ -200,11 +203,15 @@ def load_cache():
 def save_cache(candles):
     try:
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(candles[-MAX_CACHE_BARS:], f)
+            json.dump(
+                candles[-MAX_CACHE_BARS:],
+                f
+            )
 
     except Exception as exc:
         print(
-            f"CACHE SAVE WARNING: {type(exc).__name__}: {exc}",
+            f"CACHE SAVE WARNING: "
+            f"{type(exc).__name__}: {exc}",
             flush=True,
         )
 
@@ -221,6 +228,7 @@ def update_cache(candles, candle):
         candles.append(candle)
 
     candles.sort(key=lambda x: x["time"])
+
     del candles[:-MAX_CACHE_BARS]
 
     save_cache(candles)
@@ -261,7 +269,8 @@ async def get_current_m1(region):
 
     except Exception as exc:
         print(
-            f"M1 CANDLE WARNING: {type(exc).__name__}: {exc}",
+            f"M1 CANDLE WARNING: "
+            f"{type(exc).__name__}: {exc}",
             flush=True,
         )
         return None
@@ -269,10 +278,10 @@ async def get_current_m1(region):
 
 async def get_history_m1(region):
     url = (
-        f"https://mt-market-data-client-api-v1.{region}.agiliumtrade.ai/"
-        f"users/current/accounts/{M_ACC}/historical-market-data/"
-        f"symbols/{SYMBOL}/timeframes/1m/candles?"
-        f"limit={HISTORY_SEED_BARS}"
+        f"https://mt-market-data-client-api-v1.{region}."
+        f"agiliumtrade.ai/users/current/accounts/{M_ACC}/"
+        f"historical-market-data/symbols/{SYMBOL}/"
+        f"timeframes/1m/candles?limit={HISTORY_SEED_BARS}"
     )
 
     def fetch():
@@ -295,6 +304,7 @@ async def get_history_m1(region):
 
     try:
         raw = await asyncio.to_thread(fetch)
+
         out = []
 
         if isinstance(raw, list):
@@ -310,7 +320,8 @@ async def get_history_m1(region):
 
     except Exception as exc:
         print(
-            f"HISTORY M1 WARNING: {type(exc).__name__}: {exc}",
+            f"HISTORY M1 WARNING: "
+            f"{type(exc).__name__}: {exc}",
             flush=True,
         )
         return []
@@ -323,16 +334,19 @@ async def get_history_m1(region):
 def psar_values(df):
     highs = df["high"].astype(float).tolist()
     lows = df["low"].astype(float).tolist()
+
     count = len(df)
 
     if count < 3:
         return [None] * count
 
     psar = [None] * count
+
     bull = True
     af = PSAR_STEP
     ep = highs[0]
     sar = lows[0]
+
     psar[0] = sar
 
     for i in range(1, count):
@@ -340,9 +354,16 @@ def psar_values(df):
 
         if bull:
             if i >= 2:
-                sar = min(sar, lows[i - 1], lows[i - 2])
+                sar = min(
+                    sar,
+                    lows[i - 1],
+                    lows[i - 2],
+                )
             else:
-                sar = min(sar, lows[i - 1])
+                sar = min(
+                    sar,
+                    lows[i - 1],
+                )
 
             if lows[i] < sar:
                 bull = False
@@ -352,13 +373,23 @@ def psar_values(df):
 
             elif highs[i] > ep:
                 ep = highs[i]
-                af = min(af + PSAR_STEP, PSAR_MAX)
+                af = min(
+                    af + PSAR_STEP,
+                    PSAR_MAX,
+                )
 
         else:
             if i >= 2:
-                sar = max(sar, highs[i - 1], highs[i - 2])
+                sar = max(
+                    sar,
+                    highs[i - 1],
+                    highs[i - 2],
+                )
             else:
-                sar = max(sar, highs[i - 1])
+                sar = max(
+                    sar,
+                    highs[i - 1],
+                )
 
             if highs[i] > sar:
                 bull = True
@@ -368,7 +399,10 @@ def psar_values(df):
 
             elif lows[i] < ep:
                 ep = lows[i]
-                af = min(af + PSAR_STEP, PSAR_MAX)
+                af = min(
+                    af + PSAR_STEP,
+                    PSAR_MAX,
+                )
 
         psar[i] = sar
 
@@ -382,10 +416,15 @@ def psar_values(df):
 def add_trend_filters(df):
     df = df.copy()
 
-    df["ema50"] = df["close"].astype(float).ewm(
-        span=EMA_PERIOD,
-        adjust=False,
-    ).mean()
+    df["ema50"] = (
+        df["close"]
+        .astype(float)
+        .ewm(
+            span=EMA_PERIOD,
+            adjust=False,
+        )
+        .mean()
+    )
 
     high = df["high"].astype(float)
     low = df["low"].astype(float)
@@ -405,29 +444,63 @@ def add_trend_filters(df):
     up_move = high.diff()
     down_move = -low.diff()
 
-    plus_dm = pd.Series(0.0, index=df.index)
-    minus_dm = pd.Series(0.0, index=df.index)
+    plus_dm = pd.Series(
+        0.0,
+        index=df.index,
+    )
+
+    minus_dm = pd.Series(
+        0.0,
+        index=df.index,
+    )
 
     plus_dm[
-        (up_move > down_move) & (up_move > 0)
+        (up_move > down_move)
+        & (up_move > 0)
     ] = up_move
 
     minus_dm[
-        (down_move > up_move) & (down_move > 0)
+        (down_move > up_move)
+        & (down_move > 0)
     ] = down_move
 
     alpha = 1.0 / ADX_PERIOD
 
-    atr = tr.ewm(alpha=alpha, adjust=False).mean()
-    plus_smoothed = plus_dm.ewm(alpha=alpha, adjust=False).mean()
-    minus_smoothed = minus_dm.ewm(alpha=alpha, adjust=False).mean()
+    atr = tr.ewm(
+        alpha=alpha,
+        adjust=False,
+    ).mean()
 
-    safe_atr = atr.replace(0, float("nan"))
+    plus_smoothed = plus_dm.ewm(
+        alpha=alpha,
+        adjust=False,
+    ).mean()
 
-    plus_di = 100.0 * plus_smoothed / safe_atr
-    minus_di = 100.0 * minus_smoothed / safe_atr
+    minus_smoothed = minus_dm.ewm(
+        alpha=alpha,
+        adjust=False,
+    ).mean()
 
-    denominator = (plus_di + minus_di).replace(
+    safe_atr = atr.replace(
+        0,
+        float("nan"),
+    )
+
+    plus_di = (
+        100.0
+        * plus_smoothed
+        / safe_atr
+    )
+
+    minus_di = (
+        100.0
+        * minus_smoothed
+        / safe_atr
+    )
+
+    denominator = (
+        plus_di + minus_di
+    ).replace(
         0,
         float("nan"),
     )
@@ -441,10 +514,14 @@ def add_trend_filters(df):
     df["plus_di"] = plus_di.fillna(0.0)
     df["minus_di"] = minus_di.fillna(0.0)
 
-    df["adx"] = dx.ewm(
-        alpha=alpha,
-        adjust=False,
-    ).mean().fillna(0.0)
+    df["adx"] = (
+        dx.ewm(
+            alpha=alpha,
+            adjust=False,
+        )
+        .mean()
+        .fillna(0.0)
+    )
 
     return df
 
@@ -458,6 +535,7 @@ def trend_filter_ok(df5, side):
     close = float(row["close"])
     ema50 = float(row["ema50"])
     adx = float(row["adx"])
+
     plus_di = float(row["plus_di"])
     minus_di = float(row["minus_di"])
 
@@ -465,10 +543,16 @@ def trend_filter_ok(df5, side):
         return False
 
     if side == "BUY":
-        return close > ema50 and plus_di > minus_di
+        return (
+            close > ema50
+            and plus_di > minus_di
+        )
 
     if side == "SELL":
-        return close < ema50 and minus_di > plus_di
+        return (
+            close < ema50
+            and minus_di > plus_di
+        )
 
     return False
 
@@ -483,14 +567,24 @@ def make_m1_df(candles):
 
     df = pd.DataFrame(candles)
 
-    for col in ("open", "high", "low", "close"):
+    for col in (
+        "open",
+        "high",
+        "low",
+        "close",
+    ):
         df[col] = pd.to_numeric(
             df[col],
             errors="coerce",
         )
 
     df = df.dropna(
-        subset=["open", "high", "low", "close"]
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
     ).reset_index(drop=True)
 
     if len(df) < MIN_PSAR_BARS:
@@ -507,7 +601,12 @@ def make_m5_df(m1_candles):
 
     df = pd.DataFrame(m1_candles)
 
-    for col in ("open", "high", "low", "close"):
+    for col in (
+        "open",
+        "high",
+        "low",
+        "close",
+    ):
         df[col] = pd.to_numeric(
             df[col],
             errors="coerce",
@@ -520,16 +619,27 @@ def make_m5_df(m1_candles):
     )
 
     df = df.dropna(
-        subset=["dt", "open", "high", "low", "close"]
+        subset=[
+            "dt",
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
     ).sort_values("dt")
 
     if df.empty:
         return None
 
-    df["bucket"] = df["dt"].dt.floor("5min")
+    df["bucket"] = (
+        df["dt"].dt.floor("5min")
+    )
 
     m5 = (
-        df.groupby("bucket", as_index=False)
+        df.groupby(
+            "bucket",
+            as_index=False,
+        )
         .agg(
             open=("open", "first"),
             high=("high", "max"),
@@ -541,22 +651,30 @@ def make_m5_df(m1_candles):
     if len(m5) < MIN_PSAR_BARS:
         return None
 
-    m5["time"] = m5["bucket"].dt.strftime(
-        "%Y-%m-%dT%H:%M:%S%z"
+    m5["time"] = (
+        m5["bucket"]
+        .dt.strftime("%Y-%m-%dT%H:%M:%S%z")
     )
 
     m5 = m5[
-        ["time", "open", "high", "low", "close"]
+        [
+            "time",
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
     ].reset_index(drop=True)
 
     m5["psar"] = psar_values(m5)
+
     m5 = add_trend_filters(m5)
 
     return m5
 
 
 # =========================================================
-# HISTORY SEED
+# HISTORY
 # =========================================================
 
 async def seed_history(state):
@@ -586,9 +704,9 @@ async def seed_history(state):
 
     if state["history_seeded"]:
         print(
-            f"HISTORY READY: M1={len(df1)} "
-            f"M5={len(df5)} "
-            f"(M5 derived from M1)",
+            f"HISTORY READY: "
+            f"M1={len(df1)} "
+            f"M5={len(df5)}",
             flush=True,
         )
 
@@ -605,14 +723,18 @@ def get_live_flip(df):
     current = df.iloc[-1]
 
     if (
-        float(previous["psar"]) > float(previous["close"])
-        and float(current["psar"]) < float(current["close"])
+        float(previous["psar"])
+        > float(previous["close"])
+        and float(current["psar"])
+        < float(current["close"])
     ):
         return "BUY"
 
     if (
-        float(previous["psar"]) < float(previous["close"])
-        and float(current["psar"]) > float(current["close"])
+        float(previous["psar"])
+        < float(previous["close"])
+        and float(current["psar"])
+        > float(current["close"])
     ):
         return "SELL"
 
@@ -642,13 +764,15 @@ def m5_confirms(df5, side):
 
     if side == "BUY":
         return all(
-            float(row["psar"]) < float(row["close"])
+            float(row["psar"])
+            < float(row["close"])
             for _, row in rows.iterrows()
         )
 
     if side == "SELL":
         return all(
-            float(row["psar"]) > float(row["close"])
+            float(row["psar"])
+            > float(row["close"])
             for _, row in rows.iterrows()
         )
 
@@ -663,8 +787,9 @@ def average_range(df1):
     if df1 is None or len(df1) < 4:
         return 0.0
 
-    rows = df1.iloc[:-1].tail(
-        IMPULSE_LOOKBACK
+    rows = (
+        df1.iloc[:-1]
+        .tail(IMPULSE_LOOKBACK)
     )
 
     values = (
@@ -703,11 +828,26 @@ def params_for_setup(df1):
     avg = average_range(df1) or 0.80
 
     return {
-        "max_chase": min(max(avg * 0.90, 0.50), 1.80),
-        "retest": min(max(avg * 0.30, 0.15), 0.55),
-        "invalidate": min(max(avg * 0.55, 0.30), 1.00),
-        "confirm": min(max(avg * 0.20, 0.10), 0.35),
-        "extension": min(max(avg * 0.35, 0.20), 0.60),
+        "max_chase": min(
+            max(avg * 0.90, 0.50),
+            1.80,
+        ),
+        "retest": min(
+            max(avg * 0.30, 0.15),
+            0.55,
+        ),
+        "invalidate": min(
+            max(avg * 0.55, 0.30),
+            1.00,
+        ),
+        "confirm": min(
+            max(avg * 0.20, 0.10),
+            0.35,
+        ),
+        "extension": min(
+            max(avg * 0.35, 0.20),
+            0.60,
+        ),
     }
 
 
@@ -722,7 +862,8 @@ async def get_positions(connection):
     )
 
     return [
-        p for p in positions
+        p
+        for p in positions
         if str(
             p.get("symbol", "")
         ).upper() == SYMBOL.upper()
@@ -745,7 +886,10 @@ async def get_market(connection):
     )
 
     digits = int(
-        specification.get("digits", 2)
+        specification.get(
+            "digits",
+            2,
+        )
     )
 
     tick = float(
@@ -843,7 +987,10 @@ async def ensure_stops(connection):
         connection
     )
 
-    epsilon = 10 ** (-digits) / 2
+    epsilon = (
+        10 ** (-digits)
+        / 2
+    )
 
     for position in positions:
         position_id = position.get("id")
@@ -853,7 +1000,10 @@ async def ensure_stops(connection):
         ).upper()
 
         entry = float(
-            position.get("openPrice", 0)
+            position.get(
+                "openPrice",
+                0,
+            )
             or 0
         )
 
@@ -946,19 +1096,25 @@ async def ensure_stops(connection):
 # OPEN TRADE
 # =========================================================
 
-async def open_trade(connection, side):
-    _, digits, bid, ask = await get_market(
-        connection
+async def open_trade(
+    connection,
+    side,
+):
+    _, digits, bid, ask = (
+        await get_market(connection)
     )
 
     provisional_entry = (
-        ask if side == "BUY" else bid
+        ask if side == "BUY"
+        else bid
     )
 
-    provisional_sl, provisional_tp = levels(
-        side,
-        provisional_entry,
-        digits,
+    provisional_sl, provisional_tp = (
+        levels(
+            side,
+            provisional_entry,
+            digits,
+        )
     )
 
     if side == "BUY":
@@ -994,7 +1150,10 @@ async def open_trade(connection, side):
         position_id = position.get("id")
 
         actual_entry = float(
-            position.get("openPrice", 0)
+            position.get(
+                "openPrice",
+                0,
+            )
             or 0
         )
 
@@ -1021,13 +1180,9 @@ async def open_trade(connection, side):
             f"SL: {exact_sl:.2f}\n"
             f"TP: {exact_tp:.2f}\n\n"
             "M1 PSAR: 1st DOT + 10s\n"
-            "M5: 2 PSAR dots same direction\n"
-            "FILTER: EMA50 + ADX >= 20\n"
-            "ENTRY: breakout -> retest -> confirm\n"
-            "NO CHASE / NO BIG IMPULSE\n"
-            "BE1: +4.00 -> +1.00\n"
-            "BE2: +7.00 -> +4.00\n"
-            "BE3: +9.00 -> +7.00"
+            "M5: 2 PSAR dots\n"
+            "EMA50 + ADX >= 20\n"
+            "Breakout + retest + confirmation"
         )
 
     return result
@@ -1045,8 +1200,8 @@ async def manage_be(connection):
     if not positions:
         return
 
-    _, digits, bid, ask = await get_market(
-        connection
+    _, digits, bid, ask = (
+        await get_market(connection)
     )
 
     for position in positions:
@@ -1057,7 +1212,10 @@ async def manage_be(connection):
         ).upper()
 
         entry = float(
-            position.get("openPrice", 0)
+            position.get(
+                "openPrice",
+                0,
+            )
             or 0
         )
 
@@ -1204,7 +1362,10 @@ def parse_news_datetime(value):
         return datetime.fromisoformat(
             str(value)
             .strip()
-            .replace("Z", "+00:00")
+            .replace(
+                "Z",
+                "+00:00",
+            )
         ).timestamp()
 
     except Exception:
@@ -1220,7 +1381,10 @@ async def refresh_news_calendar(
     if (
         not force
         and now
-        < state.get("news_next_fetch", 0)
+        < state.get(
+            "news_next_fetch",
+            0,
+        )
     ):
         return
 
@@ -1243,21 +1407,32 @@ async def refresh_news_calendar(
         return response.json()
 
     try:
-        raw = await asyncio.to_thread(fetch)
+        raw = await asyncio.to_thread(
+            fetch
+        )
 
         events = []
 
         if isinstance(raw, list):
             for item in raw:
-                if not isinstance(item, dict):
+                if not isinstance(
+                    item,
+                    dict,
+                ):
                     continue
 
                 country = str(
-                    item.get("country", "")
+                    item.get(
+                        "country",
+                        "",
+                    )
                 ).upper().strip()
 
                 impact = str(
-                    item.get("impact", "")
+                    item.get(
+                        "impact",
+                        "",
+                    )
                 ).upper().strip()
 
                 if (
@@ -1374,7 +1549,7 @@ def news_block_status(state):
 
 
 # =========================================================
-# STATE HELPERS
+# STATE
 # =========================================================
 
 def clear_pending(state):
@@ -1411,9 +1586,11 @@ def arm_setup(
     state["setup_key"] = signal_key
     state["setup_level"] = level
     state["setup_started"] = time.time()
+
     state["setup_break_time"] = 0.0
     state["setup_break_price"] = None
     state["setup_last_price"] = current_price
+
     state["setup_params"] = params
     state["retest_seen"] = False
 
@@ -1442,6 +1619,7 @@ def fresh_cross(
 
 async def bot_session(state):
     api = MetaApi(M_TOKEN)
+
     connection = None
 
     try:
@@ -1481,9 +1659,9 @@ async def bot_session(state):
             or DEFAULT_META_REGION
         )
 
-        state["region"] = str(
-            region
-        ).lower()
+        state["region"] = (
+            str(region).lower()
+        )
 
         connection = (
             account.get_rpc_connection()
@@ -1504,26 +1682,22 @@ async def bot_session(state):
             flush=True,
         )
 
-        # Telegram test after every fresh process start
         if not state["ever_connected"]:
             telegram(
-                "RIObot GOLD ONLINE\n\n"
-                "MetaApi: CONNECTED\n"
-                "Telegram: OK\n\n"
+                "RIObot GOLD START / CONNECTED\n\n"
                 f"Symbol: {SYMBOL}\n"
                 f"Lot: {LOT_SIZE}\n"
                 "M1 PSAR: 1st DOT + 10s\n"
-                "M5: 2 PSAR dots same direction\n"
-                "FILTER: EMA50 + ADX >= 20\n"
-                "ENTRY: breakout -> retest -> confirm\n"
-                "NO CHASE / NO BIG IMPULSE\n"
-                "MAX: 1 XAUUSD position\n"
+                "M5: 2 PSAR dots\n"
+                "EMA50 + ADX >= 20\n"
+                "Breakout -> retest -> confirm\n"
+                "MAX 1 position\n\n"
                 "TP: +10.00\n"
                 "SL: -10.00\n"
-                "BE1: +4.00 -> +1.00\n"
-                "BE2: +7.00 -> +4.00\n"
-                "BE3: +9.00 -> +7.00\n"
-                "NEWS: HIGH USD -15m / +30m"
+                "BE1: +4 -> +1\n"
+                "BE2: +7 -> +4\n"
+                "BE3: +9 -> +7\n\n"
+                "RIObot is ONLINE."
             )
 
             state["ever_connected"] = True
@@ -1591,6 +1765,7 @@ async def bot_session(state):
                     await asyncio.sleep(
                         LOOP_SECONDS
                     )
+
                     continue
 
                 signal = get_live_flip(
@@ -1625,6 +1800,7 @@ async def bot_session(state):
                     await asyncio.sleep(
                         LOOP_SECONDS
                     )
+
                     continue
 
                 if (
@@ -1675,16 +1851,11 @@ async def bot_session(state):
                     ):
                         if news_event:
                             event_time = (
-                                datetime
-                                .fromtimestamp(
-                                    news_event[
-                                        "ts"
-                                    ]
+                                datetime.fromtimestamp(
+                                    news_event["ts"]
                                 )
                                 .astimezone()
-                                .strftime(
-                                    "%H:%M"
-                                )
+                                .strftime("%H:%M")
                             )
 
                             telegram(
@@ -1692,7 +1863,8 @@ async def bot_session(state):
                                 f"HIGH USD: "
                                 f"{news_event['title']}\n"
                                 f"Time: {event_time}\n"
-                                "No new trade -15m / +30m."
+                                "No new trade "
+                                "-15m / +30m."
                             )
 
                         else:
@@ -1711,6 +1883,7 @@ async def bot_session(state):
                     await asyncio.sleep(
                         LOOP_SECONDS
                     )
+
                     continue
 
                 state[
@@ -1794,10 +1967,7 @@ async def bot_session(state):
                                         df1.iloc[-2]
                                     )
 
-                                    if (
-                                        signal
-                                        == "BUY"
-                                    ):
+                                    if signal == "BUY":
                                         breakout_level = float(
                                             last_closed[
                                                 "high"
@@ -1821,8 +1991,7 @@ async def bot_session(state):
 
                                     current_price = (
                                         bid
-                                        if signal
-                                        == "BUY"
+                                        if signal == "BUY"
                                         else ask
                                     )
 
@@ -1853,8 +2022,7 @@ async def bot_session(state):
                                         f"SETUP ARMED "
                                         f"{signal} "
                                         f"LEVEL="
-                                        f"{breakout_level:.2f} "
-                                        f"PHASE=WAIT_BREAK",
+                                        f"{breakout_level:.2f}",
                                         flush=True,
                                     )
 
@@ -1864,7 +2032,7 @@ async def bot_session(state):
                                     )
 
                                     print(
-                                        "M5/EMA/ADX "
+                                        f"M5/EMA/ADX "
                                         f"NOT CONFIRMED "
                                         f"{signal}",
                                         flush=True,
@@ -2014,19 +2182,13 @@ async def bot_session(state):
                             )
                         )
 
-                        if (
-                            phase
-                            == "WAIT_BREAK"
-                        ):
+                        if phase == "WAIT_BREAK":
                             too_far = (
                                 current_price
-                                > level
-                                + max_chase
-                                if side
-                                == "BUY"
+                                > level + max_chase
+                                if side == "BUY"
                                 else current_price
-                                < level
-                                - max_chase
+                                < level - max_chase
                             )
 
                             if too_far:
@@ -2062,16 +2224,11 @@ async def bot_session(state):
                                     f"BREAKOUT "
                                     f"{side} "
                                     f"LEVEL="
-                                    f"{level:.2f} "
-                                    f"PRICE="
-                                    f"{current_price:.2f}",
+                                    f"{level:.2f}",
                                     flush=True,
                                 )
 
-                        elif (
-                            phase
-                            == "WAIT_RETEST"
-                        ):
+                        elif phase == "WAIT_RETEST":
                             break_time = float(
                                 state.get(
                                     "setup_break_time",
@@ -2082,8 +2239,7 @@ async def bot_session(state):
 
                             if (
                                 break_time > 0
-                                and now
-                                - break_time
+                                and now - break_time
                                 > RETEST_EXPIRY_SECONDS
                             ):
                                 print(
@@ -2095,17 +2251,15 @@ async def bot_session(state):
                                 clear_setup(
                                     state
                                 )
+
                                 continue
 
                             invalid_now = (
                                 current_price
-                                < level
-                                - invalidate
-                                if side
-                                == "BUY"
+                                < level - invalidate
+                                if side == "BUY"
                                 else current_price
-                                > level
-                                + invalidate
+                                > level + invalidate
                             )
 
                             if invalid_now:
@@ -2118,23 +2272,21 @@ async def bot_session(state):
                                 clear_setup(
                                     state
                                 )
+
                                 continue
 
                             too_extended = (
                                 (
                                     current_price
-                                    > level
-                                    + extension
+                                    > level + extension
                                     and not state.get(
                                         "retest_seen"
                                     )
                                 )
-                                if side
-                                == "BUY"
+                                if side == "BUY"
                                 else (
                                     current_price
-                                    < level
-                                    - extension
+                                    < level - extension
                                     and not state.get(
                                         "retest_seen"
                                     )
@@ -2151,17 +2303,15 @@ async def bot_session(state):
                                 clear_setup(
                                     state
                                 )
+
                                 continue
 
                             touched = (
                                 current_price
-                                <= level
-                                + retest_band
-                                if side
-                                == "BUY"
+                                <= level + retest_band
+                                if side == "BUY"
                                 else current_price
-                                >= level
-                                - retest_band
+                                >= level - retest_band
                             )
 
                             if touched:
@@ -2175,25 +2325,17 @@ async def bot_session(state):
 
                                 print(
                                     f"RETEST OK "
-                                    f"{side} "
-                                    f"LEVEL="
-                                    f"{level:.2f}",
+                                    f"{side}",
                                     flush=True,
                                 )
 
-                        elif (
-                            phase
-                            == "WAIT_CONFIRM"
-                        ):
+                        elif phase == "WAIT_CONFIRM":
                             invalid_now = (
                                 current_price
-                                < level
-                                - invalidate
-                                if side
-                                == "BUY"
+                                < level - invalidate
+                                if side == "BUY"
                                 else current_price
-                                > level
-                                + invalidate
+                                > level + invalidate
                             )
 
                             if invalid_now:
@@ -2206,17 +2348,15 @@ async def bot_session(state):
                                 clear_setup(
                                     state
                                 )
+
                                 continue
 
                             confirmed = (
                                 current_price
-                                >= level
-                                + confirm_dist
-                                if side
-                                == "BUY"
+                                >= level + confirm_dist
+                                if side == "BUY"
                                 else current_price
-                                <= level
-                                - confirm_dist
+                                <= level - confirm_dist
                             )
 
                             if confirmed:
@@ -2258,11 +2398,7 @@ async def bot_session(state):
 
                                     print(
                                         f"ENTRY CONFIRMED "
-                                        f"{side} "
-                                        f"LEVEL="
-                                        f"{level:.2f} "
-                                        f"PRICE="
-                                        f"{current_price:.2f}",
+                                        f"{side}",
                                         flush=True,
                                     )
 
@@ -2330,6 +2466,15 @@ async def bot_session(state):
 async def main():
     keep_alive()
 
+    print(
+        "ENV CHECK: "
+        f"M_TOKEN={'OK' if M_TOKEN else 'MISSING'} | "
+        f"M_ACC={'OK' if M_ACC else 'MISSING'} | "
+        f"T_TOKEN={'OK' if T_TOKEN else 'MISSING'} | "
+        f"T_CHAT={'OK' if T_CHAT else 'MISSING'}",
+        flush=True,
+    )
+
     if not M_TOKEN:
         raise RuntimeError(
             "M_TOKEN is missing"
@@ -2340,36 +2485,43 @@ async def main():
             "M_ACC is missing"
         )
 
-    # Telegram ENV kontrola hneď pri štarte
-    print(
-        f"TELEGRAM ENV: "
-        f"T_TOKEN={'OK' if T_TOKEN else 'MISSING'} | "
-        f"T_CHAT={'OK' if T_CHAT else 'MISSING'}",
-        flush=True,
+    # Telegram test hneď pri štarte.
+    telegram(
+        "RIObot GOLD TELEGRAM TEST\n\n"
+        "Telegram connection OK.\n"
+        "Robot is starting..."
     )
 
     state = {
         "ever_connected": False,
         "region": DEFAULT_META_REGION,
+
         "m1_candles": load_cache(),
         "history_seeded": False,
+
         "had_position": False,
         "require_new_flip": False,
+
         "last_signal_key": None,
+
         "pending_signal_key": None,
         "pending_signal_side": None,
         "pending_started": 0.0,
+
         "armed": False,
         "setup_phase": None,
         "setup_side": None,
         "setup_key": None,
         "setup_level": None,
         "setup_started": 0.0,
+
         "setup_break_time": 0.0,
         "setup_break_price": None,
         "setup_last_price": None,
         "setup_params": None,
+
         "retest_seen": False,
+
         "news_events": [],
         "news_last_success": 0.0,
         "news_next_fetch": 0.0,
@@ -2379,7 +2531,9 @@ async def main():
 
     while True:
         try:
-            await bot_session(state)
+            await bot_session(
+                state
+            )
 
         except Exception as exc:
             print(
@@ -2391,6 +2545,7 @@ async def main():
 
             telegram(
                 "RIObot GOLD CONNECTION ERROR\n\n"
+                f"{type(exc).__name__}: {exc}\n\n"
                 f"Reconnect in "
                 f"{RECONNECT_SECONDS} seconds."
             )
