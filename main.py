@@ -524,9 +524,7 @@ def add_trend_filters(df):
     )
 
     return df
-
-
-def trend_filter_ok(df5, side):
+    def trend_filter_ok(df5, side):
     if df5 is None or df5.empty:
         return False
 
@@ -784,6 +782,46 @@ def m5_confirms(df5, side):
 
 
 # =========================================================
+# NOVY M1 ENTRY PRESSURE FILTER
+# =========================================================
+
+def m1_entry_pressure_ok(df1, side):
+    """
+    Kontrola 2 poslednych UZAVRETYCH M1 sviecok.
+    Aktualna otvorena M1 sviecka sa nepouziva.
+
+    2 medvedie M1 -> blokuje BUY.
+    2 bycie M1 -> blokuje SELL.
+    """
+
+    if df1 is None or len(df1) < 3:
+        return False
+
+    closed = df1.iloc[-3:-1]
+
+    if len(closed) < 2:
+        return False
+
+    if side == "BUY":
+        bearish_pressure = all(
+            float(row["close"]) < float(row["open"])
+            for _, row in closed.iterrows()
+        )
+
+        return not bearish_pressure
+
+    if side == "SELL":
+        bullish_pressure = all(
+            float(row["close"]) > float(row["open"])
+            for _, row in closed.iterrows()
+        )
+
+        return not bullish_pressure
+
+    return False
+
+
+# =========================================================
 # PRICE ACTION
 # =========================================================
 
@@ -906,586 +944,607 @@ async def get_market(connection):
     ask = float(price["ask"])
 
     return tick, digits, bid, ask
-
-
-# =========================================================
-# SL / TP
+    # =========================================================
+# NORMALIZE PRICE
 # =========================================================
 
-def levels(side, entry, digits):
-    if side in (
-        "BUY",
-        "POSITION_TYPE_BUY",
-    ):
-        return (
-            round(
-                entry - SL_DISTANCE,
-                digits,
-            ),
-            round(
-                entry + TP_DISTANCE,
-                digits,
-            ),
+def normalize_price(value, tick, digits):
+    if tick <= 0:
+        return round(
+            value,
+            digits,
         )
 
-    return (
-        round(
-            entry + SL_DISTANCE,
-            digits,
-        ),
-        round(
-            entry - TP_DISTANCE,
-            digits,
-        ),
+    steps = round(
+        value / tick
+    )
+
+    return round(
+        steps * tick,
+        digits,
     )
 
 
-async def wait_position(
-    connection,
-    side,
-    attempts=20,
-):
-    for _ in range(attempts):
-        positions = await get_positions(
-            connection
-        )
+# =========================================================
+# POSITION HELPERS
+# =========================================================
 
-        for position in positions:
-            position_side = str(
-                position.get(
-                    "type",
-                    "",
-                )
-            ).upper()
+def position_side(position):
+    raw = str(
+        position.get("type", "")
+    ).lower()
 
-            if (
-                side == "BUY"
-                and position_side
-                in (
-                    "BUY",
-                    "POSITION_TYPE_BUY",
-                )
-            ):
-                return position
+    if "buy" in raw:
+        return "BUY"
 
-            if (
-                side == "SELL"
-                and position_side
-                in (
-                    "SELL",
-                    "POSITION_TYPE_SELL",
-                )
-            ):
-                return position
-
-        await asyncio.sleep(0.25)
+    if "sell" in raw:
+        return "SELL"
 
     return None
 
 
-async def ensure_stops(connection):
+def position_open_price(position):
+    for key in (
+        "openPrice",
+        "priceOpen",
+        "open_price",
+    ):
+        value = position.get(key)
+
+        if value is not None:
+            try:
+                return float(value)
+            except Exception:
+                pass
+
+    return None
+
+
+def position_sl(position):
+    for key in (
+        "stopLoss",
+        "sl",
+    ):
+        value = position.get(key)
+
+        if value is not None:
+            try:
+                return float(value)
+            except Exception:
+                pass
+
+    return None
+
+
+def position_tp(position):
+    for key in (
+        "takeProfit",
+        "tp",
+    ):
+        value = position.get(key)
+
+        if value is not None:
+            try:
+                return float(value)
+            except Exception:
+                pass
+
+    return None
+
+
+def position_id(position):
+    for key in (
+        "id",
+        "positionId",
+    ):
+        value = position.get(key)
+
+        if value is not None:
+            return str(value)
+
+    return None
+
+
+# =========================================================
+# DESIRED SL / TP
+# =========================================================
+
+def initial_sl_tp(
+    side,
+    open_price,
+    tick,
+    digits,
+):
+    if side == "BUY":
+        sl = open_price - SL_DISTANCE
+        tp = open_price + TP_DISTANCE
+
+    else:
+        sl = open_price + SL_DISTANCE
+        tp = open_price - TP_DISTANCE
+
+    return (
+        normalize_price(
+            sl,
+            tick,
+            digits,
+        ),
+        normalize_price(
+            tp,
+            tick,
+            digits,
+        ),
+    )
+
+
+def desired_be_sl(
+    side,
+    open_price,
+    current_price,
+    tick,
+    digits,
+):
+    if side == "BUY":
+        profit_distance = (
+            current_price - open_price
+        )
+
+    else:
+        profit_distance = (
+            open_price - current_price
+        )
+
+    lock = None
+    stage = None
+
+    if profit_distance >= BE3_TRIGGER:
+        lock = BE3_LOCK
+        stage = "BE3"
+
+    elif profit_distance >= BE2_TRIGGER:
+        lock = BE2_LOCK
+        stage = "BE2"
+
+    elif profit_distance >= BE1_TRIGGER:
+        lock = BE1_LOCK
+        stage = "BE1"
+
+    if lock is None:
+        return None, None
+
+    if side == "BUY":
+        sl = open_price + lock
+
+    else:
+        sl = open_price - lock
+
+    sl = normalize_price(
+        sl,
+        tick,
+        digits,
+    )
+
+    return sl, stage
+
+
+# =========================================================
+# POSITION MODIFY
+# =========================================================
+
+async def modify_position(
+    connection,
+    pos_id,
+    stop_loss,
+    take_profit,
+):
+    if not pos_id:
+        return False
+
+    try:
+        await asyncio.wait_for(
+            connection.modify_position(
+                pos_id,
+                stop_loss,
+                take_profit,
+            ),
+            timeout=META_TIMEOUT,
+        )
+
+        return True
+
+    except Exception as exc:
+        print(
+            f"MODIFY POSITION ERROR: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+        return False
+
+
+# =========================================================
+# RESTORE / PROTECT OPEN POSITION
+# =========================================================
+
+async def protect_position(
+    connection,
+    position,
+):
+    side = position_side(position)
+
+    if side not in (
+        "BUY",
+        "SELL",
+    ):
+        return
+
+    open_price = position_open_price(
+        position
+    )
+
+    pos_id = position_id(
+        position
+    )
+
+    if open_price is None or not pos_id:
+        return
+
+    tick, digits, bid, ask = (
+        await get_market(connection)
+    )
+
+    current_price = (
+        bid
+        if side == "BUY"
+        else ask
+    )
+
+    current_sl = position_sl(
+        position
+    )
+
+    current_tp = position_tp(
+        position
+    )
+
+    initial_sl, desired_tp = (
+        initial_sl_tp(
+            side,
+            open_price,
+            tick,
+            digits,
+        )
+    )
+
+    be_sl, be_stage = desired_be_sl(
+        side,
+        open_price,
+        current_price,
+        tick,
+        digits,
+    )
+
+    desired_sl = initial_sl
+
+    if be_sl is not None:
+        desired_sl = be_sl
+
+    # Nikdy neposunieme uz lepsi SL spat horsim smerom.
+    if current_sl is not None:
+        if side == "BUY":
+            desired_sl = max(
+                desired_sl,
+                current_sl,
+            )
+
+        else:
+            desired_sl = min(
+                desired_sl,
+                current_sl,
+            )
+
+    desired_sl = normalize_price(
+        desired_sl,
+        tick,
+        digits,
+    )
+
+    desired_tp = normalize_price(
+        desired_tp,
+        tick,
+        digits,
+    )
+
+    sl_missing = (
+        current_sl is None
+        or current_sl == 0
+    )
+
+    tp_missing = (
+        current_tp is None
+        or current_tp == 0
+    )
+
+    sl_diff = (
+        sl_missing
+        or abs(
+            float(current_sl)
+            - desired_sl
+        ) >= tick / 2
+    )
+
+    tp_diff = (
+        tp_missing
+        or abs(
+            float(current_tp)
+            - desired_tp
+        ) >= tick / 2
+    )
+
+    if not sl_diff and not tp_diff:
+        return
+
+    ok = await modify_position(
+        connection,
+        pos_id,
+        desired_sl,
+        desired_tp,
+    )
+
+    if not ok:
+        return
+
+    print(
+        f"POSITION PROTECTED "
+        f"{side} "
+        f"SL={desired_sl:.{digits}f} "
+        f"TP={desired_tp:.{digits}f} "
+        f"{be_stage or 'INITIAL'}",
+        flush=True,
+    )
+
+    if be_stage:
+        telegram(
+            f"RIObot GOLD {be_stage}\n\n"
+            f"{side}\n"
+            f"Open: {open_price:.{digits}f}\n"
+            f"SL locked: {desired_sl:.{digits}f}\n"
+            f"TP: {desired_tp:.{digits}f}"
+        )
+
+
+# =========================================================
+# PROTECT ALL OPEN POSITIONS
+# =========================================================
+
+async def protect_open_positions(
+    connection,
+):
     positions = await get_positions(
         connection
     )
 
-    if not positions:
-        return
-
-    _, digits, _, _ = await get_market(
-        connection
-    )
-
-    epsilon = 10 ** (-digits) / 2
-
     for position in positions:
-        position_id = position.get("id")
-
-        side = str(
-            position.get(
-                "type",
-                "",
-            )
-        ).upper()
-
-        entry = float(
-            position.get(
-                "openPrice",
-                0,
-            )
-            or 0
+        await protect_position(
+            connection,
+            position,
         )
 
-        if not position_id or entry <= 0:
-            continue
-
-        exact_sl, exact_tp = levels(
-            side,
-            entry,
-            digits,
-        )
-
-        current_sl_raw = position.get(
-            "stopLoss"
-        )
-
-        current_tp_raw = position.get(
-            "takeProfit"
-        )
-
-        current_sl = (
-            float(current_sl_raw)
-            if current_sl_raw not in (
-                None,
-                0,
-            )
-            else None
-        )
-
-        current_tp = (
-            float(current_tp_raw)
-            if current_tp_raw not in (
-                None,
-                0,
-            )
-            else None
-        )
-
-        if side in (
-            "BUY",
-            "POSITION_TYPE_BUY",
-        ):
-            target_sl = (
-                current_sl
-                if (
-                    current_sl is not None
-                    and current_sl >= entry
-                )
-                else exact_sl
-            )
-
-        elif side in (
-            "SELL",
-            "POSITION_TYPE_SELL",
-        ):
-            target_sl = (
-                current_sl
-                if (
-                    current_sl is not None
-                    and current_sl <= entry
-                )
-                else exact_sl
-            )
-
-        else:
-            continue
-
-        needs_sl = (
-            current_sl is None
-            or abs(
-                current_sl - target_sl
-            ) > epsilon
-        )
-
-        needs_tp = (
-            current_tp is None
-            or abs(
-                current_tp - exact_tp
-            ) > epsilon
-        )
-
-        if needs_sl or needs_tp:
-            await asyncio.wait_for(
-                connection.modify_position(
-                    position_id,
-                    target_sl,
-                    exact_tp,
-                ),
-                timeout=META_TIMEOUT,
-            )
-
-
-# =========================================================
+    return positions
+    # =========================================================
 # OPEN TRADE
 # =========================================================
 
-async def open_trade(connection, side):
-    _, digits, bid, ask = (
+async def open_trade(
+    connection,
+    side,
+):
+    positions = await get_positions(
+        connection
+    )
+
+    if positions:
+        print(
+            "ENTRY BLOCKED: "
+            "XAUUSD POSITION ALREADY OPEN",
+            flush=True,
+        )
+        return False
+
+    tick, digits, bid, ask = (
         await get_market(connection)
     )
 
-    provisional_entry = (
+    entry = (
         ask
         if side == "BUY"
         else bid
     )
 
-    provisional_sl, provisional_tp = levels(
+    sl, tp = initial_sl_tp(
         side,
-        provisional_entry,
+        entry,
+        tick,
         digits,
     )
 
-    if side == "BUY":
-        result = await asyncio.wait_for(
-            connection.create_market_buy_order(
-                SYMBOL,
-                LOT_SIZE,
-                provisional_sl,
-                provisional_tp,
-                {
-                    "comment": COMMENT
-                },
-            ),
-            timeout=META_TIMEOUT,
-        )
+    options = {
+        "comment": COMMENT,
+    }
 
-    else:
-        result = await asyncio.wait_for(
-            connection.create_market_sell_order(
-                SYMBOL,
-                LOT_SIZE,
-                provisional_sl,
-                provisional_tp,
-                {
-                    "comment": COMMENT
-                },
-            ),
-            timeout=META_TIMEOUT,
-        )
-
-    position = await wait_position(
-        connection,
-        side,
-    )
-
-    if position:
-        position_id = position.get("id")
-
-        actual_entry = float(
-            position.get(
-                "openPrice",
-                0,
-            )
-            or 0
-        )
-
-        exact_sl, exact_tp = levels(
-            side,
-            actual_entry,
-            digits,
-        )
-
-        await asyncio.wait_for(
-            connection.modify_position(
-                position_id,
-                exact_sl,
-                exact_tp,
-            ),
-            timeout=META_TIMEOUT,
-        )
-
-        telegram(
-            "RIObot GOLD ORDER OK\n\n"
-            f"{side} {SYMBOL}\n"
-            f"Lot: {LOT_SIZE}\n\n"
-            f"ENTRY: {actual_entry:.2f}\n"
-            f"SL: {exact_sl:.2f}\n"
-            f"TP: {exact_tp:.2f}\n\n"
-            "BE1: +4.00 -> +1.00\n"
-            "BE2: +7.00 -> +4.00\n"
-            "BE3: +9.00 -> +7.00\n\n"
-            "PHYSICAL SL/TP ACTIVE"
-        )
-
-    return result
-
-
-# =========================================================
-# BREAK EVEN
-# =========================================================
-
-async def manage_be(connection):
-    positions = await get_positions(
-        connection
-    )
-
-    if not positions:
-        return
-
-    _, digits, bid, ask = (
-        await get_market(connection)
-    )
-
-    for position in positions:
-        position_id = position.get("id")
-
-        side = str(
-            position.get(
-                "type",
-                "",
-            )
-        ).upper()
-
-        entry = float(
-            position.get(
-                "openPrice",
-                0,
-            )
-            or 0
-        )
-
-        if not position_id or entry <= 0:
-            continue
-
-        current_sl_raw = position.get(
-            "stopLoss"
-        )
-
-        current_tp_raw = position.get(
-            "takeProfit"
-        )
-
-        current_sl = (
-            float(current_sl_raw)
-            if current_sl_raw not in (
-                None,
-                0,
-            )
-            else None
-        )
-
-        current_tp = (
-            float(current_tp_raw)
-            if current_tp_raw not in (
-                None,
-                0,
-            )
-            else None
-        )
-
-        if side in (
-            "BUY",
-            "POSITION_TYPE_BUY",
-        ):
-            profit = bid - entry
-
-            if profit >= BE3_TRIGGER:
-                new_sl = round(
-                    entry + BE3_LOCK,
-                    digits,
-                )
-                label = "BE3"
-                reached = "+9.00"
-                locked = "+7.00"
-
-            elif profit >= BE2_TRIGGER:
-                new_sl = round(
-                    entry + BE2_LOCK,
-                    digits,
-                )
-                label = "BE2"
-                reached = "+7.00"
-                locked = "+4.00"
-
-            elif profit >= BE1_TRIGGER:
-                new_sl = round(
-                    entry + BE1_LOCK,
-                    digits,
-                )
-                label = "BE1"
-                reached = "+4.00"
-                locked = "+1.00"
-
-            else:
-                continue
-
-            improve = (
-                current_sl is None
-                or current_sl < new_sl
-            )
-
-        elif side in (
-            "SELL",
-            "POSITION_TYPE_SELL",
-        ):
-            profit = entry - ask
-
-            if profit >= BE3_TRIGGER:
-                new_sl = round(
-                    entry - BE3_LOCK,
-                    digits,
-                )
-                label = "BE3"
-                reached = "+9.00"
-                locked = "+7.00"
-
-            elif profit >= BE2_TRIGGER:
-                new_sl = round(
-                    entry - BE2_LOCK,
-                    digits,
-                )
-                label = "BE2"
-                reached = "+7.00"
-                locked = "+4.00"
-
-            elif profit >= BE1_TRIGGER:
-                new_sl = round(
-                    entry - BE1_LOCK,
-                    digits,
-                )
-                label = "BE1"
-                reached = "+4.00"
-                locked = "+1.00"
-
-            else:
-                continue
-
-            improve = (
-                current_sl is None
-                or current_sl > new_sl
-            )
-
-        else:
-            continue
-
-        if improve:
-            await asyncio.wait_for(
-                connection.modify_position(
-                    position_id,
-                    new_sl,
-                    current_tp,
+    try:
+        if side == "BUY":
+            result = await asyncio.wait_for(
+                connection.create_market_buy_order(
+                    SYMBOL,
+                    LOT_SIZE,
+                    sl,
+                    tp,
+                    options,
                 ),
                 timeout=META_TIMEOUT,
             )
 
-            clean_side = side.replace(
-                "POSITION_TYPE_",
-                "",
+        else:
+            result = await asyncio.wait_for(
+                connection.create_market_sell_order(
+                    SYMBOL,
+                    LOT_SIZE,
+                    sl,
+                    tp,
+                    options,
+                ),
+                timeout=META_TIMEOUT,
             )
 
-            telegram(
-                f"RIObot GOLD {label}\n\n"
-                f"{clean_side} {SYMBOL}\n"
-                f"{reached} reached\n"
-                f"SL locked {locked}\n"
-                f"SL: {new_sl:.2f}"
-            )
+        print(
+            f"ORDER OK {side}: "
+            f"{result}",
+            flush=True,
+        )
+
+        telegram(
+            f"RIObot GOLD ORDER OK\n\n"
+            f"{side} {LOT_SIZE}\n"
+            f"Entry approx: "
+            f"{entry:.{digits}f}\n"
+            f"SL: {sl:.{digits}f}\n"
+            f"TP: {tp:.{digits}f}"
+        )
+
+        return True
+
+    except Exception as exc:
+        print(
+            f"ORDER ERROR {side}: "
+            f"{type(exc).__name__}: "
+            f"{exc}",
+            flush=True,
+        )
+
+        telegram(
+            f"RIObot GOLD ORDER ERROR\n\n"
+            f"{side}\n"
+            f"{type(exc).__name__}: "
+            f"{exc}"
+        )
+
+        return False
 
 
 # =========================================================
-# NEWS
+# NEWS FILTER
 # =========================================================
 
-def parse_news_datetime(value):
+def parse_news_time(value):
+    if not value:
+        return None
+
     try:
-        return datetime.fromisoformat(
-            str(value)
-            .strip()
-            .replace(
-                "Z",
-                "+00:00",
-            )
-        ).timestamp()
+        ts = pd.to_datetime(
+            value,
+            utc=True,
+            errors="coerce",
+        )
+
+        if pd.isna(ts):
+            return None
+
+        return ts.to_pydatetime()
 
     except Exception:
         return None
 
 
-async def refresh_news_calendar(
-    state,
-    force=False,
-):
+def is_gold_news_event(event):
+    currency = str(
+        event.get("country")
+        or event.get("currency")
+        or ""
+    ).upper()
+
+    impact = str(
+        event.get("impact")
+        or ""
+    ).lower()
+
+    if currency != "USD":
+        return False
+
+    return (
+        "high" in impact
+        or "red" in impact
+    )
+
+
+def fetch_news_events():
+    response = requests.get(
+        NEWS_URL,
+        timeout=20,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"NEWS HTTP "
+            f"{response.status_code}: "
+            f"{response.text[:250]}"
+        )
+
+    data = response.json()
+
+    if not isinstance(data, list):
+        raise RuntimeError(
+            "NEWS RESPONSE IS NOT A LIST"
+        )
+
+    events = []
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+
+        if not is_gold_news_event(item):
+            continue
+
+        event_time = parse_news_time(
+            item.get("date")
+        )
+
+        if event_time is None:
+            continue
+
+        title = str(
+            item.get("title")
+            or "USD HIGH IMPACT NEWS"
+        )
+
+        events.append(
+            {
+                "time": event_time,
+                "title": title,
+            }
+        )
+
+    events.sort(
+        key=lambda x: x["time"]
+    )
+
+    return events
+
+
+async def refresh_news(state):
     now = time.time()
 
-    if (
-        not force
-        and now
-        < state.get(
-            "news_next_fetch",
-            0,
-        )
-    ):
+    if now < state["news_next_fetch"]:
         return
 
     state["news_next_fetch"] = (
         now + NEWS_FETCH_SECONDS
     )
 
-    def fetch():
-        response = requests.get(
-            NEWS_URL,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "RIObot-GOLD/1.0",
-            },
-            timeout=20,
-        )
-
-        response.raise_for_status()
-
-        return response.json()
-
     try:
-        raw = await asyncio.to_thread(
-            fetch
-        )
-
-        events = []
-
-        if isinstance(raw, list):
-            for item in raw:
-                if not isinstance(
-                    item,
-                    dict,
-                ):
-                    continue
-
-                country = str(
-                    item.get(
-                        "country",
-                        "",
-                    )
-                ).upper().strip()
-
-                impact = str(
-                    item.get(
-                        "impact",
-                        "",
-                    )
-                ).upper().strip()
-
-                if (
-                    country != "USD"
-                    or impact != "HIGH"
-                ):
-                    continue
-
-                timestamp = (
-                    parse_news_datetime(
-                        item.get("date")
-                    )
-                )
-
-                if timestamp is None:
-                    continue
-
-                events.append(
-                    {
-                        "ts": timestamp,
-                        "title": (
-                            str(
-                                item.get(
-                                    "title",
-                                    "HIGH USD",
-                                )
-                            ).strip()
-                            or "HIGH USD"
-                        ),
-                    }
-                )
-
-        events.sort(
-            key=lambda x: x["ts"]
+        events = await asyncio.to_thread(
+            fetch_news_events
         )
 
         state["news_events"] = events
@@ -1493,25 +1552,29 @@ async def refresh_news_calendar(
         state["news_error_notified"] = False
 
         print(
-            f"NEWS CALENDAR OK: "
-            f"{len(events)} HIGH USD events",
+            f"NEWS READY: "
+            f"{len(events)} "
+            f"USD HIGH IMPACT EVENTS",
             flush=True,
         )
 
     except Exception as exc:
         print(
             f"NEWS WARNING: "
-            f"{type(exc).__name__}: {exc}",
+            f"{type(exc).__name__}: "
+            f"{exc}",
             flush=True,
         )
 
-        if not state.get(
+        if not state[
             "news_error_notified"
-        ):
+        ]:
             telegram(
                 "RIObot GOLD NEWS WARNING\n\n"
-                "Calendar unavailable.\n"
-                "New entries are blocked."
+                "News calendar could not "
+                "be refreshed.\n"
+                "New entries are blocked "
+                "until news data is safe."
             )
 
             state[
@@ -1519,63 +1582,63 @@ async def refresh_news_calendar(
             ] = True
 
 
-def news_block_status(state):
-    now = time.time()
+def news_block_reason(state):
+    now_ts = time.time()
 
-    last_ok = float(
-        state.get(
-            "news_last_success",
-            0,
-        )
-        or 0
+    last_success = state.get(
+        "news_last_success",
+        0.0,
     )
 
     if (
-        last_ok <= 0
-        or now - last_ok
+        last_success <= 0
+        or now_ts - last_success
         > NEWS_STALE_SECONDS
     ):
         return (
-            True,
-            "calendar unavailable/stale",
-            None,
+            "NEWS DATA MISSING/STALE"
         )
 
-    before = (
-        NEWS_BEFORE_MINUTES * 60
-    )
+    now = datetime.now().astimezone()
 
-    after = (
-        NEWS_AFTER_MINUTES * 60
-    )
+    for event in state["news_events"]:
+        event_time = event["time"]
 
-    for event in state.get(
-        "news_events",
-        [],
-    ):
+        if event_time.tzinfo is None:
+            continue
+
+        local_event = (
+            event_time.astimezone()
+        )
+
+        seconds = (
+            local_event - now
+        ).total_seconds()
+
+        before = (
+            NEWS_BEFORE_MINUTES * 60
+        )
+
+        after = (
+            NEWS_AFTER_MINUTES * 60
+        )
+
         if (
-            event["ts"] - before
-            <= now
-            <= event["ts"] + after
+            -after
+            <= seconds
+            <= before
         ):
             return (
-                True,
-                "HIGH USD",
-                event,
+                f"{event['title']} "
+                f"{local_event.strftime('%H:%M')}"
             )
 
-    return False, None, None
+    return None
 
 
 # =========================================================
-# STATE
+# SETUP STATE
 # =========================================================
-
-def clear_pending(state):
-    state["pending_signal_key"] = None
-    state["pending_signal_side"] = None
-    state["pending_started"] = 0.0
-
 
 def clear_setup(state):
     state["armed"] = False
@@ -1593,194 +1656,731 @@ def clear_setup(state):
 
 def arm_setup(
     state,
-    signal_key,
     side,
+    signal_key,
     level,
-    current_price,
     params,
 ):
     state["armed"] = True
     state["setup_phase"] = "WAIT_BREAK"
     state["setup_side"] = side
     state["setup_key"] = signal_key
-    state["setup_level"] = level
+    state["setup_level"] = float(level)
     state["setup_started"] = time.time()
     state["setup_break_time"] = 0.0
     state["setup_break_price"] = None
-    state["setup_last_price"] = current_price
+    state["setup_last_price"] = None
     state["setup_params"] = params
     state["retest_seen"] = False
 
+    print(
+        f"SETUP ARMED {side} "
+        f"LEVEL={level:.2f}",
+        flush=True,
+    )
 
-def fresh_cross(
-    side,
-    previous_price,
-    current_price,
-    level,
-):
-    if side == "BUY":
-        return (
-            previous_price <= level
-            and current_price > level
-        )
+
+def setup_expired(state):
+    if not state["armed"]:
+        return False
+
+    started = state.get(
+        "setup_started",
+        0.0,
+    )
+
+    if started <= 0:
+        return True
 
     return (
-        previous_price >= level
-        and current_price < level
+        time.time() - started
+        > SETUP_EXPIRY_SECONDS
+        )
+    def retest_expired(state):
+    if not state["armed"]:
+        return False
+
+    if state["setup_phase"] != "WAIT_RETEST":
+        return False
+
+    break_time = state.get(
+        "setup_break_time",
+        0.0,
+    )
+
+    if break_time <= 0:
+        return False
+
+    return (
+        time.time() - break_time
+        > RETEST_EXPIRY_SECONDS
     )
 
 
 # =========================================================
-# SESSION
+# SETUP MANAGEMENT
+# =========================================================
+
+async def manage_setup(
+    state,
+    connection,
+    df1,
+    df5,
+):
+    if not state["armed"]:
+        return
+
+    if setup_expired(state):
+        print(
+            "SETUP EXPIRED",
+            flush=True,
+        )
+
+        clear_setup(state)
+        return
+
+    if retest_expired(state):
+        print(
+            "RETEST EXPIRED",
+            flush=True,
+        )
+
+        clear_setup(state)
+        return
+
+    side = state["setup_side"]
+    level = float(
+        state["setup_level"]
+    )
+
+    params = state.get(
+        "setup_params"
+    )
+
+    if not params:
+        clear_setup(state)
+        return
+
+    # Stale setup sa nesmie pouzit,
+    # ak uz PSAR smer nesedi.
+    if current_psar_side(df1) != side:
+        print(
+            f"SETUP CANCELLED {side}: "
+            f"M1 PSAR CHANGED",
+            flush=True,
+        )
+
+        clear_setup(state)
+        return
+
+    if not m5_confirms(
+        df5,
+        side,
+    ):
+        print(
+            f"SETUP CANCELLED {side}: "
+            f"M5 CONFIRM LOST",
+            flush=True,
+        )
+
+        clear_setup(state)
+        return
+
+    if not trend_filter_ok(
+        df5,
+        side,
+    ):
+        print(
+            f"SETUP CANCELLED {side}: "
+            f"EMA/ADX FILTER LOST",
+            flush=True,
+        )
+
+        clear_setup(state)
+        return
+
+    news_reason = news_block_reason(
+        state
+    )
+
+    if news_reason:
+        print(
+            f"SETUP CANCELLED {side}: "
+            f"NEWS BLOCK "
+            f"{news_reason}",
+            flush=True,
+        )
+
+        clear_setup(state)
+        return
+
+    positions = await get_positions(
+        connection
+    )
+
+    if positions:
+        clear_setup(state)
+        return
+
+    _, _, bid, ask = (
+        await get_market(connection)
+    )
+
+    current_price = (
+        ask
+        if side == "BUY"
+        else bid
+    )
+
+    phase = state["setup_phase"]
+
+    max_chase = float(
+        params["max_chase"]
+    )
+
+    retest = float(
+        params["retest"]
+    )
+
+    invalidate = float(
+        params["invalidate"]
+    )
+
+    confirm = float(
+        params["confirm"]
+    )
+
+    extension = float(
+        params["extension"]
+    )
+
+    # -----------------------------------------------------
+    # WAIT FOR BREAKOUT
+    # -----------------------------------------------------
+
+    if phase == "WAIT_BREAK":
+        if big_impulse(df1):
+            print(
+                f"WAIT {side}: "
+                f"BIG IMPULSE - NO CHASE",
+                flush=True,
+            )
+
+            state[
+                "setup_last_price"
+            ] = current_price
+
+            return
+
+        if side == "BUY":
+            distance = (
+                current_price - level
+            )
+
+            if distance > max_chase:
+                print(
+                    f"SETUP CANCELLED BUY: "
+                    f"CHASE "
+                    f"{distance:.2f}",
+                    flush=True,
+                )
+
+                clear_setup(state)
+                return
+
+            if current_price > level:
+                state[
+                    "setup_phase"
+                ] = "WAIT_RETEST"
+
+                state[
+                    "setup_break_time"
+                ] = time.time()
+
+                state[
+                    "setup_break_price"
+                ] = current_price
+
+                print(
+                    f"BREAKOUT BUY "
+                    f"{current_price:.2f} "
+                    f"> {level:.2f}",
+                    flush=True,
+                )
+
+        else:
+            distance = (
+                level - current_price
+            )
+
+            if distance > max_chase:
+                print(
+                    f"SETUP CANCELLED SELL: "
+                    f"CHASE "
+                    f"{distance:.2f}",
+                    flush=True,
+                )
+
+                clear_setup(state)
+                return
+
+            if current_price < level:
+                state[
+                    "setup_phase"
+                ] = "WAIT_RETEST"
+
+                state[
+                    "setup_break_time"
+                ] = time.time()
+
+                state[
+                    "setup_break_price"
+                ] = current_price
+
+                print(
+                    f"BREAKOUT SELL "
+                    f"{current_price:.2f} "
+                    f"< {level:.2f}",
+                    flush=True,
+                )
+
+        state[
+            "setup_last_price"
+        ] = current_price
+
+        return
+
+    # -----------------------------------------------------
+    # WAIT FOR RETEST + CONFIRMATION
+    # -----------------------------------------------------
+
+    if phase == "WAIT_RETEST":
+        break_price = state.get(
+            "setup_break_price"
+        )
+
+        if break_price is None:
+            clear_setup(state)
+            return
+
+        if side == "BUY":
+            if (
+                current_price
+                < level - invalidate
+            ):
+                print(
+                    "SETUP CANCELLED BUY: "
+                    "BREAKOUT FAILED",
+                    flush=True,
+                )
+
+                clear_setup(state)
+                return
+
+            if (
+                current_price
+                <= level + retest
+            ):
+                state[
+                    "retest_seen"
+                ] = True
+
+            if not state[
+                "retest_seen"
+            ]:
+                if (
+                    current_price
+                    > break_price + extension
+                ):
+                    print(
+                        "SETUP CANCELLED BUY: "
+                        "NO RETEST / CHASE",
+                        flush=True,
+                    )
+
+                    clear_setup(state)
+                    return
+
+                state[
+                    "setup_last_price"
+                ] = current_price
+
+                return
+
+            if (
+                current_price
+                >= level + confirm
+            ):
+                state[
+                    "setup_phase"
+                ] = "READY"
+
+        else:
+            if (
+                current_price
+                > level + invalidate
+            ):
+                print(
+                    "SETUP CANCELLED SELL: "
+                    "BREAKOUT FAILED",
+                    flush=True,
+                )
+
+                clear_setup(state)
+                return
+
+            if (
+                current_price
+                >= level - retest
+            ):
+                state[
+                    "retest_seen"
+                ] = True
+
+            if not state[
+                "retest_seen"
+            ]:
+                if (
+                    current_price
+                    < break_price - extension
+                ):
+                    print(
+                        "SETUP CANCELLED SELL: "
+                        "NO RETEST / CHASE",
+                        flush=True,
+                    )
+
+                    clear_setup(state)
+                    return
+
+                state[
+                    "setup_last_price"
+                ] = current_price
+
+                return
+
+            if (
+                current_price
+                <= level - confirm
+            ):
+                state[
+                    "setup_phase"
+                ] = "READY"
+
+        state[
+            "setup_last_price"
+        ] = current_price
+
+        if state["setup_phase"] != "READY":
+            return
+
+    # -----------------------------------------------------
+    # FINAL ENTRY CHECK
+    # -----------------------------------------------------
+
+    if state["setup_phase"] == "READY":
+        news_again = news_block_reason(
+            state
+        )
+
+        positions_again = (
+            await get_positions(
+                connection
+            )
+        )
+
+        blocked_again = (
+            news_again is not None
+        )
+
+        filters_still_ok = (
+            current_psar_side(df1)
+            == side
+            and m5_confirms(
+                df5,
+                side,
+            )
+            and trend_filter_ok(
+                df5,
+                side,
+            )
+        )
+
+        # NOVY M1 FILTER:
+        # 2 uzavrete M1 sviecky proti vstupu
+        # obchod zablokuju.
+        m1_pressure_ok = (
+            m1_entry_pressure_ok(
+                df1,
+                side,
+            )
+        )
+
+        if not m1_pressure_ok:
+            print(
+                f"ENTRY BLOCKED {side}: "
+                "2 CLOSED M1 CANDLES "
+                "PRESS AGAINST ENTRY",
+                flush=True,
+            )
+
+        if (
+            not blocked_again
+            and not positions_again
+            and filters_still_ok
+            and m1_pressure_ok
+        ):
+            used_key = state.get(
+                "setup_key"
+            )
+
+            print(
+                f"ENTRY CONFIRMED "
+                f"{side} "
+                f"LEVEL="
+                f"{level:.2f} "
+                f"PRICE="
+                f"{current_price:.2f}",
+                flush=True,
+            )
+
+            clear_setup(state)
+
+            opened = await open_trade(
+                connection,
+                side,
+            )
+
+            if opened:
+                state[
+                    "last_signal_key"
+                ] = used_key
+
+                state[
+                    "require_new_flip"
+                ] = True
+
+            return
+
+        # Ak M1 filter vstup zablokoval,
+        # tento setup uz nepouzijeme neskor.
+        if not m1_pressure_ok:
+            clear_setup(state)
+            return
+
+        if blocked_again:
+            print(
+                f"ENTRY BLOCKED {side}: "
+                f"NEWS "
+                f"{news_again}",
+                flush=True,
+            )
+
+        elif positions_again:
+            print(
+                f"ENTRY BLOCKED {side}: "
+                "POSITION EXISTS",
+                flush=True,
+            )
+
+        elif not filters_still_ok:
+            print(
+                f"ENTRY BLOCKED {side}: "
+                "FILTER CHANGED",
+                flush=True,
+            )
+
+        clear_setup(state)
+        # =========================================================
+# PENDING SIGNAL
+# =========================================================
+
+def clear_pending(state):
+    state["pending_signal_key"] = None
+    state["pending_signal_side"] = None
+    state["pending_started"] = 0.0
+
+
+def signal_key(df1, side):
+    if df1 is None or df1.empty:
+        return None
+
+    return (
+        f"{side}:"
+        f"{str(df1.iloc[-1]['time'])}"
+    )
+
+
+def breakout_level_for_signal(
+    df1,
+    side,
+):
+    if df1 is None or len(df1) < 3:
+        return None
+
+    # Pouzijeme uzavrete M1 sviecky
+    # pred aktualnou live svieckou.
+    closed = df1.iloc[:-1].tail(3)
+
+    if closed.empty:
+        return None
+
+    if side == "BUY":
+        return float(
+            closed["high"].max()
+        )
+
+    if side == "SELL":
+        return float(
+            closed["low"].min()
+        )
+
+    return None
+
+
+# =========================================================
+# BOT SESSION
 # =========================================================
 
 async def bot_session(state):
     api = MetaApi(M_TOKEN)
-    connection = None
 
-    try:
-        account = await asyncio.wait_for(
-            api.metatrader_account_api.get_account(
-                M_ACC
-            ),
-            timeout=META_TIMEOUT,
-        )
+    account = await asyncio.wait_for(
+        api.metatrader_account_api.get_account(
+            M_ACC
+        ),
+        timeout=META_TIMEOUT,
+    )
 
-        if getattr(
-            account,
-            "state",
-            None,
-        ) != "DEPLOYED":
-            await asyncio.wait_for(
-                account.deploy(),
-                timeout=180,
-            )
+    region = (
+        getattr(account, "region", None)
+        or DEFAULT_META_REGION
+    )
 
-        if getattr(
-            account,
-            "connection_status",
-            None,
-        ) != "CONNECTED":
-            await asyncio.wait_for(
-                account.wait_connected(),
-                timeout=180,
-            )
+    state["region"] = region
 
-        region = (
-            getattr(
-                account,
-                "region",
-                None,
-            )
-            or DEFAULT_META_REGION
-        )
-
-        state["region"] = str(
-            region
-        ).lower()
-
-        connection = (
-            account.get_rpc_connection()
+    if str(account.state).upper() != "DEPLOYED":
+        print(
+            "DEPLOYING METAAPI ACCOUNT...",
+            flush=True,
         )
 
         await asyncio.wait_for(
+            account.deploy(),
+            timeout=META_TIMEOUT,
+        )
+
+    await asyncio.wait_for(
+        account.wait_connected(),
+        timeout=META_TIMEOUT,
+    )
+
+    connection = (
+        account.get_rpc_connection()
+    )
+
+    try:
+        await asyncio.wait_for(
             connection.connect(),
-            timeout=60,
+            timeout=META_TIMEOUT,
         )
 
         await asyncio.wait_for(
             connection.wait_synchronized(),
-            timeout=120,
+            timeout=META_TIMEOUT,
         )
 
+        reconnect = state[
+            "ever_connected"
+        ]
+
+        state[
+            "ever_connected"
+        ] = True
+
         print(
-            "RIObot GOLD CONNECTED",
+            "RECONNECTED"
+            if reconnect
+            else "CONNECTED",
             flush=True,
         )
 
-        # =====================================================
-        # RECONNECT RECOVERY
-        # Po pripojeni okamzite nacita otvorenu poziciu z MT5
-        # a skontroluje SL/TP + BE1/BE2/BE3.
-        # =====================================================
-
-        recovery_positions = await get_positions(
-            connection
+        telegram(
+            "RIObot GOLD RECONNECTED"
+            if reconnect
+            else "RIObot GOLD START / CONNECTED"
         )
 
-        if recovery_positions:
-            state["had_position"] = True
+        # =================================================
+        # DOLEZITE:
+        # Po pripojeni / reconnecte necakame
+        # na dalsi bezny cyklus.
+        #
+        # HNED:
+        # 1. nacitame otvorenu poziciu z MT5
+        # 2. obnovime SL / TP ak treba
+        # 3. skontrolujeme BE1 / BE2 / BE3
+        # =================================================
 
-            clear_pending(state)
-            clear_setup(state)
+        try:
+            positions_now = (
+                await protect_open_positions(
+                    connection
+                )
+            )
 
-            # Najprv skontroluj/obnov fyzicky SL a TP
-            await ensure_stops(connection)
+            state["had_position"] = bool(
+                positions_now
+            )
 
-            # Hned skontroluj aktualnu cenu a BE1/BE2/BE3
-            await manage_be(connection)
+            if positions_now:
+                state[
+                    "require_new_flip"
+                ] = True
 
+                clear_pending(state)
+                clear_setup(state)
+
+                print(
+                    "OPEN POSITION RESTORED "
+                    "IMMEDIATELY AFTER CONNECT",
+                    flush=True,
+                )
+
+        except Exception as exc:
             print(
-                f"RECONNECT RECOVERY: "
-                f"{len(recovery_positions)} OPEN POSITION(S) "
-                f"-> SL/TP + BE CHECK DONE",
+                "IMMEDIATE POSITION CHECK "
+                f"WARNING: "
+                f"{type(exc).__name__}: "
+                f"{exc}",
                 flush=True,
             )
 
-        if not state["ever_connected"]:
-            telegram(
-                "RIObot GOLD START / CONNECTED\n\n"
-                f"Symbol: {SYMBOL}\n"
-                f"Lot: {LOT_SIZE}\n"
-                "M1 PSAR: 1st DOT + 10s\n"
-                "M5: 2 PSAR dots\n"
-                "EMA50 + ADX >= 20\n"
-                "Breakout -> Retest -> Confirm\n"
-                "MAX 1 POSITION\n"
-                "TP: +10.00\n"
-                "SL: -10.00\n"
-                "BE1: +4 -> +1\n"
-                "BE2: +7 -> +4\n"
-                "BE3: +9 -> +7"
-            )
-
-            state["ever_connected"] = True
-
-        else:
-            telegram(
-                "RIObot GOLD RECONNECTED\n\n"
-                "MetaApi connection restored.\n"
-                "Open position loaded from MT5.\n"
-                "BE1/BE2/BE3 checked immediately."
-            )
-
+        # Nacitanie historie po pripojeni
         await seed_history(state)
-
-        await refresh_news_calendar(
-            state,
-            force=True,
-        )
 
         loop_errors = 0
 
         while True:
             try:
-                await ensure_stops(connection)
-                await manage_be(connection)
+                # -----------------------------------------
+                # NEWS REFRESH
+                # -----------------------------------------
 
-                await refresh_news_calendar(
-                    state
-                )
+                await refresh_news(state)
+
+                # -----------------------------------------
+                # LIVE M1
+                # -----------------------------------------
 
                 candle = await get_current_m1(
                     state["region"]
                 )
 
                 if candle is None:
-                    await asyncio.sleep(
-                        LOOP_SECONDS
+                    raise RuntimeError(
+                        "CURRENT M1 CANDLE MISSING"
                     )
-                    continue
 
                 update_cache(
                     state["m1_candles"],
@@ -1799,7 +2399,11 @@ async def bot_session(state):
                     df1 is None
                     or df5 is None
                 ):
-                    await seed_history(state)
+                    print(
+                        "WAITING FOR ENOUGH "
+                        "M1/M5 DATA",
+                        flush=True,
+                    )
 
                     await asyncio.sleep(
                         LOOP_SECONDS
@@ -1807,23 +2411,22 @@ async def bot_session(state):
 
                     continue
 
-                signal = get_live_flip(df1)
+                # -----------------------------------------
+                # OTVORENA POZICIA:
+                # BE + SL/TP kontrola kazdy cyklus
+                # -----------------------------------------
 
-                candle_time = str(
-                    df1.iloc[-1]["time"]
-                )
-
-                positions = await get_positions(
-                    connection
-                )
-
-                had_position = state.get(
-                    "had_position",
-                    False,
+                positions = (
+                    await protect_open_positions(
+                        connection
+                    )
                 )
 
                 if positions:
                     state["had_position"] = True
+                    state[
+                        "require_new_flip"
+                    ] = True
 
                     clear_pending(state)
                     clear_setup(state)
@@ -1836,598 +2439,236 @@ async def bot_session(state):
 
                     continue
 
-                if had_position and not positions:
+                # -----------------------------------------
+                # POZICIA SA PRAVE ZATVORILA
+                # -----------------------------------------
+
+                if state["had_position"]:
                     state["had_position"] = False
-                    state["require_new_flip"] = True
+                    state[
+                        "require_new_flip"
+                    ] = True
 
                     clear_pending(state)
                     clear_setup(state)
 
                     print(
-                        "POSITION CLOSED -> "
-                        "NEW PSAR FLIP REQUIRED",
+                        "POSITION CLOSED - "
+                        "WAITING FOR NEW PSAR FLIP",
                         flush=True,
                     )
 
-                    telegram(
-                        "RIObot GOLD TRADE CLOSED\n\n"
-                        "Waiting for NEW PSAR FLIP."
-                    )
+                # -----------------------------------------
+                # AKTUALNY LIVE PSAR FLIP
+                # -----------------------------------------
 
-                (
-                    news_blocked,
-                    news_reason,
-                    news_event,
-                ) = news_block_status(state)
+                signal = get_live_flip(df1)
 
-                if news_blocked:
-                    if state.get("armed"):
-                        clear_setup(state)
+                current_side = (
+                    current_psar_side(df1)
+                )
 
-                    event_key = (
-                        f"{news_reason}:"
-                        f"{news_event['ts']}"
-                        if news_event
-                        else news_reason
-                    )
+                # Po obchode musi prist novy flip.
+                if state[
+                    "require_new_flip"
+                ]:
+                    if signal is None:
+                        loop_errors = 0
 
-                    if (
-                        state.get(
-                            "news_block_notified"
+                        await asyncio.sleep(
+                            LOOP_SECONDS
                         )
-                        != event_key
-                    ):
-                        if news_event:
-                            event_time = (
-                                datetime.fromtimestamp(
-                                    news_event["ts"]
-                                )
-                                .astimezone()
-                                .strftime("%H:%M")
-                            )
 
-                            telegram(
-                                "RIObot GOLD NEWS BLOCK\n\n"
-                                f"HIGH USD: "
-                                f"{news_event['title']}\n"
-                                f"Time: {event_time}\n"
-                                "No new trade -15m / +30m."
-                            )
+                        continue
 
-                        else:
-                            telegram(
-                                "RIObot GOLD NEWS BLOCK\n\n"
-                                "Calendar unavailable/stale.\n"
-                                "No new trades."
-                            )
+                    state[
+                        "require_new_flip"
+                    ] = False
 
-                        state[
-                            "news_block_notified"
-                        ] = event_key
-
-                    loop_errors = 0
-
-                    await asyncio.sleep(
-                        LOOP_SECONDS
-                    )
-
-                    continue
-
-                state[
-                    "news_block_notified"
-                ] = None
+                # -----------------------------------------
+                # NOVY SIGNAL -> 10s CONFIRM
+                # -----------------------------------------
 
                 if signal:
-                    signal_key = (
-                        f"{candle_time}:{signal}"
+                    key = signal_key(
+                        df1,
+                        signal,
                     )
 
                     if (
-                        signal_key
+                        key
+                        and key
                         != state.get(
                             "last_signal_key"
                         )
-                        and signal_key
+                        and key
                         != state.get(
-                            "setup_key"
+                            "pending_signal_key"
                         )
                     ):
+                        state[
+                            "pending_signal_key"
+                        ] = key
+
+                        state[
+                            "pending_signal_side"
+                        ] = signal
+
+                        state[
+                            "pending_started"
+                        ] = time.time()
+
+                        print(
+                            f"M1 LIVE FLIP "
+                            f"{signal} - "
+                            f"10s CONFIRM START",
+                            flush=True,
+                        )
+
+                # -----------------------------------------
+                # PENDING SIGNAL CHECK
+                # -----------------------------------------
+
+                pending_key = state.get(
+                    "pending_signal_key"
+                )
+
+                pending_side = state.get(
+                    "pending_signal_side"
+                )
+
+                pending_started = float(
+                    state.get(
+                        "pending_started",
+                        0.0,
+                    )
+                    or 0.0
+                )
+
+                if (
+                    pending_key
+                    and pending_side
+                ):
+                    # Ak sa PSAR medzitym vratil,
+                    # signal rusime.
+                    if current_side != pending_side:
+                        print(
+                            f"M1 SIGNAL CANCELLED "
+                            f"{pending_side}: "
+                            f"PSAR DID NOT HOLD",
+                            flush=True,
+                        )
+
+                        clear_pending(state)
+
+                    elif (
+                        time.time()
+                        - pending_started
+                        >= SIGNAL_CONFIRM_SECONDS
+                    ):
+                        # 10 sekund PSAR vydrzal.
+                        # Teraz M5 + EMA50 + ADX.
+
                         if (
-                            state.get(
-                                "pending_signal_key"
+                            m5_confirms(
+                                df5,
+                                pending_side,
                             )
-                            != signal_key
+                            and trend_filter_ok(
+                                df5,
+                                pending_side,
+                            )
                         ):
-                            clear_setup(state)
-
-                            state[
-                                "pending_signal_key"
-                            ] = signal_key
-
-                            state[
-                                "pending_signal_side"
-                            ] = signal
-
-                            state[
-                                "pending_started"
-                            ] = time.monotonic()
-
-                            print(
-                                f"1ST DOT PENDING "
-                                f"10S {signal}",
-                                flush=True,
+                            news_reason = (
+                                news_block_reason(
+                                    state
+                                )
                             )
 
-                        else:
-                            elapsed = (
-                                time.monotonic()
-                                - float(
-                                    state.get(
-                                        "pending_started",
-                                        0,
+                            if news_reason:
+                                print(
+                                    f"SIGNAL BLOCKED "
+                                    f"{pending_side}: "
+                                    f"NEWS "
+                                    f"{news_reason}",
+                                    flush=True,
+                                )
+
+                                clear_pending(
+                                    state
+                                )
+
+                            else:
+                                breakout_level = (
+                                    breakout_level_for_signal(
+                                        df1,
+                                        pending_side,
                                     )
-                                    or 0
                                 )
-                            )
 
-                            if (
-                                elapsed
-                                >= SIGNAL_CONFIRM_SECONDS
-                                and signal
-                                == state.get(
-                                    "pending_signal_side"
-                                )
-                            ):
                                 if (
-                                    m5_confirms(
-                                        df5,
-                                        signal,
-                                    )
-                                    and trend_filter_ok(
-                                        df5,
-                                        signal,
-                                    )
+                                    breakout_level
+                                    is not None
                                 ):
-                                    last_closed = (
-                                        df1.iloc[-2]
-                                    )
-
-                                    breakout_level = (
-                                        float(
-                                            last_closed[
-                                                "high"
-                                            ]
-                                        )
-                                        if signal == "BUY"
-                                        else float(
-                                            last_closed[
-                                                "low"
-                                            ]
-                                        )
-                                    )
-
-                                    (
-                                        _,
-                                        _,
-                                        bid,
-                                        ask,
-                                    ) = await get_market(
-                                        connection
-                                    )
-
-                                    current_price = (
-                                        bid
-                                        if signal == "BUY"
-                                        else ask
-                                    )
-
                                     params = (
                                         params_for_setup(
                                             df1
                                         )
                                     )
 
+                                    used_key = (
+                                        pending_key
+                                    )
+
+                                    used_side = (
+                                        pending_side
+                                    )
+
+                                    clear_pending(
+                                        state
+                                    )
+
                                     arm_setup(
                                         state,
-                                        signal_key,
-                                        signal,
+                                        used_side,
+                                        used_key,
                                         breakout_level,
-                                        current_price,
                                         params,
                                     )
 
-                                    clear_pending(state)
-
-                                    state[
-                                        "require_new_flip"
-                                    ] = False
-
-                                    print(
-                                        f"SETUP ARMED "
-                                        f"{signal} "
-                                        f"LEVEL="
-                                        f"{breakout_level:.2f} "
-                                        f"PHASE=WAIT_BREAK",
-                                        flush=True,
-                                    )
-
                                     telegram(
-                                        "RIObot GOLD SETUP ARMED\n\n"
-                                        f"{signal} {SYMBOL}\n"
-                                        f"Level: {breakout_level:.2f}\n"
-                                        "Waiting for breakout -> "
-                                        "retest -> confirmation."
+                                        "RIObot GOLD "
+                                        "SETUP ARMED\n\n"
+                                        f"{used_side} "
+                                        f"{SYMBOL}\n"
+                                        f"Level: "
+                                        f"{breakout_level:.2f}\n"
+                                        "Waiting for breakout "
+                                        "-> retest -> "
+                                        "confirmation."
                                     )
 
-                                else:
-                                    clear_pending(state)
+                        else:
+                            print(
+                                f"M5/EMA/ADX "
+                                f"NOT CONFIRMED "
+                                f"{pending_side}",
+                                flush=True,
+                            )
 
-                                    print(
-                                        f"M5/EMA/ADX "
-                                        f"NOT CONFIRMED "
-                                        f"{signal}",
-                                        flush=True,
-                                    )
+                            clear_pending(state)
 
-                elif state.get(
-                    "pending_signal_key"
-                ):
-                    clear_pending(state)
+                # -----------------------------------------
+                # AK JE SETUP ARMED, SPRACUJ HO
+                # -----------------------------------------
 
                 if state.get("armed"):
-                    side = state["setup_side"]
-                    phase = state["setup_phase"]
-
-                    level = float(
-                        state["setup_level"]
+                    await manage_setup(
+                        state,
+                        connection,
+                        df1,
+                        df5,
                     )
-
-                    params = (
-                        state["setup_params"]
-                        or {}
-                    )
-
-                    started = float(
-                        state["setup_started"]
-                        or 0
-                    )
-
-                    now = time.time()
-
-                    if (
-                        now - started
-                        > SETUP_EXPIRY_SECONDS
-                    ):
-                        print(
-                            "SETUP EXPIRED",
-                            flush=True,
-                        )
-
-                        clear_setup(state)
-
-                    elif (
-                        current_psar_side(df1)
-                        != side
-                        or not m5_confirms(
-                            df5,
-                            side,
-                        )
-                        or not trend_filter_ok(
-                            df5,
-                            side,
-                        )
-                    ):
-                        print(
-                            "SETUP CANCELLED: "
-                            "PSAR/M5/EMA/ADX changed",
-                            flush=True,
-                        )
-
-                        clear_setup(state)
-
-                    elif big_impulse(df1):
-                        print(
-                            "SETUP CANCELLED: "
-                            "BIG IMPULSE",
-                            flush=True,
-                        )
-
-                        clear_setup(state)
-
-                    else:
-                        (
-                            _,
-                            _,
-                            bid,
-                            ask,
-                        ) = await get_market(
-                            connection
-                        )
-
-                        current_price = (
-                            bid
-                            if side == "BUY"
-                            else ask
-                        )
-
-                        previous_price = (
-                            state.get(
-                                "setup_last_price"
-                            )
-                        )
-
-                        if previous_price is None:
-                            previous_price = (
-                                current_price
-                            )
-
-                        state[
-                            "setup_last_price"
-                        ] = current_price
-
-                        max_chase = float(
-                            params.get(
-                                "max_chase",
-                                1.0,
-                            )
-                        )
-
-                        retest_band = float(
-                            params.get(
-                                "retest",
-                                0.25,
-                            )
-                        )
-
-                        invalidate = float(
-                            params.get(
-                                "invalidate",
-                                0.5,
-                            )
-                        )
-
-                        confirm_dist = float(
-                            params.get(
-                                "confirm",
-                                0.15,
-                            )
-                        )
-
-                        extension = float(
-                            params.get(
-                                "extension",
-                                0.35,
-                            )
-                        )
-
-                        if phase == "WAIT_BREAK":
-                            too_far = (
-                                current_price
-                                > level + max_chase
-                                if side == "BUY"
-                                else current_price
-                                < level - max_chase
-                            )
-
-                            if too_far:
-                                print(
-                                    "SETUP CANCELLED: "
-                                    "CHASE TOO FAR",
-                                    flush=True,
-                                )
-
-                                clear_setup(state)
-
-                            elif fresh_cross(
-                                side,
-                                previous_price,
-                                current_price,
-                                level,
-                            ):
-                                state[
-                                    "setup_phase"
-                                ] = "WAIT_RETEST"
-
-                                state[
-                                    "setup_break_time"
-                                ] = now
-
-                                state[
-                                    "setup_break_price"
-                                ] = current_price
-
-                                print(
-                                    f"BREAKOUT "
-                                    f"{side} "
-                                    f"LEVEL="
-                                    f"{level:.2f} "
-                                    f"PRICE="
-                                    f"{current_price:.2f}",
-                                    flush=True,
-                                )
-
-                        elif phase == "WAIT_RETEST":
-                            break_time = float(
-                                state.get(
-                                    "setup_break_time",
-                                    0,
-                                )
-                                or 0
-                            )
-
-                            if (
-                                break_time > 0
-                                and now - break_time
-                                > RETEST_EXPIRY_SECONDS
-                            ):
-                                print(
-                                    "SETUP CANCELLED: "
-                                    "RETEST TIMEOUT",
-                                    flush=True,
-                                )
-
-                                clear_setup(state)
-                                continue
-
-                            invalid_now = (
-                                current_price
-                                < level - invalidate
-                                if side == "BUY"
-                                else current_price
-                                > level + invalidate
-                            )
-
-                            if invalid_now:
-                                print(
-                                    "SETUP CANCELLED: "
-                                    "RETEST INVALIDATION",
-                                    flush=True,
-                                )
-
-                                clear_setup(state)
-                                continue
-
-                            too_extended = (
-                                (
-                                    current_price
-                                    > level + extension
-                                    and not state.get(
-                                        "retest_seen"
-                                    )
-                                )
-                                if side == "BUY"
-                                else (
-                                    current_price
-                                    < level - extension
-                                    and not state.get(
-                                        "retest_seen"
-                                    )
-                                )
-                            )
-
-                            if too_extended:
-                                print(
-                                    "SETUP CANCELLED: "
-                                    "NO RETEST / PRICE RAN",
-                                    flush=True,
-                                )
-
-                                clear_setup(state)
-                                continue
-
-                            touched = (
-                                current_price
-                                <= level + retest_band
-                                if side == "BUY"
-                                else current_price
-                                >= level - retest_band
-                            )
-
-                            if touched:
-                                state[
-                                    "retest_seen"
-                                ] = True
-
-                                state[
-                                    "setup_phase"
-                                ] = "WAIT_CONFIRM"
-
-                                print(
-                                    f"RETEST OK "
-                                    f"{side} "
-                                    f"LEVEL="
-                                    f"{level:.2f}",
-                                    flush=True,
-                                )
-
-                        elif phase == "WAIT_CONFIRM":
-                            invalid_now = (
-                                current_price
-                                < level - invalidate
-                                if side == "BUY"
-                                else current_price
-                                > level + invalidate
-                            )
-
-                            if invalid_now:
-                                print(
-                                    "SETUP CANCELLED: "
-                                    "CONFIRM INVALIDATION",
-                                    flush=True,
-                                )
-
-                                clear_setup(state)
-                                continue
-
-                            confirmed = (
-                                current_price
-                                >= level + confirm_dist
-                                if side == "BUY"
-                                else current_price
-                                <= level - confirm_dist
-                            )
-
-                            if confirmed:
-                                (
-                                    blocked_again,
-                                    _,
-                                    _,
-                                ) = news_block_status(
-                                    state
-                                )
-
-                                positions_again = (
-                                    await get_positions(
-                                        connection
-                                    )
-                                )
-
-                                filters_still_ok = (
-                                    m5_confirms(
-                                        df5,
-                                        side,
-                                    )
-                                    and trend_filter_ok(
-                                        df5,
-                                        side,
-                                    )
-                                )
-
-                                if (
-                                    not blocked_again
-                                    and not positions_again
-                                    and filters_still_ok
-                                ):
-                                    used_key = (
-                                        state.get(
-                                            "setup_key"
-                                        )
-                                    )
-
-                                    print(
-                                        f"ENTRY CONFIRMED "
-                                        f"{side} "
-                                        f"LEVEL="
-                                        f"{level:.2f} "
-                                        f"PRICE="
-                                        f"{current_price:.2f}",
-                                        flush=True,
-                                    )
-
-                                    clear_setup(state)
-
-                                    await open_trade(
-                                        connection,
-                                        side,
-                                    )
-
-                                    state[
-                                        "last_signal_key"
-                                    ] = used_key
-
-                                    state[
-                                        "require_new_flip"
-                                    ] = True
 
                 loop_errors = 0
 
@@ -2458,18 +2699,15 @@ async def bot_session(state):
             )
 
     finally:
-        if connection is not None:
-            try:
-                await asyncio.wait_for(
-                    connection.close(),
-                    timeout=10,
-                )
+        try:
+            await asyncio.wait_for(
+                connection.close(),
+                timeout=10,
+            )
 
-            except Exception:
-                pass
-
-
-# =========================================================
+        except Exception:
+            pass
+            # =========================================================
 # MAIN
 # =========================================================
 
@@ -2502,14 +2740,18 @@ async def main():
     state = {
         "ever_connected": False,
         "region": DEFAULT_META_REGION,
+
         "m1_candles": load_cache(),
         "history_seeded": False,
+
         "had_position": False,
         "require_new_flip": False,
         "last_signal_key": None,
+
         "pending_signal_key": None,
         "pending_signal_side": None,
         "pending_started": 0.0,
+
         "armed": False,
         "setup_phase": None,
         "setup_side": None,
@@ -2521,6 +2763,7 @@ async def main():
         "setup_last_price": None,
         "setup_params": None,
         "retest_seen": False,
+
         "news_events": [],
         "news_last_success": 0.0,
         "news_next_fetch": 0.0,
