@@ -1697,7 +1697,7 @@ def setup_expired(state):
         > SETUP_EXPIRY_SECONDS
         )
     def retest_expired(state):
-    if not state["armed"]:
+        if not state["armed"]:
         return False
 
     if state["setup_phase"] != "WAIT_RETEST":
