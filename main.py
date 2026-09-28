@@ -46,7 +46,7 @@ IMPULSE_LOOKBACK = 6
 IMPULSE_MULTIPLIER = 2.40
 
 LOOP_SECONDS = 10
-RECONNECT_SECONDS = 15
+RECONNECT_SECONDS = 3
 META_TIMEOUT = 30
 MAX_LOOP_ERRORS = 3
 
@@ -102,7 +102,7 @@ def keep_alive():
 
 
 # =========================================================
-# TELEGRAM - FIX + DIAGNOSTIKA
+# TELEGRAM
 # =========================================================
 
 def telegram(message):
@@ -184,6 +184,7 @@ def load_cache():
             clean_candle(c)
             for c in data[-MAX_CACHE_BARS:]
         ]
+
         out = [c for c in out if c]
         out.sort(key=lambda x: x["time"])
 
@@ -1697,6 +1698,35 @@ async def bot_session(state):
             flush=True,
         )
 
+        # =====================================================
+        # RECONNECT RECOVERY
+        # Po pripojeni okamzite nacita otvorenu poziciu z MT5
+        # a skontroluje SL/TP + BE1/BE2/BE3.
+        # =====================================================
+
+        recovery_positions = await get_positions(
+            connection
+        )
+
+        if recovery_positions:
+            state["had_position"] = True
+
+            clear_pending(state)
+            clear_setup(state)
+
+            # Najprv skontroluj/obnov fyzicky SL a TP
+            await ensure_stops(connection)
+
+            # Hned skontroluj aktualnu cenu a BE1/BE2/BE3
+            await manage_be(connection)
+
+            print(
+                f"RECONNECT RECOVERY: "
+                f"{len(recovery_positions)} OPEN POSITION(S) "
+                f"-> SL/TP + BE CHECK DONE",
+                flush=True,
+            )
+
         if not state["ever_connected"]:
             telegram(
                 "RIObot GOLD START / CONNECTED\n\n"
@@ -1719,7 +1749,9 @@ async def bot_session(state):
         else:
             telegram(
                 "RIObot GOLD RECONNECTED\n\n"
-                "MetaApi connection restored."
+                "MetaApi connection restored.\n"
+                "Open position loaded from MT5.\n"
+                "BE1/BE2/BE3 checked immediately."
             )
 
         await seed_history(state)
@@ -2451,7 +2483,6 @@ async def main():
         flush=True,
     )
 
-    # TEST TELEGRAM IMMEDIATELY AFTER START
     telegram(
         "RIObot GOLD TELEGRAM TEST\n\n"
         "Telegram funguje.\n"
