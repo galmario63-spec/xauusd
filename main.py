@@ -524,7 +524,7 @@ def add_trend_filters(df):
     )
 
     return df
-    def trend_filter_ok(df5, side):
+def trend_filter_ok(df5, side):
     if df5 is None or df5.empty:
         return False
 
