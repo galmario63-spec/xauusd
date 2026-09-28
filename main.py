@@ -1696,12 +1696,12 @@ def setup_expired(state):
         time.time() - started
         > SETUP_EXPIRY_SECONDS
         )
-    def retest_expired(state):
-        if not state["armed"]:
-            return False
+def retest_expired(state):
+    if not state["armed"]:
+        return False
 
     if state["setup_phase"] != "WAIT_RETEST":
-            return False
+        return False
 
     break_time = state.get(
         "setup_break_time",
