@@ -12,33 +12,28 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =========================================================
-# RIObot GOLD - 2x M1 PSAR + M5 confirm - FAST ENTRY
+# RIObot GOLD - FAST ENTRY
+# 2x M1 PSAR + LIVE M5 + EMA50/ADX
 # =========================================================
 
 SYMBOL = "XAUUSD"
+
 LOT_SIZE = 0.50
 
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
-TP_DISTANCE = 10.00
-SL_DISTANCE = 10.00
+# TP +5 / SL -8
+TP_DISTANCE = 5.00
+SL_DISTANCE = 8.00
 
-BE1_TRIGGER = 4.00
-BE1_LOCK = 1.00
-
-BE2_TRIGGER = 7.00
-BE2_LOCK = 4.00
-
-BE3_TRIGGER = 9.00
-BE3_LOCK = 7.00
+# BE: pri +3 -> zamkne +1
+BE_TRIGGER = 3.00
+BE_LOCK = 1.00
 
 EMA_PERIOD = 50
 ADX_PERIOD = 14
 ADX_MIN = 20.0
-
-IMPULSE_LOOKBACK = 6
-IMPULSE_MULTIPLIER = 2.40
 
 LOOP_SECONDS = 10
 RECONNECT_SECONDS = 3
@@ -59,7 +54,7 @@ HISTORY_SEED_BARS = 180
 
 CACHE_FILE = "m1_cache.json"
 
-COMMENT = "RIO 2M1 M5 FAST EMA50 ADX"
+COMMENT = "RIO FAST 2M1 LIVE M5 EMA50 ADX"
 
 
 # =========================================================
@@ -194,6 +189,7 @@ def save_cache(candles):
                 candles[-MAX_CACHE_BARS:],
                 f,
             )
+
     except Exception as exc:
         print(
             f"CACHE SAVE WARNING: {exc}",
@@ -742,6 +738,7 @@ def current_psar_side(df):
     return None
 
 
+# 2 M1 PSAR bodky v rovnakom smere
 def two_m1_psar_dots(df1, side):
     if df1 is None or len(df1) < 2:
         return False
@@ -765,99 +762,27 @@ def two_m1_psar_dots(df1, side):
     return False
 
 
+# RYCHLE M5 POTVRDENIE
+# staci aktualny LIVE M5 PSAR smer
 def m5_confirms(df5, side):
-    if df5 is None or len(df5) < 2:
+    if df5 is None or df5.empty:
         return False
 
-    rows = df5.iloc[-2:]
+    row = df5.iloc[-1]
 
     if side == "BUY":
-        return all(
+        return (
             float(row["psar"])
             < float(row["close"])
-            for _, row in rows.iterrows()
         )
 
     if side == "SELL":
-        return all(
+        return (
             float(row["psar"])
             > float(row["close"])
-            for _, row in rows.iterrows()
         )
 
     return False
-
-
-def m1_entry_pressure_ok(df1, side):
-    if df1 is None or len(df1) < 3:
-        return False
-
-    closed = df1.iloc[-3:-1]
-
-    if side == "BUY":
-        bearish = all(
-            float(row["close"])
-            < float(row["open"])
-            for _, row in closed.iterrows()
-        )
-
-        return not bearish
-
-    if side == "SELL":
-        bullish = all(
-            float(row["close"])
-            > float(row["open"])
-            for _, row in closed.iterrows()
-        )
-
-        return not bullish
-
-    return False
-
-
-# =========================================================
-# IMPULSE FILTER
-# =========================================================
-
-def average_range(df1):
-    if df1 is None or len(df1) < 4:
-        return 0.0
-
-    rows = (
-        df1.iloc[:-1]
-        .tail(IMPULSE_LOOKBACK)
-    )
-
-    values = (
-        rows["high"].astype(float)
-        - rows["low"].astype(float)
-    )
-
-    values = values[values > 0]
-
-    if values.empty:
-        return 0.0
-
-    return float(values.mean())
-
-
-def big_impulse(df1):
-    avg = average_range(df1)
-
-    if avg <= 0:
-        return False
-
-    current = df1.iloc[-1]
-
-    current_range = (
-        float(current["high"])
-        - float(current["low"])
-    )
-
-    return (
-        current_range
-        >= avg * IMPULSE_MULTIPLIER
-    )
 
 
 # =========================================================
@@ -1004,6 +929,10 @@ def position_id(position):
     return None
 
 
+# =========================================================
+# SL / TP
+# =========================================================
+
 def initial_sl_tp(
     side,
     open_price,
@@ -1032,6 +961,11 @@ def initial_sl_tp(
     )
 
 
+# =========================================================
+# BREAK EVEN
+# pri +3 -> SL zamkne +1
+# =========================================================
+
 def desired_be_sl(
     side,
     open_price,
@@ -1042,23 +976,9 @@ def desired_be_sl(
     if side == "BUY":
         profit = current_price - open_price
 
-        if profit >= BE3_TRIGGER:
+        if profit >= BE_TRIGGER:
             return normalize_price(
-                open_price + BE3_LOCK,
-                tick,
-                digits,
-            )
-
-        if profit >= BE2_TRIGGER:
-            return normalize_price(
-                open_price + BE2_LOCK,
-                tick,
-                digits,
-            )
-
-        if profit >= BE1_TRIGGER:
-            return normalize_price(
-                open_price + BE1_LOCK,
+                open_price + BE_LOCK,
                 tick,
                 digits,
             )
@@ -1066,23 +986,9 @@ def desired_be_sl(
     if side == "SELL":
         profit = open_price - current_price
 
-        if profit >= BE3_TRIGGER:
+        if profit >= BE_TRIGGER:
             return normalize_price(
-                open_price - BE3_LOCK,
-                tick,
-                digits,
-            )
-
-        if profit >= BE2_TRIGGER:
-            return normalize_price(
-                open_price - BE2_LOCK,
-                tick,
-                digits,
-            )
-
-        if profit >= BE1_TRIGGER:
-            return normalize_price(
-                open_price - BE1_LOCK,
+                open_price - BE_LOCK,
                 tick,
                 digits,
             )
@@ -1247,6 +1153,7 @@ async def open_trade(
     connection,
     side,
 ):
+    # Maximalne 1 otvoreny XAUUSD obchod
     positions = await get_positions(
         connection
     )
@@ -1281,7 +1188,7 @@ async def open_trade(
 
     try:
         if side == "BUY":
-            result = await asyncio.wait_for(
+            await asyncio.wait_for(
                 connection.create_market_buy_order(
                     SYMBOL,
                     LOT_SIZE,
@@ -1293,7 +1200,7 @@ async def open_trade(
             )
 
         else:
-            result = await asyncio.wait_for(
+            await asyncio.wait_for(
                 connection.create_market_sell_order(
                     SYMBOL,
                     LOT_SIZE,
@@ -1391,8 +1298,7 @@ def fetch_news_events():
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"NEWS HTTP "
-            f"{response.status_code}"
+            f"NEWS HTTP {response.status_code}"
         )
 
     data = response.json()
@@ -1512,6 +1418,7 @@ def news_block_reason(state):
                 event_time.timestamp()
                 - now.timestamp()
             ) / 60.0
+
         except Exception:
             continue
 
@@ -1529,7 +1436,7 @@ def news_block_reason(state):
 
 
 # =========================================================
-# OLD STATE HELPERS
+# STATE HELPERS
 # =========================================================
 
 def clear_pending(state):
@@ -1625,8 +1532,8 @@ async def bot_session(state):
             else "RIObot GOLD START / CONNECTED"
         )
 
-        # HNED PO CONNECT / RECONNECT
-        # skontroluj otvoreny obchod a BE.
+        # Hned po connect/reconnect
+        # skontroluj otvorenu poziciu a BE
 
         try:
             positions_now = (
@@ -1666,6 +1573,7 @@ async def bot_session(state):
 
         while True:
             try:
+
                 # -----------------------------------------
                 # NEWS
                 # -----------------------------------------
@@ -1767,7 +1675,9 @@ async def bot_session(state):
 
                 # -----------------------------------------
                 # FAST ENTRY
-                # 2x M1 PSAR + M5 + EMA/ADX
+                # 2x M1 PSAR
+                # + LIVE M5 PSAR
+                # + EMA50/ADX/DI
                 # -----------------------------------------
 
                 signal = get_live_flip(df1)
@@ -1777,7 +1687,9 @@ async def bot_session(state):
                 )
 
                 # Po predchadzajucom obchode
-                # musi prist novy PSAR flip.
+                # musi prist novy M1 PSAR flip.
+                # Potom uz caka iba na 2 M1 bodky
+                # + LIVE M5 potvrdenie.
 
                 if state[
                     "require_new_flip"
@@ -1801,13 +1713,17 @@ async def bot_session(state):
                         flush=True,
                     )
 
-                # 2 M1 PSAR bodky
-                # + 2 M5 PSAR potvrdenia
+                # RYCHLY VSTUP:
+                # 2x M1 PSAR
+                # + aktualny LIVE M5 PSAR
                 # + EMA50
                 # + ADX
-                # + smer DI
-                # + M1 pressure
-                # + ochrana proti velkemu impulzu
+                # + DI smer
+                #
+                # BEZ:
+                # M1 pressure filtra
+                # impulse filtra
+                # 2 M5 PSAR bodiek
 
                 if (
                     current_side
@@ -1824,11 +1740,6 @@ async def bot_session(state):
                         df5,
                         current_side,
                     )
-                    and m1_entry_pressure_ok(
-                        df1,
-                        current_side,
-                    )
-                    and not big_impulse(df1)
                 ):
                     news_reason = (
                         news_block_reason(
@@ -1856,8 +1767,8 @@ async def bot_session(state):
                                 f"FAST ENTRY "
                                 f"{current_side}: "
                                 f"2x M1 PSAR + "
-                                f"M5 + EMA/ADX "
-                                f"CONFIRMED",
+                                f"LIVE M5 + "
+                                f"EMA/ADX CONFIRMED",
                                 flush=True,
                             )
 
