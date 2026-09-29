@@ -18,17 +18,17 @@ from metaapi_cloud_sdk import MetaApi
 
 SYMBOL = "XAUUSD"
 
-LOT_SIZE = 4.00
+LOT_SIZE = 3.00
 
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
 
 # TP +5 / SL -8
-TP_DISTANCE = 5.00
+TP_DISTANCE = 4.00
 SL_DISTANCE = 7.00
 
 # BE: pri +3 -> zamkne +1
-BE_TRIGGER = 3.00
+BE_TRIGGER = 2.00
 BE_LOCK = 1.00
 
 EMA_PERIOD = 50
