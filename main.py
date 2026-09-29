@@ -18,7 +18,7 @@ from metaapi_cloud_sdk import MetaApi
 
 SYMBOL = "XAUUSD"
 
-LOT_SIZE = 0.50
+LOT_SIZE = 1.00
 
 PSAR_STEP = 0.02
 PSAR_MAX = 0.20
