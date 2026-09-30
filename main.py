@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import math
 import asyncio
 import requests
 import traceback
@@ -14,59 +13,62 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD ZONES M1 + M5 - V4
+# RIOBOT GOLD V5
+# FAST M1 + M5 TREND + ATR SL + EARLY BE
 # =====================================================
 
 SYMBOL = "XAUUSD"
-COMMENT = "RIO GOLD ZONES V4"
+COMMENT = "RIO GOLD V5"
 
 LOT_SIZE = 0.01
 MAX_TRADES = 4
 
-# Bez explicitneho zapnutia neposiela realne objednavky.
 ENABLE_TRADING = (
     os.getenv("ENABLE_TRADING", "false")
     .strip()
     .lower() == "true"
 )
 
-LOOP_SECONDS = 5
+LOOP_SECONDS = 3
 RECONNECT_SECONDS = 5
 META_TIMEOUT = 35
 SYNC_TIMEOUT = 120
+
 COOLDOWN_SECONDS = 180
 
-ZONE_LOOKBACK = 35
 ATR_PERIOD = 14
+ZONE_LOOKBACK = 35
+
+M5_EMA_PERIOD = 5
+
+MIN_BODY_RATIO = 0.30
+MAX_SIGNAL_RANGE_ATR = 2.00
 
 ZONE_ATR_TOLERANCE = 0.35
 MIN_ZONE_TOLERANCE = 0.35
 
-MIN_BODY_RATIO = 0.30
-MAX_SIGNAL_RANGE_ATR = 1.80
+# Rychlejsi trendovy vstup
+BREAKOUT_LOOKBACK = 3
+MIN_BREAKOUT_BODY_RATIO = 0.45
+MAX_ENTRY_DRIFT_ATR = 0.30
 
-# Vstup nesmie nahanat cenu daleko od signalu.
-MAX_ENTRY_DRIFT_ATR = 0.35
-MAX_ZONE_DISTANCE_ATR = 1.80
+# Sirsi SL podla aktualnej volatility
+SL_ATR_MULTIPLIER = 1.35
+MIN_SL_DISTANCE = 1.00
+MAX_SL_DISTANCE = 12.00
 
-SL_ATR_BUFFER = 0.30
-
-MIN_SL_DISTANCE = 0.40
-MAX_SL_DISTANCE = 3.50
 MAX_SPREAD = 0.40
 
-# M5 trend
-M5_EMA_PERIOD = 5
-
-# Ochrana pozicie
-BE_TRIGGER_RR = 0.70
+# BE sa aktivuje skor
+BE_TRIGGER_RR = 0.45
 BE_LOCK_DISTANCE = 0.10
 
-TP1_RR = 1.00
-TP1_LOCK_RR = 0.50
+# Virtualny TP1
+TP1_RR = 0.85
+TP1_LOCK_RR = 0.40
 
-TRAIL_TRIGGER_RR = 1.50
-TRAIL_ATR_MULTIPLIER = 1.00
+TRAIL_TRIGGER_RR = 1.20
+TRAIL_ATR_MULTIPLIER = 0.85
 
 NEWS_BEFORE = 15
 NEWS_AFTER = 30
@@ -88,7 +90,7 @@ STATE_DIR = os.getenv("RIO_STATE_DIR", "/tmp")
 
 STATE_FILE = os.path.join(
     STATE_DIR,
-    "rio_gold_zones_v4.json"
+    "rio_gold_v5.json"
 )
 
 news_cache = {
@@ -106,7 +108,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "RIOBOT GOLD V4 ACTIVE", 200
+    return "RIOBOT GOLD V5 ACTIVE", 200
 
 
 def keep_alive():
@@ -208,13 +210,11 @@ def load_state():
 
     if not os.path.exists(STATE_FILE):
 
-        if ENABLE_TRADING and STATE_DIR == "/tmp":
-
-            print(
-                "WARNING: /tmp IS NOT PERSISTENT "
-                "ACROSS RENDER DEPLOYS",
-                flush=True
-            )
+        print(
+            "WARNING: STATE FILE NOT FOUND. "
+            "CHECK TRADE COUNT BEFORE LIVE.",
+            flush=True
+        )
 
         return state
 
@@ -286,7 +286,10 @@ async def get_candles(region):
     )
 
     if not isinstance(raw, list):
-        raise RuntimeError("INVALID CANDLES RESPONSE")
+
+        raise RuntimeError(
+            "INVALID CANDLES RESPONSE"
+        )
 
     now = datetime.now(timezone.utc)
 
@@ -303,18 +306,19 @@ async def get_candles(region):
             )
 
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+
+                dt = dt.replace(
+                    tzinfo=timezone.utc
+                )
 
             dt = dt.astimezone(timezone.utc)
 
-            age = (now - dt).total_seconds()
+            age = (
+                now - dt
+            ).total_seconds()
 
-            # Len uzavrete M1 sviecky.
-            # Mala rezerva proti oneskorenemu finalizovaniu.
+            # Pouzivame iba uzavrete M1.
             if age < 62:
-                continue
-
-            if age < 0:
                 continue
 
             candles.append({
@@ -330,6 +334,7 @@ async def get_candles(region):
             TypeError,
             ValueError
         ):
+
             continue
 
     unique = {
@@ -343,14 +348,22 @@ async def get_candles(region):
     )
 
     if len(candles) < 70:
-        raise RuntimeError("NOT ENOUGH M1 HISTORY")
+
+        raise RuntimeError(
+            "NOT ENOUGH M1 HISTORY"
+        )
 
     last_time = datetime.fromisoformat(
         candles[-1]["time"]
     )
 
-    if (now - last_time).total_seconds() > 180:
-        raise RuntimeError("STALE M1 DATA")
+    if (
+        now - last_time
+    ).total_seconds() > 180:
+
+        raise RuntimeError(
+            "STALE M1 DATA"
+        )
 
     return candles
 
@@ -403,9 +416,13 @@ def build_m5(candles):
             candle["time"]
         )
 
-        timestamp = int(dt.timestamp())
+        timestamp = int(
+            dt.timestamp()
+        )
 
-        bucket = timestamp - timestamp % 300
+        bucket = (
+            timestamp - timestamp % 300
+        )
 
         groups.setdefault(
             bucket,
@@ -421,7 +438,6 @@ def build_m5(candles):
             key=lambda c: c["time"]
         )
 
-        # M5 musi obsahovat vsetkych 5 M1 sviecok.
         if len(group) != 5:
             continue
 
@@ -471,9 +487,9 @@ def ema_values(values, period):
 
     multiplier = 2 / (period + 1)
 
-    ema = sum(
-        values[:period]
-    ) / period
+    ema = (
+        sum(values[:period]) / period
+    )
 
     result = [ema]
 
@@ -495,7 +511,10 @@ def m5_trend(candles):
 
     if len(m5) < M5_EMA_PERIOD + 3:
 
-        return "NONE", "NOT ENOUGH M5 HISTORY"
+        return (
+            "NONE",
+            "NOT ENOUGH M5 HISTORY"
+        )
 
     closes = [
         c["close"] for c in m5
@@ -507,6 +526,7 @@ def m5_trend(candles):
     )
 
     if len(emas) < 3:
+
         return "NONE", "EMA NOT READY"
 
     last = m5[-1]
@@ -515,32 +535,36 @@ def m5_trend(candles):
     ema_now = emas[-1]
     ema_previous = emas[-2]
 
-    # BUY: posledna uzavreta M5 rastie,
-    # cena nad EMA a EMA uz stupa.
-
     bullish = (
-        last["close"] > last["open"]
-        and last["close"] > previous["close"]
-        and last["close"] > ema_now
+        last["close"] > ema_now
         and ema_now > ema_previous
+        and last["close"] > previous["close"]
     )
 
-    # SELL: opacne podmienky.
-
     bearish = (
-        last["close"] < last["open"]
-        and last["close"] < previous["close"]
-        and last["close"] < ema_now
+        last["close"] < ema_now
         and ema_now < ema_previous
+        and last["close"] < previous["close"]
     )
 
     if bullish:
-        return "BUY", "M5 BULLISH CONFIRMED"
+
+        return (
+            "BUY",
+            "M5 UPTREND"
+        )
 
     if bearish:
-        return "SELL", "M5 BEARISH CONFIRMED"
 
-    return "NONE", "M5 TREND NOT CONFIRMED"
+        return (
+            "SELL",
+            "M5 DOWNTREND"
+        )
+
+    return (
+        "NONE",
+        "M5 TREND NOT CONFIRMED"
+    )
 
 
 # =====================================================
@@ -549,14 +573,12 @@ def m5_trend(candles):
 
 def detect_zones(candles, atr):
 
-    # Posledne tri M1 nepouzivame na vytvorenie zony.
-    # Su vyhradene na dotyk a potvrdenie.
-
     history = candles[
         -(ZONE_LOOKBACK + 3):-3
     ]
 
     if len(history) < ZONE_LOOKBACK:
+
         return None, None, None
 
     support = min(
@@ -572,11 +594,15 @@ def detect_zones(candles, atr):
         atr * ZONE_ATR_TOLERANCE
     )
 
-    return support, resistance, tolerance
+    return (
+        support,
+        resistance,
+        tolerance
+    )
 
 
 # =====================================================
-# CONFIRMED M1 SIGNAL
+# FAST SIGNAL V5
 # =====================================================
 
 def get_signal(
@@ -587,140 +613,180 @@ def get_signal(
     atr
 ):
 
-    if len(candles) < 4:
-        return None, None, "M1 HISTORY SHORT"
+    if len(candles) < 10:
 
-    # A = dotyk zony
-    # B = prve potvrdenie
-    # C = druhe potvrdenie
+        return (
+            None,
+            None,
+            "M1 HISTORY SHORT"
+        )
 
     a = candles[-3]
     b = candles[-2]
     c = candles[-1]
 
-    range_b = b["high"] - b["low"]
-    range_c = c["high"] - c["low"]
+    candle_range = (
+        c["high"] - c["low"]
+    )
 
-    if range_b <= 0 or range_c <= 0:
+    if candle_range <= 0:
 
-        return None, None, "ZERO RANGE"
-
-    # Nevstupovat po obrovskej impulznej sviecke.
+        return (
+            None,
+            None,
+            "ZERO RANGE"
+        )
 
     if (
-        range_b > atr * MAX_SIGNAL_RANGE_ATR
-        or range_c > atr * MAX_SIGNAL_RANGE_ATR
+        candle_range
+        > atr * MAX_SIGNAL_RANGE_ATR
     ):
 
-        return None, None, "IMPULSE FILTER"
+        return (
+            None,
+            None,
+            "IMPULSE FILTER"
+        )
 
-    body_b = abs(
-        b["close"] - b["open"]
-    ) / range_b
+    body_ratio = (
+        abs(c["close"] - c["open"])
+        / candle_range
+    )
 
-    body_c = abs(
-        c["close"] - c["open"]
-    ) / range_c
+    trend, trend_reason = m5_trend(
+        candles
+    )
 
-    # Dve uzavrete rastuce M1.
-    # Druha musi prerazit high predchadzajucej.
+    if trend == "NONE":
 
-    bullish_confirmed = (
-        b["close"] > b["open"]
+        return (
+            None,
+            None,
+            trend_reason
+        )
+
+    # -----------------------------------------
+    # 1. FAST TREND CONTINUATION
+    # -----------------------------------------
+
+    previous = candles[
+        -(BREAKOUT_LOOKBACK + 1):-1
+    ]
+
+    previous_high = max(
+        x["high"] for x in previous
+    )
+
+    previous_low = min(
+        x["low"] for x in previous
+    )
+
+    fast_buy = (
+        trend == "BUY"
         and c["close"] > c["open"]
-        and body_b >= MIN_BODY_RATIO
-        and body_c >= MIN_BODY_RATIO
-        and c["close"] > b["high"]
-        and c["close"] > b["close"]
-        and b["low"] >= a["low"] - tolerance
+        and body_ratio >= MIN_BREAKOUT_BODY_RATIO
+        and c["close"] > previous_high
+        and c["close"] - previous_high
+        <= atr * 0.35
     )
 
-    # Dve uzavrete klesajuce M1.
-    # Druha musi prerazit low predchadzajucej.
-
-    bearish_confirmed = (
-        b["close"] < b["open"]
+    fast_sell = (
+        trend == "SELL"
         and c["close"] < c["open"]
-        and body_b >= MIN_BODY_RATIO
-        and body_c >= MIN_BODY_RATIO
-        and c["close"] < b["low"]
-        and c["close"] < b["close"]
-        and b["high"] <= a["high"] + tolerance
+        and body_ratio >= MIN_BREAKOUT_BODY_RATIO
+        and c["close"] < previous_low
+        and previous_low - c["close"]
+        <= atr * 0.35
     )
+
+    if fast_buy:
+
+        return (
+            "BUY",
+            previous_low,
+            "FAST M1 BREAKOUT + M5 BUY"
+        )
+
+    if fast_sell:
+
+        return (
+            "SELL",
+            previous_high,
+            "FAST M1 BREAKOUT + M5 SELL"
+        )
+
+    # -----------------------------------------
+    # 2. ZONE REJECTION
+    # -----------------------------------------
+
+    if (
+        support is None
+        or resistance is None
+    ):
+
+        return (
+            None,
+            None,
+            "WAITING"
+        )
 
     buy_touch = (
-        support is not None
-        and a["low"] <= support + tolerance
+        a["low"] <= support + tolerance
         and a["high"] >= support - tolerance
     )
 
     sell_touch = (
-        resistance is not None
-        and a["high"] >= resistance - tolerance
+        a["high"] >= resistance - tolerance
         and a["low"] <= resistance + tolerance
     )
 
-    trend, trend_reason = m5_trend(candles)
+    buy_confirmed = (
+        trend == "BUY"
+        and b["close"] > b["open"]
+        and c["close"] > c["open"]
+        and c["close"] > b["high"]
+        and body_ratio >= MIN_BODY_RATIO
+    )
 
-    # BUY iba po potvrdeni M1 aj M5.
+    sell_confirmed = (
+        trend == "SELL"
+        and b["close"] < b["open"]
+        and c["close"] < c["open"]
+        and c["close"] < b["low"]
+        and body_ratio >= MIN_BODY_RATIO
+    )
 
-    if buy_touch and bullish_confirmed:
-
-        if trend != "BUY":
-
-            return (
-                None,
-                None,
-                "BUY BLOCKED: " + trend_reason
-            )
-
-        if c["close"] <= support:
-
-            return None, None, "BUY BELOW SUPPORT"
+    if buy_touch and buy_confirmed:
 
         if (
             c["close"] - support
-            > atr * MAX_ZONE_DISTANCE_ATR
+            <= atr * 1.8
         ):
 
-            return None, None, "BUY TOO FAR FROM ZONE"
-
-        return (
-            "BUY",
-            support,
-            "SUPPORT + M1 CONFIRM + M5 TREND"
-        )
-
-    # SELL iba po potvrdeni M1 aj M5.
-
-    if sell_touch and bearish_confirmed:
-
-        if trend != "SELL":
-
             return (
-                None,
-                None,
-                "SELL BLOCKED: " + trend_reason
+                "BUY",
+                support,
+                "SUPPORT REJECTION + M5 BUY"
             )
 
-        if c["close"] >= resistance:
-
-            return None, None, "SELL ABOVE RESISTANCE"
+    if sell_touch and sell_confirmed:
 
         if (
             resistance - c["close"]
-            > atr * MAX_ZONE_DISTANCE_ATR
+            <= atr * 1.8
         ):
 
-            return None, None, "SELL TOO FAR FROM ZONE"
+            return (
+                "SELL",
+                resistance,
+                "RESISTANCE REJECTION + M5 SELL"
+            )
 
-        return (
-            "SELL",
-            resistance,
-            "RESISTANCE + M1 CONFIRM + M5 TREND"
-        )
-
-    return None, None, "WAITING"
+    return (
+        None,
+        None,
+        "WAITING"
+    )
 
 
 # =====================================================
@@ -739,7 +805,10 @@ def fetch_news():
     raw = response.json()
 
     if not isinstance(raw, list):
-        raise RuntimeError("INVALID NEWS DATA")
+
+        raise RuntimeError(
+            "INVALID NEWS DATA"
+        )
 
     events = []
 
@@ -762,6 +831,7 @@ def fetch_news():
             "high" not in impact
             and "red" not in impact
         ):
+
             continue
 
         try:
@@ -787,6 +857,7 @@ def fetch_news():
             TypeError,
             ValueError
         ):
+
             continue
 
     return events
@@ -818,8 +889,6 @@ async def news_blocked():
                 str(e),
                 flush=True
             )
-
-    # Ak spravy nevieme overit, nove vstupy stoja.
 
     if (
         now - news_cache["updated"]
@@ -954,7 +1023,7 @@ def position_side(position):
 
 
 # =====================================================
-# SL / TP1
+# ATR SL / TP1
 # =====================================================
 
 def get_levels(
@@ -965,47 +1034,46 @@ def get_levels(
     market
 ):
 
-    buffer = max(
-        atr * SL_ATR_BUFFER,
-        market["tick"] * 5
+    # SL podla volatility, nie tesne pri zone.
+    distance = max(
+        MIN_SL_DISTANCE,
+        atr * SL_ATR_MULTIPLIER
     )
+
+    # Prilis velky risk = obchod vynechame.
+    # SL nikdy umelo neskracujeme na maximum.
+    if distance > MAX_SL_DISTANCE:
+
+        return None, (
+            f"ATR SL TOO LARGE: {distance:.2f}"
+        )
 
     if side == "BUY":
 
-        sl = zone - buffer
+        sl = normalize(
+            entry - distance,
+            market
+        )
 
     else:
 
-        sl = zone + buffer
-
-    sl = normalize(
-        sl,
-        market
-    )
+        sl = normalize(
+            entry + distance,
+            market
+        )
 
     risk = abs(
         entry - sl
     )
 
-    if risk < MIN_SL_DISTANCE:
+    if (
+        risk < MIN_SL_DISTANCE
+        or risk > MAX_SL_DISTANCE
+    ):
 
         return None, (
-            f"SL TOO SMALL: {risk:.2f}"
+            f"INVALID SL DISTANCE: {risk:.2f}"
         )
-
-    if risk > MAX_SL_DISTANCE:
-
-        return None, (
-            f"SL TOO LARGE: {risk:.2f}"
-        )
-
-    if side == "BUY" and sl >= entry:
-
-        return None, "INVALID BUY SL"
-
-    if side == "SELL" and sl <= entry:
-
-        return None, "INVALID SELL SL"
 
     direction = (
         1 if side == "BUY" else -1
@@ -1044,10 +1112,11 @@ async def open_trade(
 
         return False
 
-    # Maximalne jedna otvorena XAUUSD pozicia.
+    positions = await get_positions(
+        connection
+    )
 
-    positions = await get_positions(connection)
-
+    # Len jeden otvoreny obchod.
     if positions:
 
         print(
@@ -1057,7 +1126,9 @@ async def open_trade(
 
         return False
 
-    market = await get_market(connection)
+    market = await get_market(
+        connection
+    )
 
     spread = (
         market["ask"] - market["bid"]
@@ -1099,7 +1170,9 @@ async def open_trade(
         - round(LOT_SIZE / volume_step)
     ) > 1e-7:
 
-        notify("ENTRY BLOCKED: INVALID LOT STEP")
+        notify(
+            "ENTRY BLOCKED: INVALID LOT STEP"
+        )
 
         return False
 
@@ -1109,41 +1182,14 @@ async def open_trade(
         else market["bid"]
     )
 
-    # Kontrola, ci sa cena po uzavreti
-    # signalnej sviecky uz prilis neposunula.
-
+    # Nenahanat cenu po signale.
     if (
         abs(entry - signal_close)
         > atr * MAX_ENTRY_DRIFT_ATR
     ):
 
         print(
-            "ENTRY BLOCKED: PRICE MOVED "
-            "AFTER SIGNAL",
-            flush=True
-        )
-
-        return False
-
-    # Nekupovat prilis daleko nad supportom.
-    # Nepredavat prilis daleko pod rezistenciou.
-
-    if side == "BUY":
-
-        zone_distance = entry - zone
-
-    else:
-
-        zone_distance = zone - entry
-
-    if (
-        zone_distance < 0
-        or zone_distance
-        > atr * MAX_ZONE_DISTANCE_ATR
-    ):
-
-        print(
-            "ENTRY BLOCKED: ZONE DISTANCE",
+            "ENTRY BLOCKED: PRICE MOVED",
             flush=True
         )
 
@@ -1189,7 +1235,7 @@ async def open_trade(
         ):
 
             print(
-                "ENTRY BLOCKED: BUY STOP DISTANCE",
+                "BUY STOP DISTANCE BLOCKED",
                 flush=True
             )
 
@@ -1203,19 +1249,20 @@ async def open_trade(
         ):
 
             print(
-                "ENTRY BLOCKED: SELL STOP DISTANCE",
+                "SELL STOP DISTANCE BLOCKED",
                 flush=True
             )
 
             return False
 
     message = (
-        "RIO GOLD V4\n"
+        "RIO GOLD V5\n"
         f"SIDE: {side}\n"
         f"LOT: {LOT_SIZE}\n"
         f"ENTRY: {entry}\n"
-        f"ZONE: {zone:.2f}\n"
         f"SL: {sl}\n"
+        f"ATR: {atr:.2f}\n"
+        f"RISK DISTANCE: {levels['risk']:.2f}\n"
         f"TP1 LEVEL: {levels['tp1']}\n"
         f"TRADE: {state['trade_count'] + 1}/{MAX_TRADES}"
     )
@@ -1228,9 +1275,6 @@ async def open_trade(
         )
 
         return False
-
-    # Stav ulozime este pred odoslanim objednavky.
-    # Pri timeoute nesmieme naslepo opakovat vstup.
 
     state["order_uncertain"] = True
 
@@ -1274,10 +1318,9 @@ async def open_trade(
 
         await asyncio.sleep(2)
 
-        positions = await get_positions(connection)
-
-        # Pred objednavkou nebola otvorena ziadna
-        # XAUUSD pozicia. Teraz ocakavame presne jednu.
+        positions = await get_positions(
+            connection
+        )
 
         matches = [
             p for p in positions
@@ -1308,8 +1351,6 @@ async def open_trade(
             return False
 
         position = matches[0]
-
-        # Overenie SL po otvoreni.
 
         actual_sl = float(
             position.get("stopLoss") or 0
@@ -1368,9 +1409,6 @@ async def open_trade(
 
     except Exception as e:
 
-        # Objednavka mohla byt vykonana aj vtedy,
-        # ked odpoved MetaApi nedorazila.
-
         state["halted"] = True
 
         save_state(state)
@@ -1386,7 +1424,7 @@ async def open_trade(
 
 
 # =====================================================
-# BE / TP1 / TRAILING
+# EARLY BE / TP1 / TRAILING
 # =====================================================
 
 async def protect_position(
@@ -1413,7 +1451,9 @@ async def protect_position(
     if not risk or risk <= 0:
         return
 
-    market = await get_market(connection)
+    market = await get_market(
+        connection
+    )
 
     position_id = position["id"]
 
@@ -1433,7 +1473,7 @@ async def protect_position(
 
         notify(
             "CRITICAL: POSITION WITHOUT SL\n"
-            "CHECK MT5 IMMEDIATELY"
+            "CHECK MT5"
         )
 
         return
@@ -1455,7 +1495,9 @@ async def protect_position(
     wanted_sl = current_sl
     stage = None
 
-    # BE pri +0.7R.
+    # -----------------------------------------
+    # BE od +0.45R
+    # -----------------------------------------
 
     if (
         profit_distance
@@ -1481,10 +1523,11 @@ async def protect_position(
                 be
             )
 
-        stage = "BE"
+        stage = "EARLY BE"
 
-    # TP1 je virtualna uroven.
-    # Cela pozicia zostava otvorena.
+    # -----------------------------------------
+    # TP1 od +0.85R
+    # -----------------------------------------
 
     if (
         profit_distance
@@ -1510,9 +1553,11 @@ async def protect_position(
                 lock
             )
 
-        stage = "TP1"
+        stage = "TP1 LOCK"
 
-    # Trailing od +1.5R.
+    # -----------------------------------------
+    # TRAILING od +1.20R
+    # -----------------------------------------
 
     if (
         profit_distance
@@ -1551,8 +1596,7 @@ async def protect_position(
 
     tick = market["tick"]
 
-    # SL sa nikdy neposuva spat.
-
+    # SL nikdy neposuvat spat.
     if side == "BUY":
 
         if (
@@ -1627,7 +1671,7 @@ async def protect_position(
         )
 
         if (
-            stage in ("TP1", "TRAILING")
+            stage in ("TP1 LOCK", "TRAILING")
             and not state["tp1_reached"]
         ):
 
@@ -1655,8 +1699,7 @@ async def protect_position(
 
 async def bot_session(state):
 
-    # Region NEPOSIELAME do konstruktora SDK.
-
+    # Region neposielame do MetaApi konstruktora.
     api = MetaApi(M_TOKEN)
 
     account = await meta_call(
@@ -1708,15 +1751,14 @@ async def bot_session(state):
         )
 
         notify(
-            "RIO GOLD V4 CONNECTED\n"
+            "RIO GOLD V5 CONNECTED\n"
             f"LOT: {LOT_SIZE}\n"
             f"TRADES: {state['trade_count']}/{MAX_TRADES}\n"
             f"LIVE: {ENABLE_TRADING}"
         )
 
-        # Reconnect: ak je pozicia neznama,
-        # nove obchody zastavime.
-
+        # Pri restarte s neznámou pozíciou
+        # nove vstupy zastavime.
         if positions:
 
             state["had_position"] = True
@@ -1746,7 +1788,6 @@ async def bot_session(state):
 
             notify(
                 "PREVIOUS ORDER UNCERTAIN\n"
-                "NEW ENTRIES STOPPED\n"
                 "CHECK MT5"
             )
 
@@ -1758,7 +1799,7 @@ async def bot_session(state):
             try:
 
                 # =================================
-                # 1. NAJPRV OTVORENE POZICIE
+                # 1. OTVORENE POZICIE
                 # =================================
 
                 positions = await get_positions(
@@ -1768,9 +1809,6 @@ async def bot_session(state):
                 if positions:
 
                     state["had_position"] = True
-
-                    # Ak sa objavi ina pozicia,
-                    # nevytvarame dalsie vstupy.
 
                     if (
                         len(positions) != 1
@@ -1918,7 +1956,7 @@ async def bot_session(state):
                     continue
 
                 # =================================
-                # 5. M1 + M5 SIGNAL
+                # 5. FAST M1 + M5 SIGNAL
                 # =================================
 
                 candles = await get_candles(
@@ -2021,7 +2059,7 @@ async def bot_session(state):
                         save_state(state)
 
                         notify(
-                            "ZONE SIGNAL V4\n"
+                            "ZONE / FAST SIGNAL V5\n"
                             f"SIDE: {side}\n"
                             f"REASON: {reason}\n"
                             f"ZONE: {zone:.2f}\n"
@@ -2118,15 +2156,14 @@ async def main():
     state = load_state()
 
     telegram(
-        "RIOBOT GOLD ZONES M1 M5 V4 START\n"
-        "SUPPORT / RESISTANCE / ATR14\n"
-        "M1 DOUBLE CONFIRMATION\n"
-        "M5 TREND FILTER\n"
+        "RIOBOT GOLD V5 START\n"
+        "FAST M1 + M5 TREND\n"
+        "ATR SL + EARLY BE\n"
         f"LOT: {LOT_SIZE}\n"
         f"MAX TRADES: {MAX_TRADES}\n"
         f"COUNT: {state['trade_count']}\n"
         f"LIVE TRADING: {ENABLE_TRADING}\n"
-        "BE + TP1 LOCK + TRAILING ACTIVE"
+        "TP1 LOCK + TRAILING ACTIVE"
     )
 
     reconnect_attempt = 0
