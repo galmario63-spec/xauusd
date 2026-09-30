@@ -19,12 +19,6 @@ from metaapi_cloud_sdk import MetaApi
 # M1 MOMENTUM FILTER
 # 4 OBCHODY NA JEDEN SIGNAL
 # BE ONLY
-#
-# FIX:
-# - SAFE M1 DATA HANDLING
-# - STALE DATA DOES NOT CRASH SESSION
-# - RETRY HISTORICAL DATA
-# - NO TRADING FROM STALE DATA
 # =====================================================
 
 SYMBOL = "XAUUSD"
@@ -47,19 +41,6 @@ CONNECT_TIMEOUT = 90
 ORDER_TIMEOUT = 40
 
 COOLDOWN_SECONDS = 180
-
-
-# =====================================================
-# M1 DATA SAFETY
-# =====================================================
-
-M1_LIMIT = 300
-
-# Posledná uzavretá M1 sviečka môže mať malé oneskorenie.
-M1_MAX_AGE_SECONDS = 180
-
-# Pri stale dátach nezahlcujeme MetaApi každé 2 sekundy.
-M1_STALE_RETRY_SECONDS = 10
 
 
 # =====================================================
@@ -366,58 +347,47 @@ def position_side(position):
 
 
 # =====================================================
-# M1 DATA - FIXED
+# M1 DATA
+# FIX: LIMIT SA POSIELA IBA RAZ
 # =====================================================
 
 async def get_candles(region):
 
-    url = (
+    base_url = (
         "https://mt-market-data-client-api-v1."
         f"{region}.agiliumtrade.ai/"
         f"users/current/accounts/{M_ACC}/"
         "historical-market-data/symbols/"
         f"{SYMBOL}/timeframes/1m/candles"
-        f"?limit={M1_LIMIT}"
     )
 
     def fetch():
 
         response = requests.get(
-            url,
+            base_url,
             headers={
-                "auth-token": M_TOKEN,
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache"
+                "auth-token": M_TOKEN
             },
             params={
-                "limit": M1_LIMIT,
-                "_rio": int(time.time())
+                "limit": 300
             },
             timeout=12
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+
+            raise RuntimeError(
+                "M1 DATA REQUEST ERROR: "
+                f"{response.status_code} "
+                f"{response.text[:300]}"
+            )
 
         return response.json()
 
-    try:
-
-        raw = await asyncio.wait_for(
-            asyncio.to_thread(fetch),
-            timeout=16
-        )
-
-    except asyncio.TimeoutError:
-
-        raise RuntimeError(
-            "M1 DATA TIMEOUT"
-        )
-
-    except requests.RequestException as e:
-
-        raise RuntimeError(
-            f"M1 DATA REQUEST ERROR: {e}"
-        )
+    raw = await asyncio.wait_for(
+        asyncio.to_thread(fetch),
+        timeout=16
+    )
 
     if not isinstance(raw, list):
 
@@ -452,12 +422,10 @@ async def get_candles(region):
                 timezone.utc
             )
 
-            # Používame iba uzavreté M1 sviečky.
-            age = (
+            # Používame iba uzavreté M1 sviečky
+            if (
                 now - dt
-            ).total_seconds()
-
-            if age < 60:
+            ).total_seconds() < 61:
                 continue
 
             candles.append({
@@ -493,20 +461,13 @@ async def get_candles(region):
         candles[-1]["time"]
     )
 
-    age = (
+    if (
         now - last
-    ).total_seconds()
+    ).total_seconds() > 180:
 
-    if age > M1_MAX_AGE_SECONDS:
-
-        print(
-            "M1 DATA STALE | "
-            f"LAST: {last.isoformat()} | "
-            f"AGE: {int(age)} SEC",
-            flush=True
+        raise RuntimeError(
+            "STALE M1 DATA"
         )
-
-        return None
 
     return candles
 
@@ -2132,7 +2093,7 @@ async def bot_session(state):
                     continue
 
                 # =====================================
-                # BROKER BREAK
+                # 15 MIN PRED PRESTAVKOU
                 # =====================================
 
                 if broker_break_blocked():
@@ -2163,26 +2124,31 @@ async def bot_session(state):
 
                 # =====================================
                 # M1 DATA
-                # FIXED SAFE STALE HANDLING
                 # =====================================
 
-                candles = await get_candles(
-                    region
-                )
+                try:
 
-                if candles is None:
-
-                    print(
-                        "M1 DATA STALE - "
-                        "SAFE WAIT / NO ENTRY",
-                        flush=True
+                    candles = await get_candles(
+                        region
                     )
 
-                    await asyncio.sleep(
-                        M1_STALE_RETRY_SECONDS
-                    )
+                except RuntimeError as e:
 
-                    continue
+                    if str(e) == "STALE M1 DATA":
+
+                        print(
+                            "M1 DATA STALE - "
+                            "WAITING FOR FRESH DATA",
+                            flush=True
+                        )
+
+                        await asyncio.sleep(
+                            LOOP_SECONDS
+                        )
+
+                        continue
+
+                    raise
 
                 candle_time = (
                     candles[-1]["time"]
