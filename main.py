@@ -12,28 +12,32 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V8
-# FAST M1 + M5 / ATR SL / BE / TP / RECONNECT
+# RIOBOT GOLD V9 - CONNECTION FIX
 # =====================================================
 
 SYMBOL = "XAUUSD"
-COMMENT = "RIO GOLD V8"
+COMMENT = "RIO GOLD V9"
 
 LOT_SIZE = 0.01
 MAX_TRADES = 4
 
 ENABLE_TRADING = (
     os.getenv("ENABLE_TRADING", "false")
-    .strip()
-    .lower() == "true"
+    .strip().lower() == "true"
 )
 
 LOOP_SECONDS = 2
-RECONNECT_SECONDS = 5
 
-RPC_TIMEOUT = 15
+RPC_TIMEOUT = 20
 CONNECT_TIMEOUT = 90
 ORDER_TIMEOUT = 40
+
+# Kratky vypadok nespusti okamzite novu session.
+MAX_POSITION_ERRORS = 5
+POSITION_RETRY_SECONDS = 3
+
+RECONNECT_SECONDS = 5
+MAX_RECONNECT_SECONDS = 30
 
 COOLDOWN_SECONDS = 180
 
@@ -52,15 +56,12 @@ MAX_ZONE_DISTANCE_ATR = 1.80
 
 MAX_SPREAD = 0.40
 
-# SL podľa volatility
 SL_ATR_BUFFER = 0.60
 MIN_SL_DISTANCE = 1.00
 MAX_SL_DISTANCE = 7.00
 
-# Brokerový TP
 TP_RR = 2.00
 
-# Rýchlejší BE
 BE_TRIGGER_RR = 0.35
 BE_LOCK_DISTANCE = 0.10
 
@@ -87,10 +88,10 @@ M_ACC = os.getenv("M_ACC")
 T_TOKEN = os.getenv("T_TOKEN")
 T_CHAT = os.getenv("T_CHAT")
 
-# Pre zachovanie počítadla medzi deploymi
-# nastav RIO_STATE_DIR na persistent disk Renderu.
 STATE_DIR = os.getenv("RIO_STATE_DIR", "/tmp")
 
+# Zachovavame stav V8, aby deploy V9 zbytocne
+# nevynuloval existujuce pocitadlo.
 STATE_FILE = os.path.join(
     STATE_DIR,
     "rio_gold_v8.json"
@@ -112,7 +113,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "RIOBOT GOLD V8 ACTIVE", 200
+    return "RIOBOT GOLD V9 ACTIVE", 200
 
 
 def keep_alive():
@@ -142,22 +143,32 @@ def telegram(message):
         return
 
     try:
-        requests.post(
+        response = requests.post(
             f"https://api.telegram.org/bot{T_TOKEN}/sendMessage",
             data={
                 "chat_id": T_CHAT,
                 "text": message
             },
-            timeout=5
+            timeout=6
         )
+
+        response.raise_for_status()
+
     except Exception as e:
-        print("TELEGRAM ERROR:", e, flush=True)
+        print(
+            "TELEGRAM ERROR:",
+            repr(e),
+            flush=True
+        )
 
 
 def notify(message):
 
     asyncio.create_task(
-        asyncio.to_thread(telegram, message)
+        asyncio.to_thread(
+            telegram,
+            message
+        )
     )
 
 
@@ -202,13 +213,16 @@ def load_state():
     state = default_state()
 
     if not os.path.exists(STATE_FILE):
+
         print(
-            "NEW V8 STATE - COUNTER ZERO",
+            "STATE FILE NOT FOUND - COUNT ZERO",
             flush=True
         )
+
         return state
 
     try:
+
         with open(STATE_FILE) as f:
             saved = json.load(f)
 
@@ -217,7 +231,13 @@ def load_state():
                 state[key] = saved[key]
 
     except Exception as e:
-        print("STATE ERROR:", e, flush=True)
+
+        print(
+            "STATE LOAD ERROR:",
+            repr(e),
+            flush=True
+        )
+
         state["halted"] = True
 
     return state
@@ -238,16 +258,19 @@ async def meta_call(coroutine, timeout=RPC_TIMEOUT):
 async def get_positions(connection):
 
     positions = await meta_call(
-        connection.get_positions(),
-        timeout=RPC_TIMEOUT
+        connection.get_positions()
     )
 
     if not isinstance(positions, list):
-        raise RuntimeError("INVALID POSITIONS RESPONSE")
+        raise RuntimeError(
+            "INVALID POSITIONS RESPONSE"
+        )
 
     return [
         p for p in positions
-        if str(p.get("symbol", "")).upper() == SYMBOL
+        if str(
+            p.get("symbol", "")
+        ).upper() == SYMBOL
     ]
 
 
@@ -295,20 +318,25 @@ async def get_candles(region):
 
         response = requests.get(
             url,
-            headers={"auth-token": M_TOKEN},
-            timeout=10
+            headers={
+                "auth-token": M_TOKEN
+            },
+            timeout=12
         )
 
         response.raise_for_status()
+
         return response.json()
 
     raw = await asyncio.wait_for(
         asyncio.to_thread(fetch),
-        timeout=13
+        timeout=16
     )
 
     if not isinstance(raw, list):
-        raise RuntimeError("INVALID M1 DATA")
+        raise RuntimeError(
+            "INVALID M1 RESPONSE"
+        )
 
     now = datetime.now(timezone.utc)
 
@@ -317,6 +345,7 @@ async def get_candles(region):
     for item in raw:
 
         try:
+
             dt = datetime.fromisoformat(
                 str(item["time"]).replace(
                     "Z", "+00:00"
@@ -324,11 +353,13 @@ async def get_candles(region):
             )
 
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(
+                    tzinfo=timezone.utc
+                )
 
             dt = dt.astimezone(timezone.utc)
 
-            # Iba uzavreté M1 sviečky.
+            # Iba uzavrete M1 sviecky.
             if (now - dt).total_seconds() < 61:
                 continue
 
@@ -352,14 +383,18 @@ async def get_candles(region):
     )
 
     if len(candles) < 70:
-        raise RuntimeError("NOT ENOUGH M1 HISTORY")
+        raise RuntimeError(
+            "NOT ENOUGH M1 HISTORY"
+        )
 
     last = datetime.fromisoformat(
         candles[-1]["time"]
     )
 
     if (now - last).total_seconds() > 180:
-        raise RuntimeError("STALE M1 DATA")
+        raise RuntimeError(
+            "STALE M1 DATA"
+        )
 
     return candles
 
@@ -409,6 +444,7 @@ def build_m5(candles):
         )
 
         timestamp = int(dt.timestamp())
+
         bucket = timestamp - timestamp % 300
 
         groups.setdefault(
@@ -449,9 +485,17 @@ def build_m5(candles):
                 bucket,
                 timezone.utc
             ).isoformat(),
+
             "open": group[0]["open"],
-            "high": max(c["high"] for c in group),
-            "low": min(c["low"] for c in group),
+
+            "high": max(
+                c["high"] for c in group
+            ),
+
+            "low": min(
+                c["low"] for c in group
+            ),
+
             "close": group[-1]["close"]
         })
 
@@ -466,6 +510,7 @@ def ema_values(values, period):
     multiplier = 2 / (period + 1)
 
     ema = sum(values[:period]) / period
+
     result = [ema]
 
     for value in values[period:]:
@@ -487,7 +532,9 @@ def m5_trend(candles):
     if len(m5) < M5_EMA_PERIOD + 3:
         return "NONE"
 
-    closes = [c["close"] for c in m5]
+    closes = [
+        c["close"] for c in m5
+    ]
 
     emas = ema_values(
         closes,
@@ -668,7 +715,7 @@ def fetch_news():
 
     response = requests.get(
         NEWS_URL,
-        timeout=10
+        timeout=12
     )
 
     response.raise_for_status()
@@ -676,7 +723,9 @@ def fetch_news():
     raw = response.json()
 
     if not isinstance(raw, list):
-        raise RuntimeError("INVALID NEWS RESPONSE")
+        raise RuntimeError(
+            "INVALID NEWS RESPONSE"
+        )
 
     events = []
 
@@ -702,6 +751,7 @@ def fetch_news():
             continue
 
         try:
+
             dt = datetime.fromisoformat(
                 str(event["date"]).replace(
                     "Z", "+00:00"
@@ -713,7 +763,9 @@ def fetch_news():
                     tzinfo=timezone.utc
                 )
 
-            events.append(dt.timestamp())
+            events.append(
+                dt.timestamp()
+            )
 
         except (KeyError, TypeError, ValueError):
             continue
@@ -740,19 +792,23 @@ async def news_blocked():
         news_cache["last_attempt"] = now
 
         try:
+
             events = await asyncio.wait_for(
                 asyncio.to_thread(fetch_news),
-                timeout=13
+                timeout=16
             )
 
             news_cache["events"] = events
             news_cache["updated"] = time.time()
 
         except Exception as e:
-            print("NEWS ERROR:", e, flush=True)
 
-    # Ak správy nepoznáme, nové vstupy
-    # radšej nepovoľujeme.
+            print(
+                "NEWS ERROR:",
+                repr(e),
+                flush=True
+            )
+
     if (
         now - news_cache["updated"]
         > NEWS_MAX_AGE
@@ -790,7 +846,9 @@ async def get_market(connection):
     )
 
     if not spec or not price:
-        raise RuntimeError("MARKET NOT READY")
+        raise RuntimeError(
+            "MARKET NOT READY"
+        )
 
     digits = int(
         spec.get("digits", 2)
@@ -805,7 +863,9 @@ async def get_market(connection):
     ask = float(price["ask"])
 
     if tick <= 0 or bid <= 0 or ask <= bid:
-        raise RuntimeError("INVALID MARKET PRICE")
+        raise RuntimeError(
+            "INVALID MARKET PRICE"
+        )
 
     return {
         "spec": spec,
@@ -848,7 +908,10 @@ def get_levels(
     else:
         sl = zone + buffer
 
-    sl = normalize(sl, market)
+    sl = normalize(
+        sl,
+        market
+    )
 
     risk = abs(entry - sl)
 
@@ -864,7 +927,10 @@ def get_levels(
     if side == "SELL" and sl <= entry:
         return None, "INVALID SELL SL"
 
-    direction = 1 if side == "BUY" else -1
+    direction = (
+        1 if side == "BUY"
+        else -1
+    )
 
     tp = normalize(
         entry + direction * risk * TP_RR,
@@ -898,19 +964,28 @@ async def open_trade(
     ):
         return False
 
-    # Žiadny nový vstup bez overenia pozícií.
+    # Nikdy nevstupovat bez aktualnej kontroly.
     positions = await get_positions(connection)
 
     if positions:
-        print("POSITION EXISTS", flush=True)
+        print(
+            "ENTRY BLOCKED: POSITION EXISTS",
+            flush=True
+        )
         return False
 
     market = await get_market(connection)
 
-    spread = market["ask"] - market["bid"]
+    spread = (
+        market["ask"] - market["bid"]
+    )
 
     if spread > MAX_SPREAD:
-        print("SPREAD TOO HIGH:", spread, flush=True)
+        print(
+            "ENTRY BLOCKED: SPREAD",
+            spread,
+            flush=True
+        )
         return False
 
     spec = market["spec"]
@@ -931,7 +1006,9 @@ async def open_trade(
             - round(LOT_SIZE / volume_step)
         ) > 1e-7
     ):
-        notify("INVALID LOT SIZE")
+        notify(
+            "RIO V9 INVALID LOT"
+        )
         return False
 
     entry = (
@@ -944,6 +1021,10 @@ async def open_trade(
         abs(entry - signal_close)
         > atr * MAX_ENTRY_DRIFT_ATR
     ):
+        print(
+            "ENTRY BLOCKED: PRICE DRIFT",
+            flush=True
+        )
         return False
 
     zone_distance = (
@@ -954,7 +1035,8 @@ async def open_trade(
 
     if (
         zone_distance < 0
-        or zone_distance > atr * MAX_ZONE_DISTANCE_ATR
+        or zone_distance
+        > atr * MAX_ZONE_DISTANCE_ATR
     ):
         return False
 
@@ -967,7 +1049,13 @@ async def open_trade(
     )
 
     if levels is None:
-        print("ENTRY BLOCKED:", reason, flush=True)
+
+        print(
+            "ENTRY BLOCKED:",
+            reason,
+            flush=True
+        )
+
         return False
 
     sl = levels["sl"]
@@ -983,7 +1071,8 @@ async def open_trade(
     )
 
     min_distance = (
-        stops * point + market["tick"]
+        stops * point
+        + market["tick"]
     )
 
     if side == "BUY":
@@ -1005,7 +1094,7 @@ async def open_trade(
     if not ENABLE_TRADING:
 
         notify(
-            "RIO V8 TEST SIGNAL\n"
+            "RIO V9 TEST SIGNAL\n"
             f"SIDE: {side}\n"
             f"ENTRY: {entry}\n"
             f"SL: {sl}\n"
@@ -1014,10 +1103,10 @@ async def open_trade(
 
         return False
 
-    # Pred odoslaním označíme stav za neistý.
-    # Pri výpadku nikdy neposielame
-    # automaticky duplicitný obchod.
+    # Stav zapiseme PRED objednavkou.
+    # Ak sa odpoved strati, dalsi vstup sa neposle.
     state["order_uncertain"] = True
+
     save_state(state)
 
     try:
@@ -1058,10 +1147,10 @@ async def open_trade(
             flush=True
         )
 
-        # Overenie skutočnej brokerovej pozície.
         position = None
 
-        for attempt in range(3):
+        # Pockame na aktualizaciu brokerovej pozicie.
+        for attempt in range(5):
 
             await asyncio.sleep(1)
 
@@ -1093,7 +1182,7 @@ async def open_trade(
             save_state(state)
 
             notify(
-                "ORDER NOT VERIFIED\n"
+                "RIO V9 ORDER NOT VERIFIED\n"
                 "CHECK MT5\n"
                 "NEW ENTRIES STOPPED"
             )
@@ -1101,7 +1190,8 @@ async def open_trade(
             return False
 
         actual_entry = float(
-            position.get("openPrice") or entry
+            position.get("openPrice")
+            or entry
         )
 
         actual_sl = float(
@@ -1129,16 +1219,24 @@ async def open_trade(
         )
 
         state["trade_count"] += 1
-        state["position_id"] = str(position["id"])
+
+        state["position_id"] = str(
+            position["id"]
+        )
+
         state["trade_risk"] = actual_risk
         state["had_position"] = True
+
         state["order_uncertain"] = False
-        state["last_trade_time"] = time.time()
+
+        state["last_trade_time"] = (
+            time.time()
+        )
 
         save_state(state)
 
         notify(
-            "RIO V8 ORDER OK\n"
+            "RIO V9 ORDER OK\n"
             f"SIDE: {side}\n"
             f"LOT: {LOT_SIZE}\n"
             f"ENTRY: {actual_entry}\n"
@@ -1151,12 +1249,19 @@ async def open_trade(
 
     except Exception as e:
 
+        # Neopakovat objednavku naslepo!
         state["halted"] = True
         save_state(state)
 
+        print(
+            "ORDER ERROR:",
+            traceback.format_exc(),
+            flush=True
+        )
+
         notify(
-            "ORDER STATUS UNCERTAIN\n"
-            f"{type(e).__name__}: {str(e)[:100]}\n"
+            "RIO V9 ORDER UNCERTAIN\n"
+            f"{type(e).__name__}: {str(e)[:150]}\n"
             "CHECK MT5\n"
             "NEW ENTRIES STOPPED"
         )
@@ -1165,7 +1270,7 @@ async def open_trade(
 
 
 # =====================================================
-# FAST BE + TP1 LOCK + TRAILING
+# BE + TP1 LOCK + TRAILING
 # =====================================================
 
 async def protect_position(
@@ -1193,13 +1298,17 @@ async def protect_position(
 
     market = await get_market(connection)
 
-    entry = float(position["openPrice"])
+    entry = float(
+        position["openPrice"]
+    )
 
     current_sl = float(
         position.get("stopLoss") or 0
     )
 
-    current_tp = position.get("takeProfit")
+    current_tp = position.get(
+        "takeProfit"
+    )
 
     if current_sl <= 0:
 
@@ -1213,7 +1322,10 @@ async def protect_position(
 
         return
 
-    direction = 1 if side == "BUY" else -1
+    direction = (
+        1 if side == "BUY"
+        else -1
+    )
 
     price = (
         market["bid"]
@@ -1226,9 +1338,10 @@ async def protect_position(
     ) * direction
 
     wanted_sl = current_sl
+
     stage = None
 
-    # BE už pri +0.35R.
+    # EARLY BE: +0.35R
     if (
         profit_distance
         >= risk * BE_TRIGGER_RR
@@ -1247,7 +1360,7 @@ async def protect_position(
 
         stage = "EARLY BE"
 
-    # TP1 = zamknutie časti zisku.
+    # TP1 LOCK: +0.80R
     if (
         profit_distance
         >= risk * TP1_RR
@@ -1255,7 +1368,9 @@ async def protect_position(
 
         lock = (
             entry
-            + direction * risk * TP1_LOCK_RR
+            + direction
+            * risk
+            * TP1_LOCK_RR
         )
 
         wanted_sl = (
@@ -1266,7 +1381,7 @@ async def protect_position(
 
         stage = "TP1 LOCK"
 
-    # Trailing.
+    # TRAILING: +1.30R
     if (
         profit_distance
         >= risk * TRAIL_TRIGGER_RR
@@ -1296,7 +1411,7 @@ async def protect_position(
 
     tick = market["tick"]
 
-    # SL sa nikdy neposúva naspäť.
+    # SL nikdy nevracame naspat.
     if side == "BUY":
 
         if wanted_sl <= current_sl + tick / 2:
@@ -1323,7 +1438,8 @@ async def protect_position(
     )
 
     min_distance = (
-        max(stops, freeze) * point + tick
+        max(stops, freeze) * point
+        + tick
     )
 
     if side == "BUY":
@@ -1342,18 +1458,18 @@ async def protect_position(
         ):
             return
 
-    # Pôvodný brokerový TP zostáva zachovaný.
+    # Brokerovy TP zachovame.
     await meta_call(
         connection.modify_position(
             position["id"],
             wanted_sl,
             current_tp
         ),
-        timeout=15
+        timeout=20
     )
 
     notify(
-        "RIO V8 SL UPDATED\n"
+        "RIO V9 SL UPDATED\n"
         f"SIDE: {side}\n"
         f"STAGE: {stage}\n"
         f"SL: {wanted_sl}"
@@ -1361,12 +1477,49 @@ async def protect_position(
 
 
 # =====================================================
-# CONNECTION SESSION
+# CONNECTION ERROR HELPER
+# =====================================================
+
+def is_connection_error(e):
+
+    message = str(e).lower()
+
+    if isinstance(
+        e,
+        (
+            asyncio.TimeoutError,
+            TimeoutError,
+            ConnectionError,
+            OSError
+        )
+    ):
+        return True
+
+    return any(
+        word in message
+        for word in (
+            "not connected",
+            "not synchronized",
+            "websocket",
+            "timed out",
+            "timeout",
+            "subscription",
+            "disconnected",
+            "broker yet",
+            "connection closed",
+            "socket"
+        )
+    )
+
+
+# =====================================================
+# CONNECTION SESSION - V9 FIX
 # =====================================================
 
 async def bot_session(state):
 
-    # Python SDK: bez manuálneho region option.
+    # Python MetaApi SDK: region do konstruktora
+    # neposielame.
     api = MetaApi(M_TOKEN)
 
     account = await meta_call(
@@ -1413,13 +1566,12 @@ async def bot_session(state):
             timeout=CONNECT_TIMEOUT
         )
 
-        # CONNECTED až po úspešnom GET POSITIONS.
         positions = await get_positions(
             connection
         )
 
         notify(
-            "RIO GOLD V8 CONNECTED\n"
+            "RIO GOLD V9 CONNECTED\n"
             "POSITIONS VERIFIED\n"
             f"LOT: {LOT_SIZE}\n"
             f"TRADES: {state['trade_count']}/{MAX_TRADES}\n"
@@ -1459,30 +1611,75 @@ async def bot_session(state):
         last_atr = None
         last_atr_time = 0
 
-        last_positions_error = 0
+        position_errors = 0
+        last_error = None
 
         while True:
 
+            # =========================================
+            # 1. GET POSITIONS - RETRY FIX
+            # =========================================
+
             try:
 
-                # 1. Ochrana pozície má prioritu.
-                try:
+                positions = await get_positions(
+                    connection
+                )
 
-                    positions = await get_positions(
-                        connection
+                if position_errors > 0:
+
+                    print(
+                        "METAAPI RECOVERED AFTER",
+                        position_errors,
+                        "FAILED CHECKS",
+                        flush=True
                     )
 
-                    last_positions_error = 0
+                position_errors = 0
+                last_error = None
 
-                except Exception:
+            except Exception as e:
 
-                    last_positions_error += 1
+                position_errors += 1
+                last_error = e
 
-                    if last_positions_error >= 2:
-                        raise
+                print(
+                    "POSITION CHECK FAILED:",
+                    position_errors,
+                    "/",
+                    MAX_POSITION_ERRORS,
+                    type(e).__name__,
+                    repr(e),
+                    flush=True
+                )
 
-                    await asyncio.sleep(1)
+                # Pri neistom stave pozicii
+                # NESMIEME otvorit novy obchod.
+                if position_errors < MAX_POSITION_ERRORS:
+
+                    await asyncio.sleep(
+                        POSITION_RETRY_SECONDS
+                    )
+
                     continue
+
+                # Az po 5 neuspesnych kontrolach
+                # ukoncime session.
+                notify(
+                    "RIO V9 CONNECTION UNSTABLE\n"
+                    f"FAILED CHECKS: {position_errors}\n"
+                    f"ORIGINAL ERROR: {type(e).__name__}\n"
+                    f"{str(e)[:180]}\n"
+                    "RECONNECT STARTING"
+                )
+
+                raise last_error
+
+            # =========================================
+            # 2. OPEN POSITION
+            # =========================================
+
+            try:
 
                 if positions:
 
@@ -1498,13 +1695,17 @@ async def bot_session(state):
                         state["halted"] = True
                         save_state(state)
 
+                        print(
+                            "UNKNOWN POSITION - ENTRIES HALTED",
+                            flush=True
+                        )
+
                         await asyncio.sleep(
                             LOOP_SECONDS
                         )
 
                         continue
 
-                    # ATR stačí aktualizovať raz za minútu.
                     if (
                         time.time() - last_atr_time
                         >= 60
@@ -1520,18 +1721,20 @@ async def bot_session(state):
                                 candles
                             )
 
-                            last_atr_time = time.time()
+                            last_atr_time = (
+                                time.time()
+                            )
 
                         except Exception as e:
 
                             print(
                                 "ATR ERROR:",
-                                e,
+                                repr(e),
                                 flush=True
                             )
 
-                    # BE kontrola každé 2 sekundy,
-                    # pokiaľ odpovedá MetaApi.
+                    # BE kontrolujeme aj pri HALT,
+                    # ak poziciu pozname.
                     await protect_position(
                         connection,
                         positions[0],
@@ -1545,10 +1748,14 @@ async def bot_session(state):
 
                     continue
 
-                # 2. Zatvorený obchod.
+                # =====================================
+                # 3. CLOSED POSITION
+                # =====================================
+
                 if state["had_position"]:
 
                     state["had_position"] = False
+
                     state["position_id"] = None
                     state["trade_risk"] = None
 
@@ -1559,11 +1766,14 @@ async def bot_session(state):
                     save_state(state)
 
                     notify(
-                        "RIO POSITION CLOSED\n"
+                        "RIO V9 POSITION CLOSED\n"
                         "COOLDOWN 180 SECONDS"
                     )
 
-                # 3. Kontrola bezpečnosti.
+                # =====================================
+                # 4. SAFETY
+                # =====================================
+
                 if (
                     state["halted"]
                     or state["order_uncertain"]
@@ -1584,8 +1794,12 @@ async def bot_session(state):
                     save_state(state)
 
                     notify(
-                        "MAX 4 TRADES REACHED\n"
+                        "RIO V9 MAX 4 TRADES REACHED\n"
                         "NEW ENTRIES STOPPED"
+                    )
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
                     )
 
                     continue
@@ -1602,7 +1816,10 @@ async def bot_session(state):
 
                     continue
 
-                # 4. News filter.
+                # =====================================
+                # 5. NEWS
+                # =====================================
+
                 if await news_blocked():
 
                     await asyncio.sleep(
@@ -1611,12 +1828,17 @@ async def bot_session(state):
 
                     continue
 
-                # 5. M1 + M5.
+                # =====================================
+                # 6. M1 + M5 SIGNAL
+                # =====================================
+
                 candles = await get_candles(
                     region
                 )
 
-                candle_time = candles[-1]["time"]
+                candle_time = (
+                    candles[-1]["time"]
+                )
 
                 if (
                     candle_time
@@ -1629,7 +1851,9 @@ async def bot_session(state):
 
                     continue
 
-                atr = calculate_atr(candles)
+                atr = calculate_atr(
+                    candles
+                )
 
                 if atr is None or atr <= 0:
 
@@ -1657,7 +1881,9 @@ async def bot_session(state):
                 state["last_candle"] = candle_time
                 save_state(state)
 
-                trend = m5_trend(candles)
+                trend = m5_trend(
+                    candles
+                )
 
                 print(
                     "\nM1 CHECK:",
@@ -1677,7 +1903,10 @@ async def bot_session(state):
                     flush=True
                 )
 
-                # 6. Potvrdený vstup.
+                # =====================================
+                # 7. ENTRY
+                # =====================================
+
                 if side is not None:
 
                     signal_key = (
@@ -1696,7 +1925,7 @@ async def bot_session(state):
                         save_state(state)
 
                         notify(
-                            "RIO V8 SIGNAL\n"
+                            "RIO V9 SIGNAL\n"
                             f"SIDE: {side}\n"
                             f"REASON: {reason}\n"
                             f"ZONE: {zone:.2f}\n"
@@ -1718,44 +1947,18 @@ async def bot_session(state):
 
             except Exception as e:
 
-                message = str(e).lower()
-
                 print(
-                    "LOOP ERROR:",
-                    type(e).__name__,
-                    str(e),
+                    "BOT LOOP ERROR:",
+                    traceback.format_exc(),
                     flush=True
                 )
 
-                connection_error = (
-                    isinstance(
-                        e,
-                        (
-                            asyncio.TimeoutError,
-                            TimeoutError,
-                            ConnectionError
-                        )
-                    )
-                    or any(
-                        word in message
-                        for word in (
-                            "not connected",
-                            "not synchronized",
-                            "websocket",
-                            "timed out",
-                            "timeout",
-                            "subscription",
-                            "disconnected",
-                            "broker yet"
-                        )
-                    )
-                )
+                if is_connection_error(e):
 
-                if connection_error:
-
-                    raise RuntimeError(
-                        "METAAPI CONNECTION LOST"
-                    ) from e
+                    # Ponechame skutocnu povodnu chybu.
+                    # Ziadny genericky RuntimeError,
+                    # ktory by ju zakryl.
+                    raise
 
                 await asyncio.sleep(
                     LOOP_SECONDS
@@ -1767,15 +1970,20 @@ async def bot_session(state):
 
             await asyncio.wait_for(
                 connection.close(),
-                timeout=8
+                timeout=10
             )
 
-        except Exception:
-            pass
+        except Exception as e:
+
+            print(
+                "CONNECTION CLOSE ERROR:",
+                repr(e),
+                flush=True
+            )
 
 
 # =====================================================
-# MAIN
+# MAIN - RECONNECT FIX
 # =====================================================
 
 async def main():
@@ -1794,11 +2002,11 @@ async def main():
     state = load_state()
 
     telegram(
-        "RIOBOT GOLD V8 START\n"
-        "FAST M1 + M5 TREND\n"
+        "RIOBOT GOLD V9 START\n"
+        "M1 + M5 TREND\n"
         "ATR SL + BROKER TP\n"
         "EARLY BE + TP1 LOCK + TRAILING\n"
-        "METAAPI AUTO RECONNECT\n"
+        "METAAPI CONNECTION RETRY FIX\n"
         f"LOT: {LOT_SIZE}\n"
         f"MAX TRADES: {MAX_TRADES}\n"
         f"COUNT: {state['trade_count']}\n"
@@ -1810,35 +2018,60 @@ async def main():
 
     while True:
 
+        session_started = time.monotonic()
+
         try:
 
             await bot_session(state)
 
             reconnect_attempt = 0
 
+        except asyncio.CancelledError:
+            raise
+
         except Exception as e:
+
+            session_duration = (
+                time.monotonic()
+                - session_started
+            )
+
+            # Ak session bezala dlhsie,
+            # nezvysujeme donekonecna pocet
+            # predchadzajucich reconnectov.
+            if session_duration >= 300:
+                reconnect_attempt = 0
 
             reconnect_attempt += 1
 
             delay = min(
                 RECONNECT_SECONDS
                 * reconnect_attempt,
-                30
+                MAX_RECONNECT_SECONDS
             )
 
             print(
-                "SESSION ERROR:",
+                "SESSION ORIGINAL ERROR:",
+                type(e).__name__,
+                repr(e),
+                flush=True
+            )
+
+            print(
                 traceback.format_exc(),
                 flush=True
             )
 
             notify(
-                "RIO V8 CONNECTION ERROR\n"
-                f"{type(e).__name__}: {str(e)[:100]}\n"
+                "RIO V9 CONNECTION ERROR\n"
+                f"{type(e).__name__}\n"
+                f"{str(e)[:180]}\n"
                 f"RECONNECT IN {delay} SECONDS"
             )
 
-            await asyncio.sleep(delay)
+            await asyncio.sleep(
+                delay
+            )
 
 
 # =====================================================
