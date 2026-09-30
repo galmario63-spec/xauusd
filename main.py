@@ -13,10 +13,16 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V11
+# RIOBOT GOLD V11 - RECONNECT FIX
 # M1 + SUPPORT/RESISTANCE + ATR14
 # 4 OBCHODY NA JEDEN SIGNAL
 # BE ONLY - HOLD UNTIL BE OR TP
+#
+# FIX:
+# - existing positions are adopted after deploy/reconnect
+# - UNKNOWN POSITIONS problem fixed
+# - no duplicate entries while positions exist
+# - BE continues after reconnect
 # =====================================================
 
 SYMBOL = "XAUUSD"
@@ -33,7 +39,7 @@ ENABLE_TRADING = (
 
 LOOP_SECONDS = 2
 
-# Po strate spojenia novy pokus po 5 sekundach
+# reconnect po 5 sekundach
 RECONNECT_SECONDS = 5
 
 RPC_TIMEOUT = 20
@@ -56,9 +62,7 @@ MIN_ZONE_TOLERANCE = 0.35
 MIN_BODY_RATIO = 0.25
 
 MAX_SIGNAL_RANGE_ATR = 2.20
-
 MAX_ENTRY_DRIFT_ATR = 0.50
-
 MAX_ZONE_DISTANCE_ATR = 2.20
 
 MAX_SPREAD = 0.40
@@ -68,16 +72,11 @@ MAX_SPREAD = 0.40
 # SL / TP
 # =====================================================
 
-# Trochu volnejsi SL za zonou
 SL_ATR_BUFFER = 1.20
 
-# SL nesmie byt prilis tesny
 MIN_SL_DISTANCE = 2.50
-
-# Bezpecnostny strop
 MAX_SL_DISTANCE = 8.00
 
-# TP blizsie ako povodne 2R
 TP_RR = 1.50
 
 
@@ -85,10 +84,7 @@ TP_RR = 1.50
 # BREAK EVEN ONLY
 # =====================================================
 
-# Aktivacia BE pri 0.70R
 BE_TRIGGER_RR = 0.70
-
-# Mala rezerva do zisku
 BE_LOCK_RR = 0.10
 
 
@@ -252,7 +248,7 @@ def load_state():
     if not os.path.exists(STATE_FILE):
 
         print(
-            "NEW V11 STATE - COUNTER ZERO",
+            "NEW V11 STATE",
             flush=True
         )
 
@@ -277,6 +273,7 @@ def load_state():
             flush=True
         )
 
+        # do not blindly trade after corrupted state
         state["halted"] = True
 
     return state
@@ -340,6 +337,234 @@ def position_side(position):
         return "SELL"
 
     return None
+
+
+# =====================================================
+# NEW FIX - ADOPT EXISTING POSITIONS
+# =====================================================
+
+async def adopt_existing_positions(
+    connection,
+    state
+):
+
+    """
+    After Render deploy/restart/reconnect the /tmp state
+    can be missing or incomplete.
+
+    Existing XAUUSD positions are reconstructed from
+    broker data so BE protection can continue.
+
+    Safety:
+    - max 4 positions
+    - all must have known BUY/SELL side
+    - all must have SL
+    - risk reconstructed from openPrice -> stopLoss
+    - no new orders are created here
+    """
+
+    positions = await get_positions(
+        connection
+    )
+
+    if not positions:
+
+        # No live positions.
+        # Remove stale stored position IDs.
+        if state["positions"]:
+
+            state["positions"] = {}
+
+            save_state(state)
+
+        return positions
+
+    if len(positions) > MAX_TRADES:
+
+        state["halted"] = True
+
+        save_state(state)
+
+        notify(
+            "RIO V11 SAFETY HALT\n"
+            f"FOUND {len(positions)} XAUUSD POSITIONS\n"
+            f"MAX EXPECTED: {MAX_TRADES}\n"
+            "CHECK MT5"
+        )
+
+        return positions
+
+    reconstructed = {}
+
+    for position in positions:
+
+        pid = str(
+            position.get("id")
+        )
+
+        side = position_side(
+            position
+        )
+
+        entry = float(
+            position.get("openPrice")
+            or 0
+        )
+
+        sl = float(
+            position.get("stopLoss")
+            or 0
+        )
+
+        volume = float(
+            position.get("volume")
+            or 0
+        )
+
+        if (
+            not pid
+            or side is None
+            or entry <= 0
+            or sl <= 0
+        ):
+
+            state["halted"] = True
+
+            save_state(state)
+
+            notify(
+                "RIO V11 ADOPTION FAILED\n"
+                f"POSITION: {pid}\n"
+                "INVALID POSITION DATA\n"
+                "CHECK MT5"
+            )
+
+            continue
+
+        # Validate SL direction
+        if side == "BUY":
+
+            if sl >= entry:
+
+                # Could already be BE/profit SL.
+                # If old state knows original risk,
+                # use it.
+                old = state[
+                    "positions"
+                ].get(pid)
+
+                if old and float(
+                    old.get("risk", 0)
+                ) > 0:
+
+                    risk = float(
+                        old["risk"]
+                    )
+
+                else:
+
+                    # Cannot safely reconstruct original
+                    # risk from a SL already above entry.
+                    # Keep position monitored but don't
+                    # invent risk.
+                    reconstructed[pid] = {
+                        "risk": 0,
+                        "entry": entry,
+                        "side": side
+                    }
+
+                    continue
+
+            else:
+
+                risk = entry - sl
+
+        else:
+
+            if sl <= entry:
+
+                # Could already be BE/profit SL.
+                old = state[
+                    "positions"
+                ].get(pid)
+
+                if old and float(
+                    old.get("risk", 0)
+                ) > 0:
+
+                    risk = float(
+                        old["risk"]
+                    )
+
+                else:
+
+                    reconstructed[pid] = {
+                        "risk": 0,
+                        "entry": entry,
+                        "side": side
+                    }
+
+                    continue
+
+            else:
+
+                risk = sl - entry
+
+        if risk <= 0:
+
+            reconstructed[pid] = {
+                "risk": 0,
+                "entry": entry,
+                "side": side
+            }
+
+            continue
+
+        reconstructed[pid] = {
+            "risk": risk,
+            "entry": entry,
+            "side": side
+        }
+
+        print(
+            "ADOPTED POSITION:",
+            pid,
+            side,
+            "VOL:",
+            volume,
+            "ENTRY:",
+            entry,
+            "SL:",
+            sl,
+            "RISK:",
+            risk,
+            flush=True
+        )
+
+    state["positions"] = reconstructed
+
+    # Existing positions mean this batch has already
+    # consumed at least this many orders.
+    state["trade_count"] = max(
+        state["trade_count"],
+        len(positions)
+    )
+
+    state["last_trade_time"] = time.time()
+
+    # Existing broker positions are now known.
+    state["order_uncertain"] = False
+
+    save_state(state)
+
+    notify(
+        "RIO V11 POSITIONS ADOPTED\n"
+        f"OPEN: {len(positions)}/4\n"
+        f"TRACKED: {len(reconstructed)}/4\n"
+        "BE PROTECTION RESTORED"
+    )
+
+    return positions
 
 
 # =====================================================
@@ -409,7 +634,6 @@ async def get_candles(region):
                 timezone.utc
             )
 
-            # Iba uzavrete M1 sviecky
             if (
                 now - dt
             ).total_seconds() < 61:
@@ -1433,10 +1657,7 @@ async def open_batch(
             }
 
             state["trade_count"] += 1
-
-            state["last_trade_time"] = (
-                time.time()
-            )
+            state["last_trade_time"] = time.time()
 
             previous_ids.add(pid)
 
@@ -1466,7 +1687,6 @@ async def open_batch(
     except Exception as e:
 
         state["halted"] = True
-
         state["order_uncertain"] = True
 
         save_state(state)
@@ -1513,9 +1733,14 @@ async def protect_position(
         return
 
     risk = float(
-        info["risk"]
+        info.get(
+            "risk",
+            0
+        )
     )
 
+    # risk 0 means position was already at BE when
+    # reconstructed. Do not invent a new SL.
     if risk <= 0:
         return
 
@@ -1566,15 +1791,12 @@ async def protect_position(
         price - entry
     ) * direction
 
-    # Este nebol dosiahnuty BE trigger
     if (
         profit_distance
         < risk * BE_TRIGGER_RR
     ):
         return
 
-    # Jediny posun SL:
-    # z povodneho SL na BE + mala rezerva.
     wanted_sl = (
         entry
         + direction
@@ -1589,8 +1811,7 @@ async def protect_position(
 
     tick = market["tick"]
 
-    # SL sa nikdy neposuva naspat
-    # a po BE sa uz dalej neposuva.
+    # Never move SL backwards
     if side == "BUY":
 
         if (
@@ -1740,8 +1961,13 @@ async def bot_session(state):
             timeout=CONNECT_TIMEOUT
         )
 
-        positions = await get_positions(
-            connection
+        # =============================================
+        # IMPORTANT RECONNECT FIX
+        # =============================================
+
+        positions = await adopt_existing_positions(
+            connection,
+            state
         )
 
         notify(
@@ -1752,18 +1978,6 @@ async def bot_session(state):
             f"{state['trade_count']}/4\n"
             f"LIVE: {ENABLE_TRADING}"
         )
-
-        if state["order_uncertain"]:
-
-            state["halted"] = True
-
-            save_state(state)
-
-            notify(
-                "PREVIOUS ORDER UNCERTAIN\n"
-                "NEW ENTRIES STOPPED\n"
-                "EXISTING POSITIONS MONITORED"
-            )
 
         last_atr = None
         last_atr_time = 0
@@ -1796,16 +2010,32 @@ async def bot_session(state):
                     - known_ids
                 )
 
+                # Instead of endless UNKNOWN POSITIONS,
+                # reconstruct them safely.
                 if unknown_ids:
 
-                    state["halted"] = True
-
-                    save_state(state)
-
                     print(
-                        "UNKNOWN POSITIONS:",
+                        "NEW/UNKNOWN POSITION IDS:",
                         unknown_ids,
                         flush=True
+                    )
+
+                    positions = (
+                        await adopt_existing_positions(
+                            connection,
+                            state
+                        )
+                    )
+
+                    current_ids = {
+                        str(p["id"])
+                        for p in positions
+                    }
+
+                    known_ids = set(
+                        state[
+                            "positions"
+                        ].keys()
                     )
 
                 closed_ids = (
@@ -1815,9 +2045,12 @@ async def bot_session(state):
 
                 for pid in closed_ids:
 
-                    del state[
+                    state[
                         "positions"
-                    ][pid]
+                    ].pop(
+                        pid,
+                        None
+                    )
 
                     state[
                         "last_trade_time"
@@ -1877,10 +2110,12 @@ async def bot_session(state):
 
                     for position in positions:
 
+                        pid = str(
+                            position["id"]
+                        )
+
                         if (
-                            str(
-                                position["id"]
-                            )
+                            pid
                             not in state[
                                 "positions"
                             ]
@@ -1901,9 +2136,7 @@ async def bot_session(state):
 
                             print(
                                 "PROTECTION ERROR:",
-                                position.get(
-                                    "id"
-                                ),
+                                pid,
                                 e,
                                 flush=True
                             )
@@ -2223,6 +2456,7 @@ async def main():
         "4 POSITIONS ON ONE SIGNAL\n"
         "ATR SL + 1.5R TP\n"
         "BE ONLY - HOLD UNTIL BE OR TP\n"
+        "RECONNECT POSITION RECOVERY ACTIVE\n"
         "METAAPI 5 SEC RECONNECT\n"
         f"LOT EACH: {LOT_SIZE}\n"
         f"BATCH: {BATCH_SIZE}\n"
