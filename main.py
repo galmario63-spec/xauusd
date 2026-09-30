@@ -13,60 +13,59 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V5
-# FAST M1 + M5 TREND + ATR SL + EARLY BE
+# RIOBOT GOLD V6
+# FAST M1 + M5 / ATR SL / EARLY BE
+# METAAPI DIAGNOSTICS + RECONNECT
 # =====================================================
 
 SYMBOL = "XAUUSD"
-COMMENT = "RIO GOLD V5"
+COMMENT = "RIO GOLD V6"
 
 LOT_SIZE = 0.01
 MAX_TRADES = 4
 
 ENABLE_TRADING = (
     os.getenv("ENABLE_TRADING", "false")
-    .strip()
-    .lower() == "true"
+    .strip().lower() == "true"
 )
 
 LOOP_SECONDS = 3
 RECONNECT_SECONDS = 5
-META_TIMEOUT = 35
-SYNC_TIMEOUT = 120
+META_TIMEOUT = 60
+SYNC_TIMEOUT = 180
 
 COOLDOWN_SECONDS = 180
 
 ATR_PERIOD = 14
 ZONE_LOOKBACK = 35
-
 M5_EMA_PERIOD = 5
 
+BREAKOUT_LOOKBACK = 3
+MIN_BREAKOUT_BODY_RATIO = 0.45
 MIN_BODY_RATIO = 0.30
+
 MAX_SIGNAL_RANGE_ATR = 2.00
+MAX_ENTRY_DRIFT_ATR = 0.30
 
 ZONE_ATR_TOLERANCE = 0.35
 MIN_ZONE_TOLERANCE = 0.35
 
-# Rychlejsi trendovy vstup
-BREAKOUT_LOOKBACK = 3
-MIN_BREAKOUT_BODY_RATIO = 0.45
-MAX_ENTRY_DRIFT_ATR = 0.30
-
-# Sirsi SL podla aktualnej volatility
+# ATR SL
 SL_ATR_MULTIPLIER = 1.35
 MIN_SL_DISTANCE = 1.00
 MAX_SL_DISTANCE = 12.00
 
 MAX_SPREAD = 0.40
 
-# BE sa aktivuje skor
+# BE
 BE_TRIGGER_RR = 0.45
 BE_LOCK_DISTANCE = 0.10
 
-# Virtualny TP1
+# Virtual TP1
 TP1_RR = 0.85
 TP1_LOCK_RR = 0.40
 
+# Trailing
 TRAIL_TRIGGER_RR = 1.20
 TRAIL_ATR_MULTIPLIER = 0.85
 
@@ -88,6 +87,9 @@ T_CHAT = os.getenv("T_CHAT")
 
 STATE_DIR = os.getenv("RIO_STATE_DIR", "/tmp")
 
+# Zachovame nazov V5, aby sa pri prechode
+# na V6 zbytocne nevynuloval stav v tom istom
+# bezacom filesysteme.
 STATE_FILE = os.path.join(
     STATE_DIR,
     "rio_gold_v5.json"
@@ -108,7 +110,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "RIOBOT GOLD V5 ACTIVE", 200
+    return "RIOBOT GOLD V6 ACTIVE", 200
 
 
 def keep_alive():
@@ -211,10 +213,16 @@ def load_state():
     if not os.path.exists(STATE_FILE):
 
         print(
-            "WARNING: STATE FILE NOT FOUND. "
-            "CHECK TRADE COUNT BEFORE LIVE.",
+            "WARNING: STATE FILE MISSING. "
+            "RENDER /tmp IS NOT PERSISTENT.",
             flush=True
         )
+
+        # Bez perzistentneho stavu nevieme
+        # overit pocet obchodov po redeployi.
+        # Pri LIVE preto nove vstupy zastavime.
+        if ENABLE_TRADING:
+            state["halted"] = True
 
         return state
 
@@ -242,15 +250,45 @@ def load_state():
 
 
 # =====================================================
-# METAAPI
+# METAAPI - PRESNA DIAGNOSTIKA
 # =====================================================
 
-async def meta_call(coroutine):
+class MetaConnectionError(Exception):
+    pass
 
-    return await asyncio.wait_for(
-        coroutine,
-        timeout=META_TIMEOUT
-    )
+
+async def meta_call(name, coroutine, timeout=None):
+
+    timeout = timeout or META_TIMEOUT
+
+    try:
+
+        return await asyncio.wait_for(
+            coroutine,
+            timeout=timeout
+        )
+
+    except asyncio.TimeoutError as e:
+
+        message = (
+            f"METAAPI TIMEOUT: {name} "
+            f"AFTER {timeout}s"
+        )
+
+        print(message, flush=True)
+
+        raise MetaConnectionError(message) from e
+
+    except Exception as e:
+
+        message = (
+            f"METAAPI ERROR [{name}]: "
+            f"{type(e).__name__}: {str(e)[:200]}"
+        )
+
+        print(message, flush=True)
+
+        raise MetaConnectionError(message) from e
 
 
 # =====================================================
@@ -280,10 +318,18 @@ async def get_candles(region):
 
         return response.json()
 
-    raw = await asyncio.wait_for(
-        asyncio.to_thread(fetch),
-        timeout=20
-    )
+    try:
+
+        raw = await asyncio.wait_for(
+            asyncio.to_thread(fetch),
+            timeout=20
+        )
+
+    except Exception as e:
+
+        raise RuntimeError(
+            f"M1 HISTORY ERROR: {type(e).__name__}: {e}"
+        ) from e
 
     if not isinstance(raw, list):
 
@@ -317,7 +363,7 @@ async def get_candles(region):
                 now - dt
             ).total_seconds()
 
-            # Pouzivame iba uzavrete M1.
+            # Len uzavrete M1.
             if age < 62:
                 continue
 
@@ -549,17 +595,11 @@ def m5_trend(candles):
 
     if bullish:
 
-        return (
-            "BUY",
-            "M5 UPTREND"
-        )
+        return "BUY", "M5 UPTREND"
 
     if bearish:
 
-        return (
-            "SELL",
-            "M5 DOWNTREND"
-        )
+        return "SELL", "M5 DOWNTREND"
 
     return (
         "NONE",
@@ -594,15 +634,11 @@ def detect_zones(candles, atr):
         atr * ZONE_ATR_TOLERANCE
     )
 
-    return (
-        support,
-        resistance,
-        tolerance
-    )
+    return support, resistance, tolerance
 
 
 # =====================================================
-# FAST SIGNAL V5
+# FAST SIGNAL
 # =====================================================
 
 def get_signal(
@@ -615,11 +651,7 @@ def get_signal(
 
     if len(candles) < 10:
 
-        return (
-            None,
-            None,
-            "M1 HISTORY SHORT"
-        )
+        return None, None, "M1 HISTORY SHORT"
 
     a = candles[-3]
     b = candles[-2]
@@ -631,22 +663,14 @@ def get_signal(
 
     if candle_range <= 0:
 
-        return (
-            None,
-            None,
-            "ZERO RANGE"
-        )
+        return None, None, "ZERO RANGE"
 
     if (
         candle_range
         > atr * MAX_SIGNAL_RANGE_ATR
     ):
 
-        return (
-            None,
-            None,
-            "IMPULSE FILTER"
-        )
+        return None, None, "IMPULSE FILTER"
 
     body_ratio = (
         abs(c["close"] - c["open"])
@@ -659,15 +683,9 @@ def get_signal(
 
     if trend == "NONE":
 
-        return (
-            None,
-            None,
-            trend_reason
-        )
+        return None, None, trend_reason
 
-    # -----------------------------------------
-    # 1. FAST TREND CONTINUATION
-    # -----------------------------------------
+    # FAST BREAKOUT
 
     previous = candles[
         -(BREAKOUT_LOOKBACK + 1):-1
@@ -712,23 +730,17 @@ def get_signal(
         return (
             "SELL",
             previous_high,
-            "FAST M1 BREAKOUT + M5 SELL"
+            "FAST M1 BREAKDOWN + M5 SELL"
         )
 
-    # -----------------------------------------
-    # 2. ZONE REJECTION
-    # -----------------------------------------
+    # ZONE REJECTION
 
     if (
         support is None
         or resistance is None
     ):
 
-        return (
-            None,
-            None,
-            "WAITING"
-        )
+        return None, None, "WAITING"
 
     buy_touch = (
         a["low"] <= support + tolerance
@@ -758,10 +770,7 @@ def get_signal(
 
     if buy_touch and buy_confirmed:
 
-        if (
-            c["close"] - support
-            <= atr * 1.8
-        ):
+        if c["close"] - support <= atr * 1.8:
 
             return (
                 "BUY",
@@ -771,10 +780,7 @@ def get_signal(
 
     if sell_touch and sell_confirmed:
 
-        if (
-            resistance - c["close"]
-            <= atr * 1.8
-        ):
+        if resistance - c["close"] <= atr * 1.8:
 
             return (
                 "SELL",
@@ -782,11 +788,7 @@ def get_signal(
                 "RESISTANCE REJECTION + M5 SELL"
             )
 
-    return (
-        None,
-        None,
-        "WAITING"
-    )
+    return None, None, "WAITING"
 
 
 # =====================================================
@@ -831,7 +833,6 @@ def fetch_news():
             "high" not in impact
             and "red" not in impact
         ):
-
             continue
 
         try:
@@ -857,7 +858,6 @@ def fetch_news():
             TypeError,
             ValueError
         ):
-
             continue
 
     return events
@@ -917,12 +917,14 @@ async def news_blocked():
 async def get_market(connection):
 
     spec = await meta_call(
+        "GET SYMBOL SPECIFICATION",
         connection.get_symbol_specification(
             SYMBOL
         )
     )
 
     price = await meta_call(
+        "GET SYMBOL PRICE",
         connection.get_symbol_price(
             SYMBOL
         )
@@ -978,6 +980,7 @@ def normalize(value, market):
 async def get_positions(connection):
 
     positions = await meta_call(
+        "GET POSITIONS",
         connection.get_positions()
     )
 
@@ -1023,7 +1026,7 @@ def position_side(position):
 
 
 # =====================================================
-# ATR SL / TP1
+# ATR SL
 # =====================================================
 
 def get_levels(
@@ -1034,14 +1037,13 @@ def get_levels(
     market
 ):
 
-    # SL podla volatility, nie tesne pri zone.
     distance = max(
         MIN_SL_DISTANCE,
         atr * SL_ATR_MULTIPLIER
     )
 
-    # Prilis velky risk = obchod vynechame.
-    # SL nikdy umelo neskracujeme na maximum.
+    # Ak je volatilita privelka,
+    # obchod sa vynecha.
     if distance > MAX_SL_DISTANCE:
 
         return None, (
@@ -1062,9 +1064,7 @@ def get_levels(
             market
         )
 
-    risk = abs(
-        entry - sl
-    )
+    risk = abs(entry - sl)
 
     if (
         risk < MIN_SL_DISTANCE
@@ -1116,7 +1116,6 @@ async def open_trade(
         connection
     )
 
-    # Len jeden otvoreny obchod.
     if positions:
 
         print(
@@ -1162,7 +1161,6 @@ async def open_trade(
         return False
 
     if volume_step <= 0:
-
         return False
 
     if abs(
@@ -1182,7 +1180,6 @@ async def open_trade(
         else market["bid"]
     )
 
-    # Nenahanat cenu po signale.
     if (
         abs(entry - signal_close)
         > atr * MAX_ENTRY_DRIFT_ATR
@@ -1256,7 +1253,7 @@ async def open_trade(
             return False
 
     message = (
-        "RIO GOLD V5\n"
+        "RIO GOLD V6\n"
         f"SIDE: {side}\n"
         f"LOT: {LOT_SIZE}\n"
         f"ENTRY: {entry}\n"
@@ -1276,6 +1273,9 @@ async def open_trade(
 
         return False
 
+    # Pred objednavkou ulozime neistotu.
+    # Po timeoute nikdy neposleme druhy
+    # obchod automaticky.
     state["order_uncertain"] = True
 
     save_state(state)
@@ -1289,25 +1289,29 @@ async def open_trade(
         if side == "BUY":
 
             result = await meta_call(
+                "CREATE BUY ORDER",
                 connection.create_market_buy_order(
                     SYMBOL,
                     LOT_SIZE,
                     sl,
                     None,
                     options
-                )
+                ),
+                timeout=60
             )
 
         else:
 
             result = await meta_call(
+                "CREATE SELL ORDER",
                 connection.create_market_sell_order(
                     SYMBOL,
                     LOT_SIZE,
                     sl,
                     None,
                     options
-                )
+                ),
+                timeout=60
             )
 
         print(
@@ -1415,7 +1419,7 @@ async def open_trade(
 
         notify(
             "ORDER STATUS UNCERTAIN\n"
-            f"{type(e).__name__}: {str(e)[:160]}\n"
+            f"{type(e).__name__}: {str(e)[:180]}\n"
             "CHECK MT5\n"
             "NEW ENTRIES STOPPED"
         )
@@ -1424,7 +1428,7 @@ async def open_trade(
 
 
 # =====================================================
-# EARLY BE / TP1 / TRAILING
+# BE / TP1 / TRAILING
 # =====================================================
 
 async def protect_position(
@@ -1473,7 +1477,7 @@ async def protect_position(
 
         notify(
             "CRITICAL: POSITION WITHOUT SL\n"
-            "CHECK MT5"
+            "CHECK MT5 IMMEDIATELY"
         )
 
         return
@@ -1495,9 +1499,7 @@ async def protect_position(
     wanted_sl = current_sl
     stage = None
 
-    # -----------------------------------------
-    # BE od +0.45R
-    # -----------------------------------------
+    # EARLY BE +0.45R
 
     if (
         profit_distance
@@ -1525,9 +1527,7 @@ async def protect_position(
 
         stage = "EARLY BE"
 
-    # -----------------------------------------
-    # TP1 od +0.85R
-    # -----------------------------------------
+    # TP1 +0.85R
 
     if (
         profit_distance
@@ -1555,9 +1555,7 @@ async def protect_position(
 
         stage = "TP1 LOCK"
 
-    # -----------------------------------------
-    # TRAILING od +1.20R
-    # -----------------------------------------
+    # TRAILING +1.20R
 
     if (
         profit_distance
@@ -1597,6 +1595,7 @@ async def protect_position(
     tick = market["tick"]
 
     # SL nikdy neposuvat spat.
+
     if side == "BUY":
 
         if (
@@ -1653,43 +1652,35 @@ async def protect_position(
 
             return
 
-    try:
+    await meta_call(
+        "MODIFY POSITION SL",
+        connection.modify_position(
+            position_id,
+            wanted_sl,
+            position.get("takeProfit")
+        ),
+        timeout=60
+    )
 
-        await meta_call(
-            connection.modify_position(
-                position_id,
-                wanted_sl,
-                position.get("takeProfit")
-            )
-        )
+    notify(
+        "RIO SL UPDATED\n"
+        f"SIDE: {side}\n"
+        f"STAGE: {stage}\n"
+        f"SL: {wanted_sl}"
+    )
+
+    if (
+        stage in ("TP1 LOCK", "TRAILING")
+        and not state["tp1_reached"]
+    ):
+
+        state["tp1_reached"] = True
+
+        save_state(state)
 
         notify(
-            "RIO SL UPDATED\n"
-            f"SIDE: {side}\n"
-            f"STAGE: {stage}\n"
-            f"SL: {wanted_sl}"
-        )
-
-        if (
-            stage in ("TP1 LOCK", "TRAILING")
-            and not state["tp1_reached"]
-        ):
-
-            state["tp1_reached"] = True
-
-            save_state(state)
-
-            notify(
-                "TP1 REACHED\n"
-                "POSITION REMAINS OPEN"
-            )
-
-    except Exception as e:
-
-        print(
-            "SL MODIFY ERROR:",
-            str(e),
-            flush=True
+            "TP1 REACHED\n"
+            "POSITION REMAINS OPEN"
         )
 
 
@@ -1699,10 +1690,11 @@ async def protect_position(
 
 async def bot_session(state):
 
-    # Region neposielame do MetaApi konstruktora.
+    # SDK region nenastavujeme manualne.
     api = MetaApi(M_TOKEN)
 
     account = await meta_call(
+        "GET ACCOUNT",
         api.metatrader_account_api.get_account(
             M_ACC
         )
@@ -1725,10 +1717,12 @@ async def bot_session(state):
     ):
 
         await meta_call(
+            "DEPLOY ACCOUNT",
             account.deploy()
         )
 
-    await asyncio.wait_for(
+    await meta_call(
+        "WAIT BROKER CONNECTED",
         account.wait_connected(),
         timeout=SYNC_TIMEOUT
     )
@@ -1738,10 +1732,13 @@ async def bot_session(state):
     try:
 
         await meta_call(
-            connection.connect()
+            "RPC CONNECT",
+            connection.connect(),
+            timeout=SYNC_TIMEOUT
         )
 
-        await asyncio.wait_for(
+        await meta_call(
+            "RPC SYNCHRONIZE",
             connection.wait_synchronized(),
             timeout=SYNC_TIMEOUT
         )
@@ -1751,14 +1748,12 @@ async def bot_session(state):
         )
 
         notify(
-            "RIO GOLD V5 CONNECTED\n"
+            "RIO GOLD V6 CONNECTED\n"
             f"LOT: {LOT_SIZE}\n"
             f"TRADES: {state['trade_count']}/{MAX_TRADES}\n"
             f"LIVE: {ENABLE_TRADING}"
         )
 
-        # Pri restarte s neznámou pozíciou
-        # nove vstupy zastavime.
         if positions:
 
             state["had_position"] = True
@@ -1788,7 +1783,15 @@ async def bot_session(state):
 
             notify(
                 "PREVIOUS ORDER UNCERTAIN\n"
-                "CHECK MT5"
+                "NEW ENTRIES STOPPED"
+            )
+
+        if state["halted"]:
+
+            notify(
+                "SAFETY HALT ACTIVE\n"
+                "POSITION MONITORING CONTINUES\n"
+                "NEW ENTRIES DISABLED"
             )
 
         last_atr = None
@@ -1897,7 +1900,7 @@ async def bot_session(state):
                     )
 
                 # =================================
-                # 3. OCHRANA NOVYCH VSTUPOV
+                # 3. SAFETY
                 # =================================
 
                 if (
@@ -1956,7 +1959,7 @@ async def bot_session(state):
                     continue
 
                 # =================================
-                # 5. FAST M1 + M5 SIGNAL
+                # 5. SIGNAL
                 # =================================
 
                 candles = await get_candles(
@@ -2020,14 +2023,6 @@ async def bot_session(state):
                     candle_time,
                     "\nCLOSE:",
                     candles[-1]["close"],
-                    "\nSUPPORT:",
-                    round(support, 2)
-                    if support is not None
-                    else None,
-                    "\nRESISTANCE:",
-                    round(resistance, 2)
-                    if resistance is not None
-                    else None,
                     "\nATR:",
                     round(atr, 2),
                     "\nM5 TREND:",
@@ -2038,7 +2033,7 @@ async def bot_session(state):
                 )
 
                 # =================================
-                # 6. POTVRDENY VSTUP
+                # 6. ENTRY
                 # =================================
 
                 if side is not None:
@@ -2059,7 +2054,7 @@ async def bot_session(state):
                         save_state(state)
 
                         notify(
-                            "ZONE / FAST SIGNAL V5\n"
+                            "FAST SIGNAL V6\n"
                             f"SIDE: {side}\n"
                             f"REASON: {reason}\n"
                             f"ZONE: {zone:.2f}\n"
@@ -2080,15 +2075,12 @@ async def bot_session(state):
                     LOOP_SECONDS
                 )
 
-            except (
-                asyncio.TimeoutError,
-                TimeoutError,
-                ConnectionError
-            ) as e:
+            except MetaConnectionError:
 
-                raise RuntimeError(
-                    "METAAPI RECONNECT REQUIRED"
-                ) from e
+                # Pri RPC chybe obnovime celu relaciu.
+                # Presny nazov zlyhaneho prikazu
+                # je uz zapisany v meta_call().
+                raise
 
             except Exception as e:
 
@@ -2099,25 +2091,9 @@ async def bot_session(state):
                     flush=True
                 )
 
-                message = str(e).lower()
-
-                if any(
-                    word in message
-                    for word in (
-                        "not connected",
-                        "not synchronized",
-                        "websocket",
-                        "timed out",
-                        "timeout",
-                        "subscription",
-                        "disconnected"
-                    )
-                ):
-
-                    raise RuntimeError(
-                        "METAAPI RECONNECT REQUIRED"
-                    ) from e
-
+                # Chyba historickych sviecok
+                # nema automaticky rusit RPC relaciu.
+                # Iba vynechame tento cyklus.
                 await asyncio.sleep(
                     LOOP_SECONDS
                 )
@@ -2156,13 +2132,15 @@ async def main():
     state = load_state()
 
     telegram(
-        "RIOBOT GOLD V5 START\n"
+        "RIOBOT GOLD V6 START\n"
         "FAST M1 + M5 TREND\n"
         "ATR SL + EARLY BE\n"
+        "METAAPI DIAGNOSTICS ACTIVE\n"
         f"LOT: {LOT_SIZE}\n"
         f"MAX TRADES: {MAX_TRADES}\n"
         f"COUNT: {state['trade_count']}\n"
         f"LIVE TRADING: {ENABLE_TRADING}\n"
+        f"SAFETY HALT: {state['halted']}\n"
         "TP1 LOCK + TRAILING ACTIVE"
     )
 
@@ -2172,9 +2150,7 @@ async def main():
 
         try:
 
-            await bot_session(
-                state
-            )
+            await bot_session(state)
 
             reconnect_attempt = 0
 
@@ -2196,13 +2172,11 @@ async def main():
 
             notify(
                 "RIOBOT CONNECTION ERROR\n"
-                f"{type(e).__name__}: {str(e)[:180]}\n"
+                f"{type(e).__name__}: {str(e)[:220]}\n"
                 f"RECONNECT IN {delay} SECONDS"
             )
 
-            await asyncio.sleep(
-                delay
-            )
+            await asyncio.sleep(delay)
 
 
 # =====================================================
