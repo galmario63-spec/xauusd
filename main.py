@@ -63,22 +63,14 @@ MAX_SPREAD = 0.40
 
 
 # =====================================================
-# NOVÉ FILTRE
+# FILTRE
 # =====================================================
 
 EMA_PERIOD = 50
 
-# Počet uzavretých M1 sviečok pre momentum
 MOMENTUM_LOOKBACK = 3
-
-# Aspoň 2 z posledných 3 nesmú silno tlačiť
-# proti plánovanému obchodu.
 MOMENTUM_MIN_SAME_DIRECTION = 2
 
-# Denná prestávka brokera.
-# Časy sú UTC.
-# 22:00 UTC = 00:00 na Slovensku počas letného času.
-# Nové obchody blokujeme 15 min pred prestávkou.
 BROKER_BREAK_HOUR_UTC = 22
 BROKER_BREAK_MINUTE_UTC = 0
 BREAK_BLOCK_BEFORE_MINUTES = 15
@@ -421,7 +413,6 @@ async def get_candles(region):
                 timezone.utc
             )
 
-            # Iba uzavrete M1 sviecky
             if (
                 now - dt
             ).total_seconds() < 61:
@@ -579,22 +570,19 @@ def build_m5_candles(candles):
     )
 
 
-def calculate_ema(
-    values,
-    period
-):
+def calculate_ema(values, period):
 
     if len(values) < period:
-
         return None
 
     multiplier = (
         2.0 / (period + 1)
     )
 
-    ema = sum(
-        values[:period]
-    ) / period
+    ema = (
+        sum(values[:period])
+        / period
+    )
 
     for value in values[period:]:
 
@@ -606,10 +594,7 @@ def calculate_ema(
     return ema
 
 
-def m5_trend_filter(
-    candles,
-    side
-):
+def m5_trend_filter(candles, side):
 
     m5 = build_m5_candles(
         candles
@@ -666,10 +651,7 @@ def m5_trend_filter(
 # M1 MOMENTUM FILTER
 # =====================================================
 
-def momentum_filter(
-    candles,
-    side
-):
+def momentum_filter(candles, side):
 
     recent = candles[
         -MOMENTUM_LOOKBACK:
@@ -694,8 +676,6 @@ def momentum_filter(
         if c["close"] < c["open"]
     )
 
-    # BUY:
-    # nechceme kupovat proti silnemu SELL momentu.
     if side == "BUY":
 
         if (
@@ -704,8 +684,6 @@ def momentum_filter(
         ):
             return False
 
-    # SELL:
-    # nechceme predavat proti silnemu BUY momentu.
     else:
 
         if (
@@ -753,10 +731,7 @@ def broker_break_blocked():
 # SUPPORT / RESISTANCE
 # =====================================================
 
-def detect_zones(
-    candles,
-    atr
-):
+def detect_zones(candles, atr):
 
     history = candles[
         -(ZONE_LOOKBACK + 3):-3
@@ -848,7 +823,6 @@ def get_signal(
         / range_c
     )
 
-    # BUY
     buy_zone_touch = (
         support is not None
         and (
@@ -896,7 +870,6 @@ def get_signal(
                 "M1 SUPPORT + ATR BUY"
             )
 
-    # SELL
     sell_zone_touch = (
         resistance is not None
         and (
@@ -983,10 +956,7 @@ def fetch_news():
         ).upper()
 
         impact = str(
-            event.get(
-                "impact",
-                ""
-            )
+            event.get("impact", "")
         ).lower()
 
         if currency != "USD":
@@ -994,8 +964,7 @@ def fetch_news():
 
         if (
             "high" not in impact
-            and
-            "red" not in impact
+            and "red" not in impact
         ):
             continue
 
@@ -1130,8 +1099,7 @@ async def get_market(connection):
 
     tick = float(
         spec.get("tickSize")
-        or
-        10 ** (-digits)
+        or 10 ** (-digits)
     )
 
     bid = float(
@@ -1161,10 +1129,7 @@ async def get_market(connection):
     }
 
 
-def normalize(
-    value,
-    market
-):
+def normalize(value, market):
 
     tick = market["tick"]
 
@@ -1455,8 +1420,7 @@ async def open_batch(
 
     point = float(
         spec.get("point")
-        or
-        10 ** (-market["digits"])
+        or 10 ** (-market["digits"])
     )
 
     stops = float(
@@ -1780,8 +1744,7 @@ async def protect_position(
 
     point = float(
         spec.get("point")
-        or
-        10 ** (-market["digits"])
+        or 10 ** (-market["digits"])
     )
 
     stops = float(
@@ -1978,7 +1941,6 @@ async def bot_session(state):
             timeout=CONNECT_TIMEOUT
         )
 
-        # Po reconnecte obnov sledovanie pozicii
         await adopt_positions(
             connection,
             state
@@ -2152,11 +2114,32 @@ async def bot_session(state):
 
                 # =====================================
                 # M1 SIGNAL
+                # FIX: STALE DATA NIE JE LOOP ERROR
                 # =====================================
 
-                candles = await get_candles(
-                    region
-                )
+                try:
+
+                    candles = await get_candles(
+                        region
+                    )
+
+                except RuntimeError as e:
+
+                    if str(e) == "STALE M1 DATA":
+
+                        print(
+                            "M1 DATA STALE - "
+                            "WAITING FOR FRESH DATA",
+                            flush=True
+                        )
+
+                        await asyncio.sleep(
+                            LOOP_SECONDS
+                        )
+
+                        continue
+
+                    raise
 
                 candle_time = (
                     candles[-1]["time"]
