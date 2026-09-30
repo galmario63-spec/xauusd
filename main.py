@@ -17,6 +17,7 @@ from metaapi_cloud_sdk import MetaApi
 # =====================================================
 
 SYMBOL = "XAUUSD"
+
 LOT_SIZE = 0.01
 MAX_TRADES = 4
 
@@ -25,27 +26,19 @@ ENABLE_TRADING = (
     .strip().lower() == "true"
 )
 
-COMMENT = "RIO GOLD ZONES M1"
+COMMENT = "RIO ZONES M1"
 
 LOOP_SECONDS = 5
 RECONNECT_SECONDS = 3
 
-META_TIMEOUT = 20
-SYNC_TIMEOUT = 120
+META_TIMEOUT = 18
+SYNC_TIMEOUT = 90
 
 COOLDOWN_SECONDS = 180
 
-# Persistent storage.
-# On Render mount a disk at /var/data.
-STATE_DIR = os.getenv("STATE_DIR", "/var/data")
-STATE_FILE = os.path.join(
-    STATE_DIR,
-    "rio_zones_state.json"
-)
-
-SERIES_ID = os.getenv(
-    "SERIES_ID", "RIO-TEST-001"
-).strip()
+# No persistent disk required.
+# Counter applies to the current runtime only.
+STATE_FILE = "/tmp/rio_zones_state.json"
 
 
 # =====================================================
@@ -97,14 +90,14 @@ NEWS_AFTER = 30
 NEWS_REFRESH = 1800
 NEWS_MAX_AGE = 10800
 
-NEWS_CACHE = {
+news_cache = {
     "events": [],
     "updated": 0
 }
 
 
 # =====================================================
-# ENV
+# ENVIRONMENT
 # =====================================================
 
 M_TOKEN = os.getenv("M_TOKEN")
@@ -115,7 +108,7 @@ T_CHAT = os.getenv("T_CHAT")
 
 
 # =====================================================
-# RENDER
+# RENDER SERVER
 # =====================================================
 
 app = Flask(__name__)
@@ -123,6 +116,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
+
     return "RIOBOT GOLD ZONES ACTIVE", 200
 
 
@@ -168,7 +162,7 @@ def telegram(message):
         if response.status_code != 200:
 
             print(
-                "TELEGRAM ERROR:",
+                "TELEGRAM HTTP ERROR:",
                 response.status_code,
                 flush=True
             )
@@ -184,7 +178,6 @@ def telegram(message):
 
 def notify(message):
 
-    # Telegram does not block MetaApi calls.
     asyncio.create_task(
         asyncio.to_thread(
             telegram,
@@ -200,26 +193,19 @@ def notify(message):
 def default_state():
 
     return {
-        "series_id": SERIES_ID,
         "trade_count": 0,
         "last_signal": None,
         "last_trade_time": 0,
         "trade_risk": None,
-        "trade_position_id": None,
+        "position_id": None,
         "tp1_reached": False,
         "had_position": False,
         "halted": False,
-        "order_uncertain": False,
-        "pending_order": None
+        "order_uncertain": False
     }
 
 
 def save_state(state):
-
-    os.makedirs(
-        STATE_DIR,
-        exist_ok=True
-    )
 
     temporary = STATE_FILE + ".tmp"
 
@@ -227,8 +213,7 @@ def save_state(state):
 
         json.dump(
             state,
-            f,
-            indent=2
+            f
         )
 
         f.flush()
@@ -242,66 +227,31 @@ def save_state(state):
 
 def load_state():
 
-    if ENABLE_TRADING:
+    state = default_state()
 
-        if not SERIES_ID:
+    if os.path.exists(STATE_FILE):
 
-            raise RuntimeError(
-                "SERIES_ID MISSING"
-            )
+        try:
 
-        if not os.path.ismount(STATE_DIR):
+            with open(STATE_FILE) as f:
 
-            raise RuntimeError(
-                "LIVE SAFETY: PERSISTENT DISK "
-                "NOT MOUNTED AT " + STATE_DIR
-            )
+                saved = json.load(f)
 
-    if not os.path.exists(STATE_FILE):
+            for key in state:
 
-        state = default_state()
+                if key in saved:
 
-        save_state(state)
+                    state[key] = saved[key]
 
-        return state
+        except Exception:
 
-    with open(STATE_FILE) as f:
+            state["halted"] = True
 
-        saved = json.load(f)
-
-    required = default_state()
-
-    for key in required:
-
-        if key not in saved:
-
-            raise RuntimeError(
-                "INCOMPLETE STATE: " + key
-            )
-
-    if saved["series_id"] != SERIES_ID:
-
-        raise RuntimeError(
-            "SERIES_ID MISMATCH"
-        )
-
-    count = saved["trade_count"]
-
-    if (
-        type(count) is not int
-        or count < 0
-        or count > MAX_TRADES
-    ):
-
-        raise RuntimeError(
-            "INVALID TRADE COUNT"
-        )
-
-    return saved
+    return state
 
 
 # =====================================================
-# METAAPI TIMEOUT WRAPPER
+# METAAPI WRAPPER
 # =====================================================
 
 async def meta_call(coroutine):
@@ -349,7 +299,7 @@ async def get_candles(region):
     if not isinstance(raw, list):
 
         raise RuntimeError(
-            "INVALID M1 DATA"
+            "INVALID CANDLE DATA"
         )
 
     now = datetime.now(timezone.utc)
@@ -362,7 +312,8 @@ async def get_candles(region):
 
             dt = datetime.fromisoformat(
                 str(candle["time"]).replace(
-                    "Z", "+00:00"
+                    "Z",
+                    "+00:00"
                 )
             )
 
@@ -376,7 +327,7 @@ async def get_candles(region):
                 now - dt
             ).total_seconds()
 
-            # Closed M1 candles only.
+            # Closed M1 candle only.
             if age < 65:
                 continue
 
@@ -397,13 +348,13 @@ async def get_candles(region):
             continue
 
     unique = {
-        candle["time"]: candle
-        for candle in candles
+        c["time"]: c
+        for c in candles
     }
 
     candles = sorted(
         unique.values(),
-        key=lambda x: x["time"]
+        key=lambda c: c["time"]
     )
 
     if candles:
@@ -412,12 +363,14 @@ async def get_candles(region):
             candles[-1]["time"]
         )
 
-        if (
+        age = (
             now - last
-        ).total_seconds() > 180:
+        ).total_seconds()
+
+        if age > 180:
 
             raise RuntimeError(
-                "STALE M1 CANDLES"
+                "STALE M1 DATA"
             )
 
     return candles
@@ -437,19 +390,13 @@ def calculate_atr(candles):
 
     for i in range(1, len(candles)):
 
-        candle = candles[i]
-        previous = candles[i - 1]
+        c = candles[i]
+        p = candles[i - 1]
 
         tr = max(
-            candle["high"] - candle["low"],
-            abs(
-                candle["high"]
-                - previous["close"]
-            ),
-            abs(
-                candle["low"]
-                - previous["close"]
-            )
+            c["high"] - c["low"],
+            abs(c["high"] - p["close"]),
+            abs(c["low"] - p["close"])
         )
 
         values.append(tr)
@@ -461,7 +408,7 @@ def calculate_atr(candles):
 
 
 # =====================================================
-# ZONES - NO PSAR
+# BUY / SELL ZONES
 # =====================================================
 
 def detect_zones(candles):
@@ -482,27 +429,23 @@ def detect_zones(candles):
         len(history) - 2
     ):
 
-        candle = history[i]
+        c = history[i]
 
         window = history[
             i - 2:i + 3
         ]
 
-        if candle["low"] <= min(
+        if c["low"] <= min(
             x["low"] for x in window
         ):
 
-            lows.append(
-                candle["low"]
-            )
+            lows.append(c["low"])
 
-        if candle["high"] >= max(
+        if c["high"] >= max(
             x["high"] for x in window
         ):
 
-            highs.append(
-                candle["high"]
-            )
+            highs.append(c["high"])
 
     def valid(values):
 
@@ -526,16 +469,14 @@ def detect_zones(candles):
 
     supports = [
         x for x in valid(lows)
-        if abs(
-            current["low"] - x
-        ) <= ZONE_TOLERANCE
+        if abs(current["low"] - x)
+        <= ZONE_TOLERANCE
     ]
 
     resistances = [
         x for x in valid(highs)
-        if abs(
-            current["high"] - x
-        ) <= ZONE_TOLERANCE
+        if abs(current["high"] - x)
+        <= ZONE_TOLERANCE
     ]
 
     support = None
@@ -572,11 +513,11 @@ def get_signal(
     resistance
 ):
 
-    candle = candles[-1]
-    previous = candles[-2]
+    c = candles[-1]
+    p = candles[-2]
 
     candle_range = (
-        candle["high"] - candle["low"]
+        c["high"] - c["low"]
     )
 
     if candle_range <= 0:
@@ -584,7 +525,7 @@ def get_signal(
         return None
 
     body = abs(
-        candle["close"] - candle["open"]
+        c["close"] - c["open"]
     )
 
     if (
@@ -595,19 +536,13 @@ def get_signal(
         return None
 
     lower_wick = (
-        min(
-            candle["open"],
-            candle["close"]
-        )
-        - candle["low"]
+        min(c["open"], c["close"])
+        - c["low"]
     )
 
     upper_wick = (
-        candle["high"]
-        - max(
-            candle["open"],
-            candle["close"]
-        )
+        c["high"]
+        - max(c["open"], c["close"])
     )
 
     # BUY
@@ -615,9 +550,9 @@ def get_signal(
     if support is not None:
 
         bullish = (
-            candle["close"] > candle["open"]
-            and candle["close"] > previous["close"]
-            and candle["close"] > support
+            c["close"] > c["open"]
+            and c["close"] > p["close"]
+            and c["close"] > support
         )
 
         wick = (
@@ -634,9 +569,9 @@ def get_signal(
     if resistance is not None:
 
         bearish = (
-            candle["close"] < candle["open"]
-            and candle["close"] < previous["close"]
-            and candle["close"] < resistance
+            c["close"] < c["open"]
+            and c["close"] < p["close"]
+            and c["close"] < resistance
         )
 
         wick = (
@@ -699,7 +634,8 @@ def fetch_news():
 
             dt = datetime.fromisoformat(
                 str(event["date"]).replace(
-                    "Z", "+00:00"
+                    "Z",
+                    "+00:00"
                 )
             )
 
@@ -729,21 +665,20 @@ async def news_blocked():
     now = time.time()
 
     if (
-        now - NEWS_CACHE["updated"]
+        now - news_cache["updated"]
         >= NEWS_REFRESH
     ):
 
         try:
 
             events = await asyncio.wait_for(
-                asyncio.to_thread(
-                    fetch_news
-                ),
+                asyncio.to_thread(fetch_news),
                 timeout=13
             )
 
-            NEWS_CACHE["events"] = events
-            NEWS_CACHE["updated"] = now
+            news_cache["events"] = events
+
+            news_cache["updated"] = now
 
         except Exception as e:
 
@@ -754,13 +689,18 @@ async def news_blocked():
             )
 
     if (
-        now - NEWS_CACHE["updated"]
+        now - news_cache["updated"]
         > NEWS_MAX_AGE
     ):
 
+        print(
+            "NEWS DATA UNAVAILABLE - NO ENTRY",
+            flush=True
+        )
+
         return True
 
-    for event_time in NEWS_CACHE["events"]:
+    for event_time in news_cache["events"]:
 
         if (
             event_time - NEWS_BEFORE * 60
@@ -794,7 +734,7 @@ async def get_market(connection):
     if not spec or not price:
 
         raise RuntimeError(
-            "MARKET DATA NOT READY"
+            "MARKET NOT READY"
         )
 
     digits = int(
@@ -847,7 +787,7 @@ async def get_positions(connection):
     if not isinstance(positions, list):
 
         raise RuntimeError(
-            "INVALID POSITION RESPONSE"
+            "INVALID POSITIONS RESPONSE"
         )
 
     return [
@@ -951,90 +891,7 @@ def get_levels(
 
 
 # =====================================================
-# PENDING ORDER SAFETY
-# =====================================================
-
-async def reconcile_pending(
-    connection,
-    state
-):
-
-    if not state["order_uncertain"]:
-
-        return
-
-    pending = state["pending_order"]
-
-    if not pending:
-
-        state["halted"] = True
-
-        save_state(state)
-
-        return
-
-    positions = await get_positions(
-        connection
-    )
-
-    matches = [
-        p for p in positions
-        if str(
-            p.get("comment", "")
-        ) == COMMENT
-    ]
-
-    if len(matches) == 1:
-
-        position = matches[0]
-
-        if not pending.get("counted", False):
-
-            state["trade_count"] += 1
-
-            pending["counted"] = True
-
-        state["trade_risk"] = pending["risk"]
-
-        state["trade_position_id"] = str(
-            position["id"]
-        )
-
-        state["tp1_reached"] = False
-        state["had_position"] = True
-
-        state["order_uncertain"] = False
-        state["pending_order"] = None
-
-        if state["trade_count"] >= MAX_TRADES:
-
-            state["halted"] = True
-
-        save_state(state)
-
-        notify(
-            "RIO GOLD ORDER CONFIRMED\n"
-            f"POSITION: {position['id']}\n"
-            f"TRADES: {state['trade_count']}/{MAX_TRADES}"
-        )
-
-    else:
-
-        # An absent position does not prove that
-        # an order was never executed and closed.
-        state["halted"] = True
-
-        save_state(state)
-
-        notify(
-            "RIOBOT SAFETY STOP\n"
-            "ORDER RESULT UNCERTAIN.\n"
-            "CHECK MT5 HISTORY."
-        )
-
-
-# =====================================================
-# OPEN REAL TRADE
+# OPEN TRADE
 # =====================================================
 
 async def open_trade(
@@ -1058,8 +915,8 @@ async def open_trade(
         connection
     )
 
-    # One XAUUSD position at a time.
     if existing:
+
         return False
 
     market = await get_market(
@@ -1104,7 +961,7 @@ async def open_trade(
     ) > 1e-7:
 
         notify(
-            "INVALID LOT STEP"
+            "INVALID VOLUME STEP"
         )
 
         return False
@@ -1127,7 +984,7 @@ async def open_trade(
     if levels is None:
 
         print(
-            "INVALID SL DISTANCE",
+            "SL DISTANCE FILTER",
             flush=True
         )
 
@@ -1191,19 +1048,8 @@ async def open_trade(
 
         return False
 
-    # Save intent before order submission.
-    # A timeout must never trigger a blind retry.
-
+    # Prevent automatic duplicate submission.
     state["order_uncertain"] = True
-
-    state["pending_order"] = {
-        "side": side,
-        "entry": entry,
-        "sl": sl,
-        "risk": levels["risk"],
-        "created": time.time(),
-        "counted": False
-    }
 
     save_state(state)
 
@@ -1243,16 +1089,56 @@ async def open_trade(
             flush=True
         )
 
+        # Broker confirmation is followed
+        # by an actual position check.
         await asyncio.sleep(2)
 
-        await reconcile_pending(
-            connection,
-            state
+        positions = await get_positions(
+            connection
         )
 
-        if state["order_uncertain"]:
+        matches = [
+            p for p in positions
+            if str(
+                p.get("comment", "")
+            ) == COMMENT
+            and position_side(p) == side
+        ]
+
+        if len(matches) != 1:
+
+            state["halted"] = True
+
+            save_state(state)
+
+            notify(
+                "ORDER VERIFICATION FAILED\n"
+                "CHECK MT5 HISTORY.\n"
+                "NEW ENTRIES BLOCKED."
+            )
 
             return False
+
+        position = matches[0]
+
+        state["trade_count"] += 1
+
+        state["trade_risk"] = levels["risk"]
+
+        state["position_id"] = str(
+            position["id"]
+        )
+
+        state["tp1_reached"] = False
+        state["had_position"] = True
+
+        state["order_uncertain"] = False
+
+        if state["trade_count"] >= MAX_TRADES:
+
+            state["halted"] = True
+
+        save_state(state)
 
         notify(
             "ORDER OK\n\n"
@@ -1263,8 +1149,7 @@ async def open_trade(
 
             notify(
                 "FOUR TRADES REACHED\n"
-                "NEW ENTRIES STOPPED.\n"
-                "OPEN POSITION PROTECTION ACTIVE."
+                "NEW ENTRIES STOPPED."
             )
 
         return True
@@ -1286,7 +1171,7 @@ async def open_trade(
 
 
 # =====================================================
-# POSITION PROTECTION
+# BE / TP1 / TRAILING
 # =====================================================
 
 async def protect_position(
@@ -1301,28 +1186,22 @@ async def protect_position(
     )
 
     if side is None:
+
         return
 
-    pid = position["id"]
-
-    if str(pid) != str(
-        state["trade_position_id"]
+    if str(
+        position["id"]
+    ) != str(
+        state["position_id"]
     ):
-
-        state["halted"] = True
-
-        save_state(state)
-
-        notify(
-            "UNKNOWN POSITION ID\n"
-            "NEW ENTRIES BLOCKED."
-        )
 
         return
 
     market = await get_market(
         connection
     )
+
+    pid = position["id"]
 
     entry = float(
         position["openPrice"]
@@ -1334,13 +1213,13 @@ async def protect_position(
 
     if current_sl <= 0:
 
-        state["halted"] = True
-
-        save_state(state)
-
         notify(
             "WARNING: POSITION WITHOUT SL"
         )
+
+        state["halted"] = True
+
+        save_state(state)
 
         return
 
@@ -1362,13 +1241,9 @@ async def protect_position(
 
     if not risk or risk <= 0:
 
-        state["halted"] = True
-
-        save_state(state)
-
-        notify(
-            "ORIGINAL RISK UNKNOWN\n"
-            "EXISTING SL PRESERVED."
+        print(
+            "ORIGINAL RISK UNKNOWN",
+            flush=True
         )
 
         return
@@ -1377,9 +1252,7 @@ async def protect_position(
 
     stage = None
 
-    # =================================================
-    # BE
-    # =================================================
+    # BREAK EVEN
 
     if (
         profit_distance
@@ -1407,11 +1280,12 @@ async def protect_position(
 
         stage = "BE"
 
-    # =================================================
     # TP1
-    # =================================================
 
-    if profit_distance >= risk * TP1_RR:
+    if (
+        profit_distance
+        >= risk * TP1_RR
+    ):
 
         lock = (
             entry
@@ -1434,9 +1308,7 @@ async def protect_position(
 
         stage = "TP1"
 
-    # =================================================
-    # ATR TRAILING
-    # =================================================
+    # TRAILING
 
     if (
         profit_distance
@@ -1476,7 +1348,6 @@ async def protect_position(
 
     tick = market["tick"]
 
-    # Never move SL backwards.
     if side == "BUY":
 
         if (
@@ -1567,7 +1438,7 @@ async def protect_position(
     except Exception as e:
 
         print(
-            "SL MODIFY ERROR:",
+            "SL ERROR:",
             type(e).__name__,
             str(e),
             flush=True
@@ -1575,7 +1446,7 @@ async def protect_position(
 
 
 # =====================================================
-# BOT SESSION / CONNECTION FIX
+# METAAPI SESSION
 # =====================================================
 
 async def bot_session(state):
@@ -1628,37 +1499,18 @@ async def bot_session(state):
             f"LIVE: {ENABLE_TRADING}"
         )
 
-        # =================================================
-        # RECOVER UNCERTAIN ORDER
-        # =================================================
-
-        if state["order_uncertain"]:
-
-            await reconcile_pending(
-                connection,
-                state
-            )
-
-        current = await get_positions(
-            connection
-        )
+        # After reconnect, check positions first.
 
         if current:
 
             state["had_position"] = True
 
-            if len(current) > 1:
-
-                state["halted"] = True
-
-                save_state(state)
-
-                notify(
-                    "SAFETY STOP:\n"
-                    "MULTIPLE XAUUSD POSITIONS"
-                )
-
-            elif state["trade_position_id"] is None:
+            if (
+                len(current) != 1
+                or state["position_id"] is None
+                or str(current[0]["id"])
+                != str(state["position_id"])
+            ):
 
                 state["halted"] = True
 
@@ -1666,8 +1518,20 @@ async def bot_session(state):
 
                 notify(
                     "UNKNOWN OPEN POSITION\n"
-                    "NEW ENTRIES BLOCKED."
+                    "NEW ENTRIES BLOCKED.\n"
+                    "CHECK MT5."
                 )
+
+        if state["order_uncertain"]:
+
+            state["halted"] = True
+
+            save_state(state)
+
+            notify(
+                "UNCERTAIN PREVIOUS ORDER\n"
+                "CHECK MT5 HISTORY."
+            )
 
         errors = 0
 
@@ -1678,14 +1542,13 @@ async def bot_session(state):
 
             try:
 
-                # Always check open positions first.
+                # =================================================
+                # CHECK POSITIONS FIRST
+                # =================================================
+
                 current = await get_positions(
                     connection
                 )
-
-                # =================================================
-                # PROTECT OPEN POSITION
-                # =================================================
 
                 if current:
 
@@ -1711,7 +1574,7 @@ async def bot_session(state):
                         except Exception as e:
 
                             print(
-                                "ATR ERROR:",
+                                "ATR FETCH ERROR:",
                                 type(e).__name__,
                                 flush=True
                             )
@@ -1719,10 +1582,9 @@ async def bot_session(state):
                     for position in current:
 
                         if (
-                            state["trade_position_id"]
-                            is not None
+                            state["position_id"] is not None
                             and str(position["id"])
-                            == str(state["trade_position_id"])
+                            == str(state["position_id"])
                         ):
 
                             await protect_position(
@@ -1741,7 +1603,7 @@ async def bot_session(state):
                     continue
 
                 # =================================================
-                # POSITION CLOSED
+                # CLOSED POSITION
                 # =================================================
 
                 if state["had_position"]:
@@ -1751,19 +1613,20 @@ async def bot_session(state):
                     state["last_trade_time"] = time.time()
 
                     state["trade_risk"] = None
-                    state["trade_position_id"] = None
+
+                    state["position_id"] = None
 
                     state["tp1_reached"] = False
 
                     save_state(state)
 
                     notify(
-                        "RIO GOLD POSITION CLOSED\n"
+                        "POSITION CLOSED\n"
                         "COOLDOWN 180 SECONDS"
                     )
 
                 # =================================================
-                # LIMITS
+                # ENTRY SAFETY
                 # =================================================
 
                 if (
@@ -1790,10 +1653,6 @@ async def bot_session(state):
 
                     continue
 
-                # =================================================
-                # NEWS FILTER
-                # =================================================
-
                 if await news_blocked():
 
                     await asyncio.sleep(
@@ -1803,14 +1662,17 @@ async def bot_session(state):
                     continue
 
                 # =================================================
-                # M1 CANDLES / ATR
+                # M1 DATA
                 # =================================================
 
                 candles = await get_candles(
                     region
                 )
 
-                if len(candles) < ZONE_LOOKBACK + 2:
+                if (
+                    len(candles)
+                    < ZONE_LOOKBACK + 2
+                ):
 
                     await asyncio.sleep(
                         LOOP_SECONDS
@@ -1831,10 +1693,11 @@ async def bot_session(state):
                     continue
 
                 last_atr = atr
+
                 last_atr_time = time.time()
 
                 # =================================================
-                # ZONE SIGNAL
+                # SIGNAL
                 # =================================================
 
                 support, resistance = detect_zones(
@@ -1854,7 +1717,10 @@ async def bot_session(state):
                         side
                     ]
 
-                    if signal_key != state["last_signal"]:
+                    if (
+                        signal_key
+                        != state["last_signal"]
+                    ):
 
                         state["last_signal"] = signal_key
 
@@ -1889,14 +1755,13 @@ async def bot_session(state):
             ) as e:
 
                 print(
-                    "METAAPI TIMEOUT - RECONNECT",
+                    "METAAPI TIMEOUT:",
                     type(e).__name__,
                     flush=True
                 )
 
-                # Do not keep using a stalled RPC session.
                 raise RuntimeError(
-                    "METAAPI SESSION TIMEOUT"
+                    "METAAPI RECONNECT REQUIRED"
                 ) from e
 
             except Exception as e:
@@ -1933,7 +1798,7 @@ async def bot_session(state):
 
 
 # =====================================================
-# MAIN / RECONNECT EVERY 3 SECONDS
+# MAIN / RECONNECT
 # =====================================================
 
 async def main():
@@ -1948,18 +1813,7 @@ async def main():
 
         return
 
-    try:
-
-        state = load_state()
-
-    except Exception as e:
-
-        telegram(
-            "RIOBOT STARTUP SAFETY STOP\n"
-            f"{type(e).__name__}: {e}"
-        )
-
-        return
+    state = load_state()
 
     telegram(
         "RIOBOT GOLD ZONES M1 START\n"
