@@ -19,6 +19,12 @@ from metaapi_cloud_sdk import MetaApi
 # M1 MOMENTUM FILTER
 # 4 OBCHODY NA JEDEN SIGNAL
 # BE ONLY
+#
+# FIX:
+# - SAFE M1 DATA HANDLING
+# - STALE DATA DOES NOT CRASH SESSION
+# - RETRY HISTORICAL DATA
+# - NO TRADING FROM STALE DATA
 # =====================================================
 
 SYMBOL = "XAUUSD"
@@ -41,6 +47,19 @@ CONNECT_TIMEOUT = 90
 ORDER_TIMEOUT = 40
 
 COOLDOWN_SECONDS = 180
+
+
+# =====================================================
+# M1 DATA SAFETY
+# =====================================================
+
+M1_LIMIT = 300
+
+# Posledná uzavretá M1 sviečka môže mať malé oneskorenie.
+M1_MAX_AGE_SECONDS = 180
+
+# Pri stale dátach nezahlcujeme MetaApi každé 2 sekundy.
+M1_STALE_RETRY_SECONDS = 10
 
 
 # =====================================================
@@ -347,7 +366,7 @@ def position_side(position):
 
 
 # =====================================================
-# M1 DATA
+# M1 DATA - FIXED
 # =====================================================
 
 async def get_candles(region):
@@ -358,7 +377,7 @@ async def get_candles(region):
         f"users/current/accounts/{M_ACC}/"
         "historical-market-data/symbols/"
         f"{SYMBOL}/timeframes/1m/candles"
-        "?limit=300"
+        f"?limit={M1_LIMIT}"
     )
 
     def fetch():
@@ -366,7 +385,13 @@ async def get_candles(region):
         response = requests.get(
             url,
             headers={
-                "auth-token": M_TOKEN
+                "auth-token": M_TOKEN,
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache"
+            },
+            params={
+                "limit": M1_LIMIT,
+                "_rio": int(time.time())
             },
             timeout=12
         )
@@ -375,10 +400,24 @@ async def get_candles(region):
 
         return response.json()
 
-    raw = await asyncio.wait_for(
-        asyncio.to_thread(fetch),
-        timeout=16
-    )
+    try:
+
+        raw = await asyncio.wait_for(
+            asyncio.to_thread(fetch),
+            timeout=16
+        )
+
+    except asyncio.TimeoutError:
+
+        raise RuntimeError(
+            "M1 DATA TIMEOUT"
+        )
+
+    except requests.RequestException as e:
+
+        raise RuntimeError(
+            f"M1 DATA REQUEST ERROR: {e}"
+        )
 
     if not isinstance(raw, list):
 
@@ -413,9 +452,12 @@ async def get_candles(region):
                 timezone.utc
             )
 
-            if (
+            # Používame iba uzavreté M1 sviečky.
+            age = (
                 now - dt
-            ).total_seconds() < 61:
+            ).total_seconds()
+
+            if age < 60:
                 continue
 
             candles.append({
@@ -451,13 +493,20 @@ async def get_candles(region):
         candles[-1]["time"]
     )
 
-    if (
+    age = (
         now - last
-    ).total_seconds() > 180:
+    ).total_seconds()
 
-        raise RuntimeError(
-            "STALE M1 DATA"
+    if age > M1_MAX_AGE_SECONDS:
+
+        print(
+            "M1 DATA STALE | "
+            f"LAST: {last.isoformat()} | "
+            f"AGE: {int(age)} SEC",
+            flush=True
         )
+
+        return None
 
     return candles
 
@@ -2083,7 +2132,7 @@ async def bot_session(state):
                     continue
 
                 # =====================================
-                # 15 MIN PRED PRESTAVKOU
+                # BROKER BREAK
                 # =====================================
 
                 if broker_break_blocked():
@@ -2113,33 +2162,27 @@ async def bot_session(state):
                     continue
 
                 # =====================================
-                # M1 SIGNAL
-                # FIX: STALE DATA NIE JE LOOP ERROR
+                # M1 DATA
+                # FIXED SAFE STALE HANDLING
                 # =====================================
 
-                try:
+                candles = await get_candles(
+                    region
+                )
 
-                    candles = await get_candles(
-                        region
+                if candles is None:
+
+                    print(
+                        "M1 DATA STALE - "
+                        "SAFE WAIT / NO ENTRY",
+                        flush=True
                     )
 
-                except RuntimeError as e:
+                    await asyncio.sleep(
+                        M1_STALE_RETRY_SECONDS
+                    )
 
-                    if str(e) == "STALE M1 DATA":
-
-                        print(
-                            "M1 DATA STALE - "
-                            "WAITING FOR FRESH DATA",
-                            flush=True
-                        )
-
-                        await asyncio.sleep(
-                            LOOP_SECONDS
-                        )
-
-                        continue
-
-                    raise
+                    continue
 
                 candle_time = (
                     candles[-1]["time"]
@@ -2385,6 +2428,7 @@ async def main():
         "M1 SUPPORT/RESISTANCE + ATR14\n"
         "M5 EMA50 TREND FILTER\n"
         "M1 MOMENTUM FILTER\n"
+        "SAFE M1 DATA FIX ACTIVE\n"
         "15 MIN PRE-BREAK ENTRY BLOCK\n"
         "4 POSITIONS ON ONE SIGNAL\n"
         "ATR SL + 1.5R TP\n"
@@ -2434,4 +2478,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-    )
+        )
