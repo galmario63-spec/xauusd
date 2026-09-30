@@ -16,10 +16,11 @@ from metaapi_cloud_sdk import MetaApi
 # RIOBOT GOLD V11
 # M1 + SUPPORT/RESISTANCE + ATR14
 # 4 OBCHODY NA JEDEN SIGNAL
+# BE ONLY - HOLD UNTIL BE OR TP
 # =====================================================
 
 SYMBOL = "XAUUSD"
-COMMENT = "RIO GOLD V11 M1 ZONES ATR"
+COMMENT = "RIO GOLD V11 M1 ZONES ATR BE"
 
 LOT_SIZE = 0.01
 BATCH_SIZE = 4
@@ -32,7 +33,7 @@ ENABLE_TRADING = (
 
 LOOP_SECONDS = 2
 
-# Po strate spojenia vzdy novy pokus po 5 sekundach.
+# Po strate spojenia novy pokus po 5 sekundach
 RECONNECT_SECONDS = 5
 
 RPC_TIMEOUT = 20
@@ -49,20 +50,15 @@ COOLDOWN_SECONDS = 180
 ZONE_LOOKBACK = 35
 ATR_PERIOD = 14
 
-# Sirka zony
 ZONE_ATR_TOLERANCE = 0.40
 MIN_ZONE_TOLERANCE = 0.35
 
-# M1 potvrdenie
 MIN_BODY_RATIO = 0.25
 
-# Neberieme extremne impulzne sviecky
 MAX_SIGNAL_RANGE_ATR = 2.20
 
-# Maximalne oneskorenie ceny po signale
 MAX_ENTRY_DRIFT_ATR = 0.50
 
-# Ako daleko moze byt vstup od zony
 MAX_ZONE_DISTANCE_ATR = 2.20
 
 MAX_SPREAD = 0.40
@@ -72,38 +68,28 @@ MAX_SPREAD = 0.40
 # SL / TP
 # =====================================================
 
-# SL ide za zonu + ATR buffer.
-# V11 je umyselne volnejsi ako V10.
-SL_ATR_BUFFER = 1.00
+# Trochu volnejsi SL za zonou
+SL_ATR_BUFFER = 1.20
 
-# SL nesmie byt prilis tesny.
-MIN_SL_DISTANCE = 2.00
+# SL nesmie byt prilis tesny
+MIN_SL_DISTANCE = 2.50
 
-# Bezpecnostny strop.
+# Bezpecnostny strop
 MAX_SL_DISTANCE = 8.00
 
-# TP = realne riziko x RR
-TP_RR = 2.00
+# TP blizsie ako povodne 2R
+TP_RR = 1.50
 
 
 # =====================================================
-# BE / LOCK / TRAILING
+# BREAK EVEN ONLY
 # =====================================================
 
-# BE neskor ako vo V10.
-# Bezna korekcia tak nema obchod hned vyhodit.
+# Aktivacia BE pri 0.70R
 BE_TRIGGER_RR = 0.70
 
-# Po dosiahnuti BE zamkneme iba malu rezervu.
+# Mala rezerva do zisku
 BE_LOCK_RR = 0.10
-
-# Druhy lock
-TP1_TRIGGER_RR = 1.20
-TP1_LOCK_RR = 0.55
-
-# Trailing az ked je obchod pekne v zisku.
-TRAIL_TRIGGER_RR = 1.60
-TRAIL_ATR_MULTIPLIER = 1.10
 
 
 # =====================================================
@@ -423,7 +409,7 @@ async def get_candles(region):
                 timezone.utc
             )
 
-            # Iba uzavrete M1 sviecky.
+            # Iba uzavrete M1 sviecky
             if (
                 now - dt
             ).total_seconds() < 61:
@@ -571,7 +557,6 @@ def get_signal(
     atr
 ):
 
-    # Posledne 3 uzavrete M1 sviecky.
     a = candles[-3]
     b = candles[-2]
     c = candles[-1]
@@ -595,7 +580,6 @@ def get_signal(
             "ZERO RANGE"
         )
 
-    # Nechceme nahanat extremny impulz.
     if (
         range_b
         > atr * MAX_SIGNAL_RANGE_ATR
@@ -624,11 +608,7 @@ def get_signal(
         / range_c
     )
 
-    # =================================================
-    # BUY:
-    # cena bola pri supporte a M1 potvrdzuje odraz.
-    # =================================================
-
+    # BUY
     buy_zone_touch = (
         support is not None
         and (
@@ -671,11 +651,7 @@ def get_signal(
                 "M1 SUPPORT + ATR BUY"
             )
 
-    # =================================================
-    # SELL:
-    # cena bola pri resistance a M1 potvrdzuje odraz.
-    # =================================================
-
+    # SELL
     sell_zone_touch = (
         resistance is not None
         and (
@@ -850,9 +826,6 @@ async def news_blocked():
                 flush=True
             )
 
-    # Fail-safe:
-    # ak su news data prilis stare,
-    # novy obchod sa neotvori.
     if (
         now
         - news_cache["updated"]
@@ -965,7 +938,6 @@ def get_levels(
     market
 ):
 
-    # ATR buffer za support/resistance.
     buffer = max(
         atr * SL_ATR_BUFFER,
         market["tick"] * 5
@@ -987,13 +959,11 @@ def get_levels(
         entry - raw_sl
     )
 
-    # SL nesmie byt prilis tesny.
     risk = max(
         raw_risk,
         MIN_SL_DISTANCE
     )
 
-    # Bezpecnostny limit.
     if risk > MAX_SL_DISTANCE:
 
         return (
@@ -1204,8 +1174,6 @@ async def open_batch(
         else market["bid"]
     )
 
-    # Neotvarame, ak cena po M1 signale
-    # uz prilis usla.
     if (
         abs(
             entry
@@ -1492,7 +1460,7 @@ async def open_batch(
             "RIO V11 BATCH COMPLETED\n"
             f"CONFIRMED: "
             f"{state['trade_count']}/4\n"
-            "BE + LOCK + TRAILING ACTIVE"
+            "BE ONLY ACTIVE"
         )
 
     except Exception as e:
@@ -1515,7 +1483,7 @@ async def open_batch(
 
 
 # =====================================================
-# BE / LOCK / TRAILING
+# BREAK EVEN ONLY
 # =====================================================
 
 async def protect_position(
@@ -1598,108 +1566,21 @@ async def protect_position(
         price - entry
     ) * direction
 
-    wanted_sl = current_sl
-    stage = None
-
-    # =================================================
-    # BE - az pri 0.70R
-    # =================================================
-
+    # Este nebol dosiahnuty BE trigger
     if (
         profit_distance
-        >= risk * BE_TRIGGER_RR
+        < risk * BE_TRIGGER_RR
     ):
+        return
 
-        be = (
-            entry
-            + direction
-            * risk
-            * BE_LOCK_RR
-        )
-
-        wanted_sl = (
-            max(
-                wanted_sl,
-                be
-            )
-            if side == "BUY"
-            else
-            min(
-                wanted_sl,
-                be
-            )
-        )
-
-        stage = "BE"
-
-
-    # =================================================
-    # PROFIT LOCK - 1.20R
-    # =================================================
-
-    if (
-        profit_distance
-        >= risk
-        * TP1_TRIGGER_RR
-    ):
-
-        lock = (
-            entry
-            + direction
-            * risk
-            * TP1_LOCK_RR
-        )
-
-        wanted_sl = (
-            max(
-                wanted_sl,
-                lock
-            )
-            if side == "BUY"
-            else
-            min(
-                wanted_sl,
-                lock
-            )
-        )
-
-        stage = "PROFIT LOCK"
-
-
-    # =================================================
-    # TRAILING - 1.60R
-    # =================================================
-
-    if (
-        profit_distance
-        >= risk
-        * TRAIL_TRIGGER_RR
-        and atr is not None
-        and atr > 0
-    ):
-
-        trail = (
-            price
-            - direction
-            * atr
-            * TRAIL_ATR_MULTIPLIER
-        )
-
-        wanted_sl = (
-            max(
-                wanted_sl,
-                trail
-            )
-            if side == "BUY"
-            else
-            min(
-                wanted_sl,
-                trail
-            )
-        )
-
-        stage = "TRAILING"
-
+    # Jediny posun SL:
+    # z povodneho SL na BE + mala rezerva.
+    wanted_sl = (
+        entry
+        + direction
+        * risk
+        * BE_LOCK_RR
+    )
 
     wanted_sl = normalize(
         wanted_sl,
@@ -1708,7 +1589,8 @@ async def protect_position(
 
     tick = market["tick"]
 
-    # SL sa nikdy neposuva naspat.
+    # SL sa nikdy neposuva naspat
+    # a po BE sa uz dalej neposuva.
     if side == "BUY":
 
         if (
@@ -1784,11 +1666,12 @@ async def protect_position(
     )
 
     notify(
-        "RIO V11 SL UPDATED\n"
+        "RIO V11 BREAK EVEN ACTIVE\n"
         f"POSITION: {pid}\n"
         f"SIDE: {side}\n"
-        f"STAGE: {stage}\n"
-        f"SL: {wanted_sl}"
+        f"ENTRY: {entry}\n"
+        f"BE SL: {wanted_sl}\n"
+        f"TP: {current_tp}"
     )
 
 
@@ -1951,7 +1834,7 @@ async def bot_session(state):
 
 
                 # =====================================
-                # PROTECT OPEN POSITIONS
+                # PROTECT OPEN POSITIONS - BE ONLY
                 # =====================================
 
                 if positions:
@@ -2338,8 +2221,8 @@ async def main():
         "M1 + SUPPORT/RESISTANCE + ATR14\n"
         "NO M5 FILTER\n"
         "4 POSITIONS ON ONE SIGNAL\n"
-        "ATR SL + 2R TP\n"
-        "LATE BE + PROFIT LOCK + TRAILING\n"
+        "ATR SL + 1.5R TP\n"
+        "BE ONLY - HOLD UNTIL BE OR TP\n"
         "METAAPI 5 SEC RECONNECT\n"
         f"LOT EACH: {LOT_SIZE}\n"
         f"BATCH: {BATCH_SIZE}\n"
@@ -2373,8 +2256,6 @@ async def main():
                 "RECONNECT IN 5 SECONDS"
             )
 
-            # Konstantnych 5 sekund.
-            # Uz sa nezvysuje na 10/15/30.
             await asyncio.sleep(
                 RECONNECT_SECONDS
             )
@@ -2388,4 +2269,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-    )
+        )
