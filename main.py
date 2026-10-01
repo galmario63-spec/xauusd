@@ -14,6 +14,7 @@ from metaapi_cloud_sdk import MetaApi
 
 # =====================================================
 # RIOBOT GOLD V12 - LOCAL SWING ZONES
+# STABLE METAAPI CONNECTION VERSION
 # =====================================================
 
 SYMBOL = "XAUUSD"
@@ -30,11 +31,23 @@ ENABLE_TRADING = (
 
 LOOP_SECONDS = 2
 
+# -----------------------------------------------------
+# METAAPI STABILITY
+# -----------------------------------------------------
+
 RECONNECT_SECONDS = 5
 
 RPC_TIMEOUT = 20
 RPC_RETRIES = 3
-RPC_RETRY_DELAY = 2
+RPC_RETRY_DELAY = 3
+
+# NOVÉ:
+# Jeden krátky RPC výpadok už nezruší celú session.
+# Až tento počet po sebe idúcich zlyhaní vyvolá reconnect.
+MAX_CONSECUTIVE_RPC_FAILURES = 5
+
+# Medzi zlyhanými RPC cyklami chvíľu počkáme.
+RPC_FAILURE_WAIT = 4
 
 CONNECT_TIMEOUT = 90
 ORDER_TIMEOUT = 40
@@ -57,8 +70,6 @@ MIN_BODY_RATIO = 0.25
 MAX_SIGNAL_RANGE_ATR = 2.20
 MAX_ENTRY_DRIFT_ATR = 0.50
 
-# ZMENA:
-# vstup musi ostat blizko support/resistance zony
 MAX_ZONE_DISTANCE_ATR = 0.80
 
 MAX_SPREAD = 0.40
@@ -155,6 +166,18 @@ news_cache = {
     "updated": 0,
     "last_attempt": 0
 }
+
+
+# =====================================================
+# CUSTOM METAAPI ERROR
+# =====================================================
+
+class MetaApiTemporaryError(Exception):
+    """
+    Docasna MetaApi/RPC chyba.
+    Neznamena automaticky, ze treba zhodit celu session.
+    """
+    pass
 
 
 # =====================================================
@@ -314,7 +337,10 @@ async def get_positions(connection):
 
     last_error = None
 
-    for attempt in range(1, RPC_RETRIES + 1):
+    for attempt in range(
+        1,
+        RPC_RETRIES + 1
+    ):
 
         try:
 
@@ -351,10 +377,11 @@ async def get_positions(connection):
                     RPC_RETRY_DELAY
                 )
 
-    raise RuntimeError(
-        "METAAPI POSITIONS FAILED "
-        f"AFTER {RPC_RETRIES} RETRIES: "
-        f"{last_error}"
+    # DÔLEŽITÁ ZMENA:
+    # Už z toho nerobíme okamžite úplný connection lost.
+    raise MetaApiTemporaryError(
+        "METAAPI POSITIONS TEMPORARILY UNAVAILABLE: "
+        f"{type(last_error).__name__}: {last_error}"
     )
 
 
@@ -964,7 +991,7 @@ def detect_zones(candles, atr):
 
 
 # =====================================================
-# SIGNAL - STRICT CURRENT-CANDLE ZONE REJECTION
+# SIGNAL
 # =====================================================
 
 def get_signal(
@@ -978,65 +1005,32 @@ def get_signal(
     b = candles[-2]
     c = candles[-1]
 
-    range_b = (
-        b["high"] - b["low"]
-    )
+    range_b = b["high"] - b["low"]
+    range_c = c["high"] - c["low"]
 
-    range_c = (
-        c["high"] - c["low"]
-    )
+    if range_b <= 0 or range_c <= 0:
+        return None, None, "ZERO RANGE"
 
     if (
-        range_b <= 0
-        or range_c <= 0
+        range_b > atr * MAX_SIGNAL_RANGE_ATR
+        or range_c > atr * MAX_SIGNAL_RANGE_ATR
     ):
-        return (
-            None,
-            None,
-            "ZERO RANGE"
-        )
-
-    if (
-        range_b
-        > atr * MAX_SIGNAL_RANGE_ATR
-        or
-        range_c
-        > atr * MAX_SIGNAL_RANGE_ATR
-    ):
-        return (
-            None,
-            None,
-            "IMPULSE"
-        )
+        return None, None, "IMPULSE"
 
     body_c = (
-        abs(
-            c["close"] - c["open"]
-        )
+        abs(c["close"] - c["open"])
         / range_c
     )
 
     lower_wick_c = (
-        min(
-            c["open"],
-            c["close"]
-        )
+        min(c["open"], c["close"])
         - c["low"]
     ) / range_c
 
     upper_wick_c = (
         c["high"]
-        - max(
-            c["open"],
-            c["close"]
-        )
+        - max(c["open"], c["close"])
     ) / range_c
-
-    # -------------------------------------------------
-    # BUY
-    # Aktualna C sviecka MUSI byt priamo pri supporte.
-    # Stary dotyk A/B uz nestaci.
-    # -------------------------------------------------
 
     buy_zone_touch = (
         support is not None
@@ -1050,19 +1044,13 @@ def get_signal(
         and c["close"] > support
         and (
             c["close"] > b["close"]
-            or lower_wick_c
-            >= REJECTION_WICK_MIN
+            or lower_wick_c >= REJECTION_WICK_MIN
         )
     )
 
-    if (
-        buy_zone_touch
-        and buy_confirmation
-    ):
+    if buy_zone_touch and buy_confirmation:
 
-        distance = (
-            c["close"] - support
-        )
+        distance = c["close"] - support
 
         room_to_resistance = (
             resistance - c["close"]
@@ -1072,8 +1060,7 @@ def get_signal(
 
         if (
             distance >= 0
-            and distance
-            <= atr * MAX_ZONE_DISTANCE_ATR
+            and distance <= atr * MAX_ZONE_DISTANCE_ATR
             and room_to_resistance
             >= atr * OPPOSITE_ZONE_BLOCK_ATR
         ):
@@ -1082,12 +1069,6 @@ def get_signal(
                 support,
                 "STRICT SUPPORT REJECTION BUY"
             )
-
-    # -------------------------------------------------
-    # SELL
-    # Aktualna C sviecka MUSI byt priamo pri resistance.
-    # Stary dotyk A/B uz nestaci.
-    # -------------------------------------------------
 
     sell_zone_touch = (
         resistance is not None
@@ -1101,19 +1082,13 @@ def get_signal(
         and c["close"] < resistance
         and (
             c["close"] < b["close"]
-            or upper_wick_c
-            >= REJECTION_WICK_MIN
+            or upper_wick_c >= REJECTION_WICK_MIN
         )
     )
 
-    if (
-        sell_zone_touch
-        and sell_confirmation
-    ):
+    if sell_zone_touch and sell_confirmation:
 
-        distance = (
-            resistance - c["close"]
-        )
+        distance = resistance - c["close"]
 
         room_to_support = (
             c["close"] - support
@@ -1123,8 +1098,7 @@ def get_signal(
 
         if (
             distance >= 0
-            and distance
-            <= atr * MAX_ZONE_DISTANCE_ATR
+            and distance <= atr * MAX_ZONE_DISTANCE_ATR
             and room_to_support
             >= atr * OPPOSITE_ZONE_BLOCK_ATR
         ):
@@ -1134,11 +1108,7 @@ def get_signal(
                 "STRICT RESISTANCE REJECTION SELL"
             )
 
-    return (
-        None,
-        None,
-        "WAITING"
-    )
+    return None, None, "WAITING"
 
 
 # =====================================================
@@ -1187,9 +1157,7 @@ def fetch_news():
         try:
 
             dt = datetime.fromisoformat(
-                str(
-                    event["date"]
-                ).replace(
+                str(event["date"]).replace(
                     "Z",
                     "+00:00"
                 )
@@ -1230,10 +1198,7 @@ async def news_blocked():
         >= NEWS_RETRY
     )
 
-    if (
-        refresh_due
-        and retry_allowed
-    ):
+    if refresh_due and retry_allowed:
 
         news_cache["last_attempt"] = now
 
@@ -1247,9 +1212,7 @@ async def news_blocked():
             )
 
             news_cache["events"] = events
-            news_cache["updated"] = (
-                time.time()
-            )
+            news_cache["updated"] = time.time()
 
         except Exception as e:
 
@@ -1269,11 +1232,9 @@ async def news_blocked():
     for event_time in news_cache["events"]:
 
         if (
-            event_time
-            - NEWS_BEFORE * 60
+            event_time - NEWS_BEFORE * 60
             <= now
-            <= event_time
-            + NEWS_AFTER * 60
+            <= event_time + NEWS_AFTER * 60
         ):
             return True
 
@@ -1346,9 +1307,7 @@ def normalize(value, market):
     tick = market["tick"]
 
     return round(
-        round(
-            value / tick
-        ) * tick,
+        round(value / tick) * tick,
         market["digits"]
     )
 
@@ -1371,13 +1330,9 @@ def get_levels(
     )
 
     if side == "BUY":
-        raw_sl = (
-            zone - buffer
-        )
+        raw_sl = zone - buffer
     else:
-        raw_sl = (
-            zone + buffer
-        )
+        raw_sl = zone + buffer
 
     raw_risk = abs(
         entry - raw_sl
@@ -1389,10 +1344,7 @@ def get_levels(
     )
 
     if risk > MAX_SL_DISTANCE:
-        return (
-            None,
-            "SL TOO LARGE"
-        )
+        return None, "SL TOO LARGE"
 
     if side == "BUY":
 
@@ -1419,10 +1371,7 @@ def get_levels(
     )
 
     if actual_risk <= 0:
-        return (
-            None,
-            "INVALID RISK"
-        )
+        return None, "INVALID RISK"
 
     return {
         "sl": sl,
@@ -1459,8 +1408,7 @@ async def verify_new_position(
             p for p in new_positions
             if (
                 position_side(p) == side
-                and
-                abs(
+                and abs(
                     float(
                         p.get(
                             "volume",
@@ -1570,8 +1518,7 @@ async def open_batch(
         abs(
             entry - signal_close
         )
-        > atr
-        * MAX_ENTRY_DRIFT_ATR
+        > atr * MAX_ENTRY_DRIFT_ATR
     ):
 
         print(
@@ -1589,8 +1536,7 @@ async def open_batch(
     if (
         zone_distance < 0
         or zone_distance
-        > atr
-        * MAX_ZONE_DISTANCE_ATR
+        > atr * MAX_ZONE_DISTANCE_ATR
     ):
 
         print(
@@ -2085,6 +2031,8 @@ async def adopt_positions(
 
 async def bot_session(state):
 
+    # PYTHON SDK:
+    # ZIADNY REGION PARAMETER SEM NEPATRÍ.
     api = MetaApi(
         M_TOKEN
     )
@@ -2158,12 +2106,17 @@ async def bot_session(state):
 
         notify(
             "RIO GOLD V12 SWING ZONES CONNECTED\n"
+            "STABLE RPC MODE ACTIVE\n"
             "POSITIONS VERIFIED\n"
             f"OPEN: {len(positions)}/4\n"
             f"COUNT: "
             f"{state['trade_count']}/4\n"
             f"LIVE: {ENABLE_TRADING}"
         )
+
+        # NOVÉ:
+        # Počet skutočne po sebe idúcich RPC problémov.
+        consecutive_rpc_failures = 0
 
         while True:
 
@@ -2172,6 +2125,9 @@ async def bot_session(state):
                 positions = await get_positions(
                     connection
                 )
+
+                # Úspešný RPC call = spojenie odpovedá.
+                consecutive_rpc_failures = 0
 
                 current_ids = {
                     str(p["id"])
@@ -2475,6 +2431,41 @@ async def bot_session(state):
                     LOOP_SECONDS
                 )
 
+            # =================================================
+            # NOVÉ:
+            # KRÁTKY METAAPI TIMEOUT NEZHODÍ CELÚ SESSION
+            # =================================================
+
+            except MetaApiTemporaryError as e:
+
+                consecutive_rpc_failures += 1
+
+                print(
+                    "METAAPI TEMPORARY RPC FAILURE "
+                    f"{consecutive_rpc_failures}/"
+                    f"{MAX_CONSECUTIVE_RPC_FAILURES}: "
+                    f"{e}",
+                    flush=True
+                )
+
+                if (
+                    consecutive_rpc_failures
+                    >= MAX_CONSECUTIVE_RPC_FAILURES
+                ):
+
+                    raise RuntimeError(
+                        "METAAPI CONNECTION LOST "
+                        "AFTER REPEATED RPC FAILURES"
+                    ) from e
+
+                # Nezatvárame connection.
+                # Len chvíľu počkáme a použijeme tú istú session.
+                await asyncio.sleep(
+                    RPC_FAILURE_WAIT
+                )
+
+                continue
+
             except Exception as e:
 
                 print(
@@ -2499,7 +2490,6 @@ async def bot_session(state):
                     or any(
                         word in message
                         for word in (
-                            "metaapi positions failed",
                             "not connected",
                             "not synchronized",
                             "websocket",
@@ -2515,10 +2505,38 @@ async def bot_session(state):
 
                 if connection_error:
 
-                    raise RuntimeError(
-                        "METAAPI CONNECTION LOST "
-                        "AFTER RETRIES"
-                    ) from e
+                    consecutive_rpc_failures += 1
+
+                    print(
+                        "METAAPI CONNECTION WARNING "
+                        f"{consecutive_rpc_failures}/"
+                        f"{MAX_CONSECUTIVE_RPC_FAILURES}: "
+                        f"{type(e).__name__}: {e}",
+                        flush=True
+                    )
+
+                    if (
+                        consecutive_rpc_failures
+                        >= MAX_CONSECUTIVE_RPC_FAILURES
+                    ):
+
+                        raise RuntimeError(
+                            "METAAPI CONNECTION LOST "
+                            "AFTER REPEATED FAILURES"
+                        ) from e
+
+                    await asyncio.sleep(
+                        RPC_FAILURE_WAIT
+                    )
+
+                    continue
+
+                # Ne-MetaApi chyba nezrúti session.
+                print(
+                    "NON-CONNECTION LOOP ERROR - "
+                    "SESSION KEPT ALIVE",
+                    flush=True
+                )
 
                 await asyncio.sleep(
                     LOOP_SECONDS
@@ -2557,6 +2575,8 @@ async def main():
 
     telegram(
         "RIOBOT GOLD V12 SWING ZONES START\n"
+        "STABLE METAAPI RPC MODE\n"
+        "SHORT TIMEOUT DOES NOT FORCE RECONNECT\n"
         "STRICT CURRENT-CANDLE ZONE ENTRY\n"
         "M1 LOCAL SWING SUPPORT/RESISTANCE\n"
         "ZONE REJECTION CONFIRMATION\n"
@@ -2564,7 +2584,9 @@ async def main():
         "ATR14\n"
         "M5 EMA50 TREND FILTER\n"
         "M1 MOMENTUM FILTER\n"
-        "METAAPI 3 RETRIES ACTIVE\n"
+        "METAAPI 3 RPC RETRIES ACTIVE\n"
+        f"FULL RECONNECT AFTER "
+        f"{MAX_CONSECUTIVE_RPC_FAILURES} FAILED CYCLES\n"
         "AUTO BATCH RESET ACTIVE\n"
         "4 POSITIONS ON ONE SIGNAL\n"
         "ATR SL + 1.5R TP\n"
@@ -2597,7 +2619,7 @@ async def main():
                 "RIO V12 CONNECTION ERROR\n"
                 f"{type(e).__name__}: "
                 f"{str(e)[:100]}\n"
-                "RECONNECT IN 5 SECONDS"
+                "FULL RECONNECT IN 5 SECONDS"
             )
 
             await asyncio.sleep(
@@ -2613,4 +2635,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-                   )
+    )
