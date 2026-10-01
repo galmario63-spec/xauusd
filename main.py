@@ -17,7 +17,7 @@ from metaapi_cloud_sdk import MetaApi
 # =====================================================
 
 SYMBOL = "XAUUSD"
-COMMENT = "RIOV12"
+COMMENT = "RIO GOLD V12 SWING ZONES ATR EMA MOM"
 
 LOT_SIZE = 0.01
 BATCH_SIZE = 4
@@ -56,33 +56,29 @@ MIN_BODY_RATIO = 0.25
 
 MAX_SIGNAL_RANGE_ATR = 2.20
 MAX_ENTRY_DRIFT_ATR = 0.50
-MAX_ZONE_DISTANCE_ATR = 2.20
+
+# ZMENA:
+# vstup musi ostat blizko support/resistance zony
+MAX_ZONE_DISTANCE_ATR = 0.80
 
 MAX_SPREAD = 0.40
 
 
 # =====================================================
-# NOVÉ - LOCAL SWING ZONES
+# LOCAL SWING ZONES
 # =====================================================
 
-# Pivot potrebuje HIGH/LOW vyssie/nizsie nez okolite sviecky.
 SWING_LEFT = 2
 SWING_RIGHT = 2
 
-# Kolko poslednych pivotov sa moze pouzit.
 MAX_SWINGS = 12
 
-# Zlucenie blizkych pivotov do jednej zony.
 SWING_CLUSTER_ATR = 0.45
 
-# Minimalny pocet dotykov zony.
 MIN_ZONE_TOUCHES = 1
 
-# Nevstupit BUY tesne pod resistance
-# ani SELL tesne nad support.
 OPPOSITE_ZONE_BLOCK_ATR = 0.80
 
-# Potvrdenie odmietnutia zony.
 REJECTION_WICK_MIN = 0.15
 
 
@@ -968,7 +964,7 @@ def detect_zones(candles, atr):
 
 
 # =====================================================
-# SIGNAL - ZONE REJECTION
+# SIGNAL - STRICT CURRENT-CANDLE ZONE REJECTION
 # =====================================================
 
 def get_signal(
@@ -979,7 +975,6 @@ def get_signal(
     atr
 ):
 
-    a = candles[-3]
     b = candles[-2]
     c = candles[-1]
 
@@ -1038,31 +1033,15 @@ def get_signal(
     ) / range_c
 
     # -------------------------------------------------
-    # BUY - SUPPORT REJECTION
+    # BUY
+    # Aktualna C sviecka MUSI byt priamo pri supporte.
+    # Stary dotyk A/B uz nestaci.
     # -------------------------------------------------
 
     buy_zone_touch = (
         support is not None
-        and (
-            a["low"]
-            <= support + tolerance
-            or
-            b["low"]
-            <= support + tolerance
-            or
-            c["low"]
-            <= support + tolerance
-        )
-        and (
-            a["high"]
-            >= support - tolerance
-            or
-            b["high"]
-            >= support - tolerance
-            or
-            c["high"]
-            >= support - tolerance
-        )
+        and c["low"] <= support + tolerance
+        and c["high"] >= support - tolerance
     )
 
     buy_confirmation = (
@@ -1094,44 +1073,26 @@ def get_signal(
         if (
             distance >= 0
             and distance
-            <= atr
-            * MAX_ZONE_DISTANCE_ATR
+            <= atr * MAX_ZONE_DISTANCE_ATR
             and room_to_resistance
-            >= atr
-            * OPPOSITE_ZONE_BLOCK_ATR
+            >= atr * OPPOSITE_ZONE_BLOCK_ATR
         ):
             return (
                 "BUY",
                 support,
-                "LOCAL SUPPORT REJECTION BUY"
+                "STRICT SUPPORT REJECTION BUY"
             )
 
     # -------------------------------------------------
-    # SELL - RESISTANCE REJECTION
+    # SELL
+    # Aktualna C sviecka MUSI byt priamo pri resistance.
+    # Stary dotyk A/B uz nestaci.
     # -------------------------------------------------
 
     sell_zone_touch = (
         resistance is not None
-        and (
-            a["high"]
-            >= resistance - tolerance
-            or
-            b["high"]
-            >= resistance - tolerance
-            or
-            c["high"]
-            >= resistance - tolerance
-        )
-        and (
-            a["low"]
-            <= resistance + tolerance
-            or
-            b["low"]
-            <= resistance + tolerance
-            or
-            c["low"]
-            <= resistance + tolerance
-        )
+        and c["high"] >= resistance - tolerance
+        and c["low"] <= resistance + tolerance
     )
 
     sell_confirmation = (
@@ -1163,16 +1124,14 @@ def get_signal(
         if (
             distance >= 0
             and distance
-            <= atr
-            * MAX_ZONE_DISTANCE_ATR
+            <= atr * MAX_ZONE_DISTANCE_ATR
             and room_to_support
-            >= atr
-            * OPPOSITE_ZONE_BLOCK_ATR
+            >= atr * OPPOSITE_ZONE_BLOCK_ATR
         ):
             return (
                 "SELL",
                 resistance,
-                "LOCAL RESISTANCE REJECTION SELL"
+                "STRICT RESISTANCE REJECTION SELL"
             )
 
     return (
@@ -2267,10 +2226,6 @@ async def bot_session(state):
                         "WAITING FOR NEW SIGNAL"
                     )
 
-                # -------------------------------------
-                # OTVORENE POZICIE = BE PRIORITA
-                # -------------------------------------
-
                 if positions:
 
                     market = await get_market(
@@ -2502,7 +2457,7 @@ async def bot_session(state):
                         f"LOCAL ZONE: {zone:.2f}\n"
                         f"ATR: {atr:.2f}\n"
                         f"M5 EMA50: {ema50:.2f}\n"
-                        "ZONE REJECTION: OK\n"
+                        "STRICT ZONE REJECTION: OK\n"
                         "M1 MOMENTUM: OK\n"
                         "REQUEST: 4 POSITIONS"
                     )
@@ -2602,6 +2557,7 @@ async def main():
 
     telegram(
         "RIOBOT GOLD V12 SWING ZONES START\n"
+        "STRICT CURRENT-CANDLE ZONE ENTRY\n"
         "M1 LOCAL SWING SUPPORT/RESISTANCE\n"
         "ZONE REJECTION CONFIRMATION\n"
         "OPPOSITE ZONE PROTECTION\n"
@@ -2657,4 +2613,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-            )
+                   )
