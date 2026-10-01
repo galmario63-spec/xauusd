@@ -238,10 +238,7 @@ def save_state(state):
         json.dump(state, f)
 
         f.flush()
-
-        os.fsync(
-            f.fileno()
-        )
+        os.fsync(f.fileno())
 
     os.replace(
         temp,
@@ -348,12 +345,12 @@ def position_side(position):
 
 # =====================================================
 # M1 DATA
-# FIX: LIMIT SA POSIELA IBA RAZ
+# FIX: NO MANUAL LIMIT QUERY
 # =====================================================
 
 async def get_candles(region):
 
-    base_url = (
+    url = (
         "https://mt-market-data-client-api-v1."
         f"{region}.agiliumtrade.ai/"
         f"users/current/accounts/{M_ACC}/"
@@ -364,12 +361,9 @@ async def get_candles(region):
     def fetch():
 
         response = requests.get(
-            base_url,
+            url,
             headers={
                 "auth-token": M_TOKEN
-            },
-            params={
-                "limit": 300
             },
             timeout=12
         )
@@ -377,17 +371,25 @@ async def get_candles(region):
         if response.status_code != 200:
 
             raise RuntimeError(
-                "M1 DATA REQUEST ERROR: "
-                f"{response.status_code} "
+                "M1 DATA HTTP "
+                f"{response.status_code}: "
                 f"{response.text[:300]}"
             )
 
         return response.json()
 
-    raw = await asyncio.wait_for(
-        asyncio.to_thread(fetch),
-        timeout=16
-    )
+    try:
+
+        raw = await asyncio.wait_for(
+            asyncio.to_thread(fetch),
+            timeout=16
+        )
+
+    except Exception as e:
+
+        raise RuntimeError(
+            f"M1 DATA REQUEST ERROR: {e}"
+        ) from e
 
     if not isinstance(raw, list):
 
@@ -422,7 +424,7 @@ async def get_candles(region):
                 timezone.utc
             )
 
-            # Používame iba uzavreté M1 sviečky
+            # iba uzavrete M1 sviecky
             if (
                 now - dt
             ).total_seconds() < 61:
@@ -454,7 +456,7 @@ async def get_candles(region):
     if len(candles) < 70:
 
         raise RuntimeError(
-            "NOT ENOUGH M1 HISTORY"
+            f"NOT ENOUGH M1 HISTORY: {len(candles)}"
         )
 
     last = datetime.fromisoformat(
@@ -706,7 +708,7 @@ def momentum_filter(candles, side):
 
 
 # =====================================================
-# PRESTAVKA FILTER
+# BROKER BREAK FILTER
 # =====================================================
 
 def broker_break_blocked():
@@ -2093,7 +2095,7 @@ async def bot_session(state):
                     continue
 
                 # =====================================
-                # 15 MIN PRED PRESTAVKOU
+                # BROKER BREAK
                 # =====================================
 
                 if broker_break_blocked():
@@ -2247,7 +2249,7 @@ async def bot_session(state):
                     continue
 
                 # =====================================
-                # M1 MOMENTUM FILTER
+                # M1 MOMENTUM
                 # =====================================
 
                 if not momentum_filter(
@@ -2394,7 +2396,7 @@ async def main():
         "M1 SUPPORT/RESISTANCE + ATR14\n"
         "M5 EMA50 TREND FILTER\n"
         "M1 MOMENTUM FILTER\n"
-        "SAFE M1 DATA FIX ACTIVE\n"
+        "M1 DATA QUERY FIX ACTIVE\n"
         "15 MIN PRE-BREAK ENTRY BLOCK\n"
         "4 POSITIONS ON ONE SIGNAL\n"
         "ATR SL + 1.5R TP\n"
