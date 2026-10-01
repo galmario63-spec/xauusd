@@ -31,9 +31,10 @@ ENABLE_TRADING = (
 
 LOOP_SECONDS = 2
 
-# -----------------------------------------------------
+
+# =====================================================
 # METAAPI STABILITY
-# -----------------------------------------------------
+# =====================================================
 
 RECONNECT_SECONDS = 5
 
@@ -41,12 +42,11 @@ RPC_TIMEOUT = 20
 RPC_RETRIES = 3
 RPC_RETRY_DELAY = 3
 
-# NOVÉ:
-# Jeden krátky RPC výpadok už nezruší celú session.
-# Až tento počet po sebe idúcich zlyhaní vyvolá reconnect.
+# Krátky RPC timeout NEZHODÍ session.
+# Až viac po sebe idúcich zlyhaných RPC cyklov
+# vyvolá úplný reconnect.
 MAX_CONSECUTIVE_RPC_FAILURES = 5
 
-# Medzi zlyhanými RPC cyklami chvíľu počkáme.
 RPC_FAILURE_WAIT = 4
 
 CONNECT_TIMEOUT = 90
@@ -94,7 +94,7 @@ REJECTION_WICK_MIN = 0.15
 
 
 # =====================================================
-# FILTRE
+# FILTERS
 # =====================================================
 
 EMA_PERIOD = 50
@@ -175,7 +175,7 @@ news_cache = {
 class MetaApiTemporaryError(Exception):
     """
     Docasna MetaApi/RPC chyba.
-    Neznamena automaticky, ze treba zhodit celu session.
+    Kratky timeout neznamena automaticky reconnect.
     """
     pass
 
@@ -320,69 +320,101 @@ def load_state():
 
 
 # =====================================================
-# METAAPI - STABLE RPC
+# METAAPI - SAFE RPC
 # =====================================================
 
 async def meta_call(
-    coroutine,
-    timeout=RPC_TIMEOUT
+    coroutine_factory,
+    timeout=RPC_TIMEOUT,
+    retries=RPC_RETRIES
 ):
-    return await asyncio.wait_for(
-        coroutine,
-        timeout=timeout
-    )
-
-
-async def get_positions(connection):
 
     last_error = None
 
     for attempt in range(
         1,
-        RPC_RETRIES + 1
+        retries + 1
     ):
 
         try:
 
-            result = await meta_call(
-                connection.get_positions(),
-                timeout=RPC_TIMEOUT
+            return await asyncio.wait_for(
+                coroutine_factory(),
+                timeout=timeout
             )
 
-            if not isinstance(result, list):
-                raise RuntimeError(
-                    "INVALID POSITIONS RESPONSE"
-                )
+        except (
+            asyncio.TimeoutError,
+            TimeoutError
+        ) as e:
 
-            return [
-                p for p in result
-                if str(
-                    p.get("symbol", "")
-                ).upper() == SYMBOL
-            ]
+            last_error = e
+
+            print(
+                f"METAAPI RPC TIMEOUT "
+                f"{attempt}/{retries}",
+                flush=True
+            )
 
         except Exception as e:
 
             last_error = e
 
+            message = str(e).lower()
+
+            temporary = any(
+                word in message
+                for word in (
+                    "timeout",
+                    "timed out",
+                    "not connected",
+                    "not synchronized",
+                    "websocket",
+                    "subscription",
+                    "disconnected",
+                    "broker yet",
+                    "connection lost"
+                )
+            )
+
+            if not temporary:
+                raise
+
             print(
-                f"POSITIONS RPC RETRY "
-                f"{attempt}/{RPC_RETRIES}: "
+                f"METAAPI RPC TEMP ERROR "
+                f"{attempt}/{retries}: "
                 f"{type(e).__name__}: {e}",
                 flush=True
             )
 
-            if attempt < RPC_RETRIES:
-                await asyncio.sleep(
-                    RPC_RETRY_DELAY
-                )
+        if attempt < retries:
+            await asyncio.sleep(
+                RPC_RETRY_DELAY
+            )
 
-    # DÔLEŽITÁ ZMENA:
-    # Už z toho nerobíme okamžite úplný connection lost.
     raise MetaApiTemporaryError(
-        "METAAPI POSITIONS TEMPORARILY UNAVAILABLE: "
+        "METAAPI RPC TEMPORARILY UNAVAILABLE: "
         f"{type(last_error).__name__}: {last_error}"
     )
+
+
+async def get_positions(connection):
+
+    result = await meta_call(
+        lambda: connection.get_positions()
+    )
+
+    if not isinstance(result, list):
+        raise RuntimeError(
+            "INVALID POSITIONS RESPONSE"
+        )
+
+    return [
+        p for p in result
+        if str(
+            p.get("symbol", "")
+        ).upper() == SYMBOL
+    ]
 
 
 def position_side(position):
@@ -430,6 +462,9 @@ async def get_candles(region):
             url,
             headers={
                 "auth-token": M_TOKEN
+            },
+            params={
+                "limit": 300
             },
             timeout=12
         )
@@ -1248,13 +1283,13 @@ async def news_blocked():
 async def get_market(connection):
 
     spec = await meta_call(
-        connection.get_symbol_specification(
+        lambda: connection.get_symbol_specification(
             SYMBOL
         )
     )
 
     price = await meta_call(
-        connection.get_symbol_price(
+        lambda: connection.get_symbol_price(
             SYMBOL
         )
     )
@@ -1394,9 +1429,18 @@ async def verify_new_position(
 
         await asyncio.sleep(1)
 
-        positions = await get_positions(
-            connection
-        )
+        try:
+            positions = await get_positions(
+                connection
+            )
+
+        except MetaApiTemporaryError:
+
+            print(
+                "VERIFY POSITION TEMP RPC ERROR",
+                flush=True
+            )
+            continue
 
         new_positions = [
             p for p in positions
@@ -1663,7 +1707,7 @@ async def open_batch(
             if side == "BUY":
 
                 result = await meta_call(
-                    connection.create_market_buy_order(
+                    lambda: connection.create_market_buy_order(
                         SYMBOL,
                         LOT_SIZE,
                         sl,
@@ -1676,7 +1720,7 @@ async def open_batch(
             else:
 
                 result = await meta_call(
-                    connection.create_market_sell_order(
+                    lambda: connection.create_market_sell_order(
                         SYMBOL,
                         LOT_SIZE,
                         sl,
@@ -1927,7 +1971,7 @@ async def protect_position(
             return
 
     await meta_call(
-        connection.modify_position(
+        lambda: connection.modify_position(
             position["id"],
             wanted_sl,
             current_tp
@@ -2031,14 +2075,14 @@ async def adopt_positions(
 
 async def bot_session(state):
 
-    # PYTHON SDK:
-    # ZIADNY REGION PARAMETER SEM NEPATRÍ.
+    # Python MetaApi SDK:
+    # region parameter sa sem NEPOSIELA.
     api = MetaApi(
         M_TOKEN
     )
 
     account = await meta_call(
-        api.metatrader_account_api.get_account(
+        lambda: api.metatrader_account_api.get_account(
             M_ACC
         ),
         timeout=35
@@ -2059,13 +2103,16 @@ async def bot_session(state):
     ):
 
         await meta_call(
-            account.deploy(),
+            lambda: account.deploy(),
             timeout=45
         )
 
-    await asyncio.wait_for(
-        account.wait_connected(),
-        timeout=CONNECT_TIMEOUT
+    # Connect fáza môže trvať dlhšie.
+    # Tu používame retry wrapper namiesto jedného wait_for.
+    await meta_call(
+        lambda: account.wait_connected(),
+        timeout=CONNECT_TIMEOUT,
+        retries=3
     )
 
     connection = (
@@ -2075,13 +2122,15 @@ async def bot_session(state):
     try:
 
         await meta_call(
-            connection.connect(),
-            timeout=CONNECT_TIMEOUT
+            lambda: connection.connect(),
+            timeout=CONNECT_TIMEOUT,
+            retries=3
         )
 
-        await asyncio.wait_for(
-            connection.wait_synchronized(),
-            timeout=CONNECT_TIMEOUT
+        await meta_call(
+            lambda: connection.wait_synchronized(),
+            timeout=CONNECT_TIMEOUT,
+            retries=3
         )
 
         await adopt_positions(
@@ -2106,7 +2155,8 @@ async def bot_session(state):
 
         notify(
             "RIO GOLD V12 SWING ZONES CONNECTED\n"
-            "STABLE RPC MODE ACTIVE\n"
+            "SAFE RPC MODE ACTIVE\n"
+            "SHORT TIMEOUT DOES NOT FORCE RECONNECT\n"
             "POSITIONS VERIFIED\n"
             f"OPEN: {len(positions)}/4\n"
             f"COUNT: "
@@ -2114,8 +2164,6 @@ async def bot_session(state):
             f"LIVE: {ENABLE_TRADING}"
         )
 
-        # NOVÉ:
-        # Počet skutočne po sebe idúcich RPC problémov.
         consecutive_rpc_failures = 0
 
         while True:
@@ -2126,7 +2174,7 @@ async def bot_session(state):
                     connection
                 )
 
-                # Úspešný RPC call = spojenie odpovedá.
+                # Úspešný RPC cyklus resetuje počítadlo.
                 consecutive_rpc_failures = 0
 
                 current_ids = {
@@ -2432,8 +2480,8 @@ async def bot_session(state):
                 )
 
             # =================================================
-            # NOVÉ:
-            # KRÁTKY METAAPI TIMEOUT NEZHODÍ CELÚ SESSION
+            # KRÁTKY METAAPI TIMEOUT:
+            # SESSION OSTÁVA ŽIVÁ
             # =================================================
 
             except MetaApiTemporaryError as e:
@@ -2448,6 +2496,14 @@ async def bot_session(state):
                     flush=True
                 )
 
+                notify(
+                    "RIO V12 METAAPI TEMPORARY TIMEOUT\n"
+                    f"FAILURE: "
+                    f"{consecutive_rpc_failures}/"
+                    f"{MAX_CONSECUTIVE_RPC_FAILURES}\n"
+                    "SESSION KEPT ALIVE"
+                )
+
                 if (
                     consecutive_rpc_failures
                     >= MAX_CONSECUTIVE_RPC_FAILURES
@@ -2458,8 +2514,6 @@ async def bot_session(state):
                         "AFTER REPEATED RPC FAILURES"
                     ) from e
 
-                # Nezatvárame connection.
-                # Len chvíľu počkáme a použijeme tú istú session.
                 await asyncio.sleep(
                     RPC_FAILURE_WAIT
                 )
@@ -2531,7 +2585,6 @@ async def bot_session(state):
 
                     continue
 
-                # Ne-MetaApi chyba nezrúti session.
                 print(
                     "NON-CONNECTION LOOP ERROR - "
                     "SESSION KEPT ALIVE",
@@ -2575,7 +2628,7 @@ async def main():
 
     telegram(
         "RIOBOT GOLD V12 SWING ZONES START\n"
-        "STABLE METAAPI RPC MODE\n"
+        "SAFE METAAPI RPC MODE\n"
         "SHORT TIMEOUT DOES NOT FORCE RECONNECT\n"
         "STRICT CURRENT-CANDLE ZONE ENTRY\n"
         "M1 LOCAL SWING SUPPORT/RESISTANCE\n"
@@ -2584,7 +2637,7 @@ async def main():
         "ATR14\n"
         "M5 EMA50 TREND FILTER\n"
         "M1 MOMENTUM FILTER\n"
-        "METAAPI 3 RPC RETRIES ACTIVE\n"
+        "METAAPI RPC RETRIES ACTIVE\n"
         f"FULL RECONNECT AFTER "
         f"{MAX_CONSECUTIVE_RPC_FAILURES} FAILED CYCLES\n"
         "AUTO BATCH RESET ACTIVE\n"
@@ -2605,6 +2658,24 @@ async def main():
 
             await bot_session(
                 state
+            )
+
+        except MetaApiTemporaryError as e:
+
+            print(
+                "SESSION METAAPI TEMP ERROR:",
+                traceback.format_exc(),
+                flush=True
+            )
+
+            notify(
+                "RIO V12 METAAPI CONNECTION UNAVAILABLE\n"
+                f"{str(e)[:100]}\n"
+                "RETRYING IN 5 SECONDS"
+            )
+
+            await asyncio.sleep(
+                RECONNECT_SECONDS
             )
 
         except Exception as e:
@@ -2635,4 +2706,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-    )
+            )
