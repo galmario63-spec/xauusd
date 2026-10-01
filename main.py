@@ -13,11 +13,11 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V12 - STABLE CONNECTION
+# RIOBOT GOLD V12 - LOCAL SWING ZONES
 # =====================================================
 
 SYMBOL = "XAUUSD"
-COMMENT = "RIO GOLD V12 ZONES ATR EMA MOM"
+COMMENT = "RIO GOLD V12 SWING ZONES ATR EMA MOM"
 
 LOT_SIZE = 0.01
 BATCH_SIZE = 4
@@ -30,10 +30,8 @@ ENABLE_TRADING = (
 
 LOOP_SECONDS = 2
 
-# reconnect celej MetaApi session az po realnom zlyhani
 RECONNECT_SECONDS = 5
 
-# RPC ma 3 pokusy pred reconnectom
 RPC_TIMEOUT = 20
 RPC_RETRIES = 3
 RPC_RETRY_DELAY = 2
@@ -61,6 +59,31 @@ MAX_ENTRY_DRIFT_ATR = 0.50
 MAX_ZONE_DISTANCE_ATR = 2.20
 
 MAX_SPREAD = 0.40
+
+
+# =====================================================
+# NOVÉ - LOCAL SWING ZONES
+# =====================================================
+
+# Pivot potrebuje HIGH/LOW vyssie/nizsie nez okolite sviecky.
+SWING_LEFT = 2
+SWING_RIGHT = 2
+
+# Kolko poslednych pivotov sa moze pouzit.
+MAX_SWINGS = 12
+
+# Zlucenie blizkych pivotov do jednej zony.
+SWING_CLUSTER_ATR = 0.45
+
+# Minimalny pocet dotykov zony.
+MIN_ZONE_TOUCHES = 1
+
+# Nevstupit BUY tesne pod resistance
+# ani SELL tesne nad support.
+OPPOSITE_ZONE_BLOCK_ATR = 0.80
+
+# Potvrdenie odmietnutia zony.
+REJECTION_WICK_MIN = 0.15
 
 
 # =====================================================
@@ -147,7 +170,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "RIOBOT GOLD V12 STABLE ACTIVE", 200
+    return "RIOBOT GOLD V12 SWING ZONES ACTIVE", 200
 
 
 def keep_alive():
@@ -292,10 +315,6 @@ async def meta_call(
 
 
 async def get_positions(connection):
-    """
-    Kratky MetaApi timeout uz nezrusi celu session.
-    Robot skusi positions 3x.
-    """
 
     last_error = None
 
@@ -447,7 +466,6 @@ async def get_candles(region):
                 timezone.utc
             )
 
-            # iba uzavrete M1 sviecky
             if (
                 now - dt
             ).total_seconds() < 61:
@@ -759,32 +777,183 @@ def broker_break_blocked():
 
 
 # =====================================================
-# SUPPORT / RESISTANCE
+# LOCAL SWING SUPPORT / RESISTANCE
 # =====================================================
+
+def find_swing_levels(candles):
+
+    history = candles[
+        -(ZONE_LOOKBACK + 10):-3
+    ]
+
+    if len(history) < 10:
+        return [], []
+
+    swing_lows = []
+    swing_highs = []
+
+    for i in range(
+        SWING_LEFT,
+        len(history) - SWING_RIGHT
+    ):
+
+        candle = history[i]
+
+        left = history[
+            i - SWING_LEFT:i
+        ]
+
+        right = history[
+            i + 1:i + 1 + SWING_RIGHT
+        ]
+
+        if all(
+            candle["low"] <= x["low"]
+            for x in left + right
+        ):
+            swing_lows.append(
+                candle["low"]
+            )
+
+        if all(
+            candle["high"] >= x["high"]
+            for x in left + right
+        ):
+            swing_highs.append(
+                candle["high"]
+            )
+
+    return (
+        swing_lows[-MAX_SWINGS:],
+        swing_highs[-MAX_SWINGS:]
+    )
+
+
+def cluster_levels(
+    levels,
+    atr
+):
+
+    if not levels:
+        return []
+
+    max_distance = max(
+        atr * SWING_CLUSTER_ATR,
+        MIN_ZONE_TOLERANCE
+    )
+
+    clusters = []
+
+    for level in levels:
+
+        matched = False
+
+        for cluster in clusters:
+
+            center = sum(
+                cluster
+            ) / len(cluster)
+
+            if (
+                abs(level - center)
+                <= max_distance
+            ):
+                cluster.append(level)
+                matched = True
+                break
+
+        if not matched:
+            clusters.append(
+                [level]
+            )
+
+    result = []
+
+    for cluster in clusters:
+
+        if (
+            len(cluster)
+            >= MIN_ZONE_TOUCHES
+        ):
+
+            result.append({
+                "price": (
+                    sum(cluster)
+                    / len(cluster)
+                ),
+                "touches": len(cluster)
+            })
+
+    return result
+
 
 def detect_zones(candles, atr):
 
-    history = candles[
-        -(ZONE_LOOKBACK + 3):-3
+    swing_lows, swing_highs = (
+        find_swing_levels(candles)
+    )
+
+    support_zones = cluster_levels(
+        swing_lows,
+        atr
+    )
+
+    resistance_zones = cluster_levels(
+        swing_highs,
+        atr
+    )
+
+    reference_price = candles[-1][
+        "close"
     ]
 
-    if len(history) < ZONE_LOOKBACK:
+    supports_below = [
+        z
+        for z in support_zones
+        if z["price"] <= reference_price
+    ]
 
-        return (
-            None,
-            None,
-            None
+    resistances_above = [
+        z
+        for z in resistance_zones
+        if z["price"] >= reference_price
+    ]
+
+    if supports_below:
+
+        support = max(
+            supports_below,
+            key=lambda z: z["price"]
+        )["price"]
+
+    else:
+
+        history = candles[
+            -(ZONE_LOOKBACK + 3):-3
+        ]
+
+        support = min(
+            c["low"]
+            for c in history
         )
 
-    support = min(
-        c["low"]
-        for c in history
-    )
+    if resistances_above:
 
-    resistance = max(
-        c["high"]
-        for c in history
-    )
+        resistance = min(
+            resistances_above,
+            key=lambda z: z["price"]
+        )["price"]
+
+    else:
+
+        history = candles[
+            -(ZONE_LOOKBACK + 3):-3
+        ]
+
+        resistance = max(
+            c["high"]
+            for c in history
+        )
 
     tolerance = max(
         MIN_ZONE_TOLERANCE,
@@ -799,7 +968,7 @@ def detect_zones(candles, atr):
 
 
 # =====================================================
-# SIGNAL
+# SIGNAL - ZONE REJECTION
 # =====================================================
 
 def get_signal(
@@ -852,6 +1021,26 @@ def get_signal(
         / range_c
     )
 
+    lower_wick_c = (
+        min(
+            c["open"],
+            c["close"]
+        )
+        - c["low"]
+    ) / range_c
+
+    upper_wick_c = (
+        c["high"]
+        - max(
+            c["open"],
+            c["close"]
+        )
+    ) / range_c
+
+    # -------------------------------------------------
+    # BUY - SUPPORT REJECTION
+    # -------------------------------------------------
+
     buy_zone_touch = (
         support is not None
         and (
@@ -860,6 +1049,9 @@ def get_signal(
             or
             b["low"]
             <= support + tolerance
+            or
+            c["low"]
+            <= support + tolerance
         )
         and (
             a["high"]
@@ -867,14 +1059,21 @@ def get_signal(
             or
             b["high"]
             >= support - tolerance
+            or
+            c["high"]
+            >= support - tolerance
         )
     )
 
     buy_confirmation = (
         c["close"] > c["open"]
         and body_c >= MIN_BODY_RATIO
-        and c["close"] > b["close"]
         and c["close"] > support
+        and (
+            c["close"] > b["close"]
+            or lower_wick_c
+            >= REJECTION_WICK_MIN
+        )
     )
 
     if (
@@ -886,17 +1085,30 @@ def get_signal(
             c["close"] - support
         )
 
+        room_to_resistance = (
+            resistance - c["close"]
+            if resistance is not None
+            else float("inf")
+        )
+
         if (
             distance >= 0
             and distance
             <= atr
             * MAX_ZONE_DISTANCE_ATR
+            and room_to_resistance
+            >= atr
+            * OPPOSITE_ZONE_BLOCK_ATR
         ):
             return (
                 "BUY",
                 support,
-                "M1 SUPPORT + ATR BUY"
+                "LOCAL SUPPORT REJECTION BUY"
             )
+
+    # -------------------------------------------------
+    # SELL - RESISTANCE REJECTION
+    # -------------------------------------------------
 
     sell_zone_touch = (
         resistance is not None
@@ -906,6 +1118,9 @@ def get_signal(
             or
             b["high"]
             >= resistance - tolerance
+            or
+            c["high"]
+            >= resistance - tolerance
         )
         and (
             a["low"]
@@ -913,14 +1128,21 @@ def get_signal(
             or
             b["low"]
             <= resistance + tolerance
+            or
+            c["low"]
+            <= resistance + tolerance
         )
     )
 
     sell_confirmation = (
         c["close"] < c["open"]
         and body_c >= MIN_BODY_RATIO
-        and c["close"] < b["close"]
         and c["close"] < resistance
+        and (
+            c["close"] < b["close"]
+            or upper_wick_c
+            >= REJECTION_WICK_MIN
+        )
     )
 
     if (
@@ -932,16 +1154,25 @@ def get_signal(
             resistance - c["close"]
         )
 
+        room_to_support = (
+            c["close"] - support
+            if support is not None
+            else float("inf")
+        )
+
         if (
             distance >= 0
             and distance
             <= atr
             * MAX_ZONE_DISTANCE_ATR
+            and room_to_support
+            >= atr
+            * OPPOSITE_ZONE_BLOCK_ATR
         ):
             return (
                 "SELL",
                 resistance,
-                "M1 RESISTANCE + ATR SELL"
+                "LOCAL RESISTANCE REJECTION SELL"
             )
 
     return (
@@ -1321,7 +1552,6 @@ async def open_batch(
     if positions:
         return
 
-    # nova seria vzdy zacina 0/4
     state["trade_count"] = 0
     save_state(state)
 
@@ -1956,8 +2186,6 @@ async def bot_session(state):
             connection
         )
 
-        # ak po restarte nie su otvorene pozicie,
-        # stary 4/4 pocitadlo nesmie blokovat dalsi signal
         if (
             not positions
             and not state["order_uncertain"]
@@ -1970,7 +2198,7 @@ async def bot_session(state):
             save_state(state)
 
         notify(
-            "RIO GOLD V12 STABLE CONNECTED\n"
+            "RIO GOLD V12 SWING ZONES CONNECTED\n"
             "POSITIONS VERIFIED\n"
             f"OPEN: {len(positions)}/4\n"
             f"COUNT: "
@@ -2018,11 +2246,6 @@ async def bot_session(state):
                         f"{len(state['positions'])}"
                     )
 
-                # -------------------------------------
-                # ak sa zavrela cela seria 4 obchodov,
-                # pripravi dalsiu novu seriu
-                # -------------------------------------
-
                 if (
                     not positions
                     and state["trade_count"] > 0
@@ -2045,7 +2268,7 @@ async def bot_session(state):
                     )
 
                 # -------------------------------------
-                # otvorene pozicie = BE priorita
+                # OTVORENE POZICIE = BE PRIORITA
                 # -------------------------------------
 
                 if positions:
@@ -2080,10 +2303,6 @@ async def bot_session(state):
                     )
 
                     continue
-
-                # -------------------------------------
-                # safety
-                # -------------------------------------
 
                 if (
                     state["halted"]
@@ -2186,6 +2405,14 @@ async def bot_session(state):
                     atr
                 )
 
+                print(
+                    "LOCAL ZONES:",
+                    f"SUPPORT={support:.2f}",
+                    f"RESISTANCE={resistance:.2f}",
+                    f"ATR={atr:.2f}",
+                    flush=True
+                )
+
                 (
                     side,
                     zone,
@@ -2272,9 +2499,10 @@ async def bot_session(state):
                     notify(
                         "RIO V12 SIGNAL APPROVED\n"
                         f"SIDE: {side}\n"
-                        f"ZONE: {zone:.2f}\n"
+                        f"LOCAL ZONE: {zone:.2f}\n"
                         f"ATR: {atr:.2f}\n"
                         f"M5 EMA50: {ema50:.2f}\n"
+                        "ZONE REJECTION: OK\n"
                         "M1 MOMENTUM: OK\n"
                         "REQUEST: 4 POSITIONS"
                     )
@@ -2373,11 +2601,13 @@ async def main():
     state = load_state()
 
     telegram(
-        "RIOBOT GOLD V12 STABLE START\n"
-        "M1 SUPPORT/RESISTANCE + ATR14\n"
+        "RIOBOT GOLD V12 SWING ZONES START\n"
+        "M1 LOCAL SWING SUPPORT/RESISTANCE\n"
+        "ZONE REJECTION CONFIRMATION\n"
+        "OPPOSITE ZONE PROTECTION\n"
+        "ATR14\n"
         "M5 EMA50 TREND FILTER\n"
         "M1 MOMENTUM FILTER\n"
-        "M1 DATA FIX ACTIVE\n"
         "METAAPI 3 RETRIES ACTIVE\n"
         "AUTO BATCH RESET ACTIVE\n"
         "4 POSITIONS ON ONE SIGNAL\n"
@@ -2427,4 +2657,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-    )
+            )
