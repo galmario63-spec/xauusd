@@ -17,7 +17,7 @@ from metaapi_cloud_sdk import MetaApi
 # =====================================================
 
 SYMBOL = "XAUUSD"
-COMMENT = "RIO GOLD V12 SWING ZONES ATR EMA MOM"
+COMMENT = "RIOV12"
 
 LOT_SIZE = 0.01
 BATCH_SIZE = 4
