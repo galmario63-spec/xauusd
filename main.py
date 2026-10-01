@@ -18,7 +18,9 @@ from metaapi_cloud_sdk import MetaApi
 # =====================================================
 
 SYMBOL = "XAUUSD"
-COMMENT = "RIO GOLD V12 SWING ZONES ATR EMA MOM"
+
+# KRATKY COMMENT - MetaApi ma limit dlzky
+COMMENT = "RIOV12"
 
 LOT_SIZE = 0.01
 BATCH_SIZE = 4
@@ -42,11 +44,7 @@ RPC_TIMEOUT = 20
 RPC_RETRIES = 3
 RPC_RETRY_DELAY = 3
 
-# Krátky RPC timeout NEZHODÍ session.
-# Až viac po sebe idúcich zlyhaných RPC cyklov
-# vyvolá úplný reconnect.
 MAX_CONSECUTIVE_RPC_FAILURES = 5
-
 RPC_FAILURE_WAIT = 4
 
 CONNECT_TIMEOUT = 90
@@ -331,13 +329,9 @@ async def meta_call(
 
     last_error = None
 
-    for attempt in range(
-        1,
-        retries + 1
-    ):
+    for attempt in range(1, retries + 1):
 
         try:
-
             return await asyncio.wait_for(
                 coroutine_factory(),
                 timeout=timeout
@@ -359,7 +353,6 @@ async def meta_call(
         except Exception as e:
 
             last_error = e
-
             message = str(e).lower()
 
             temporary = any(
@@ -1700,6 +1693,9 @@ async def open_batch(
             BATCH_SIZE + 1
         ):
 
+            # FIX:
+            # MetaApi ma limit dlzky comment/clientId.
+            # Pouzivame kratky comment.
             options = {
                 "comment": COMMENT
             }
@@ -2107,8 +2103,6 @@ async def bot_session(state):
             timeout=45
         )
 
-    # Connect fáza môže trvať dlhšie.
-    # Tu používame retry wrapper namiesto jedného wait_for.
     await meta_call(
         lambda: account.wait_connected(),
         timeout=CONNECT_TIMEOUT,
@@ -2174,7 +2168,6 @@ async def bot_session(state):
                     connection
                 )
 
-                # Úspešný RPC cyklus resetuje počítadlo.
                 consecutive_rpc_failures = 0
 
                 current_ids = {
@@ -2479,11 +2472,6 @@ async def bot_session(state):
                     LOOP_SECONDS
                 )
 
-            # =================================================
-            # KRÁTKY METAAPI TIMEOUT:
-            # SESSION OSTÁVA ŽIVÁ
-            # =================================================
-
             except MetaApiTemporaryError as e:
 
                 consecutive_rpc_failures += 1
@@ -2706,4 +2694,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-            )
+    )
