@@ -14,7 +14,7 @@ from metaapi_cloud_sdk import MetaApi
 
 # =====================================================
 # RIOBOT GOLD V12 - LOCAL SWING ZONES
-# STABLE METAAPI CONNECTION VERSION
+# NEW SETUP LOCK + STABLE METAAPI CONNECTION
 # =====================================================
 
 SYMBOL = "XAUUSD"
@@ -33,18 +33,15 @@ LOOP_SECONDS = 2
 
 
 # =====================================================
-# METAAPI STABILITY - IMPROVED
+# METAAPI STABILITY
 # =====================================================
 
-# Kratky reconnect po skutocnom vypadku
 RECONNECT_SECONDS = 3
 
-# Jednotlive RPC volanie
 RPC_TIMEOUT = 25
 RPC_RETRIES = 4
 RPC_RETRY_DELAY = 2
 
-# Nezhodime celu session po jednom/dvoch timeoutoch
 MAX_CONSECUTIVE_RPC_FAILURES = 8
 RPC_FAILURE_WAIT = 3
 
@@ -52,6 +49,17 @@ CONNECT_TIMEOUT = 120
 ORDER_TIMEOUT = 45
 
 COOLDOWN_SECONDS = 180
+
+
+# =====================================================
+# NEW SETUP PROTECTION
+# =====================================================
+
+# Po skonceni batchu sa rovnaky smer zamkne.
+# Robot musi najprv vidiet cenu mimo starej signalnej zony
+# a az potom moze prijat novy rejection setup.
+
+NEW_SETUP_RELEASE_ATR = 0.60
 
 
 # =====================================================
@@ -255,7 +263,12 @@ def default_state():
         "last_candle": None,
         "last_signal": None,
         "order_uncertain": False,
-        "halted": False
+        "halted": False,
+
+        # NEW SETUP LOCK
+        "locked_side": None,
+        "locked_zone": None,
+        "setup_released": True
     }
 
 
@@ -1138,6 +1151,114 @@ def get_signal(
 
 
 # =====================================================
+# NEW SETUP LOCK
+# =====================================================
+
+def arm_setup_lock(
+    state,
+    side,
+    zone
+):
+
+    state["locked_side"] = side
+    state["locked_zone"] = zone
+    state["setup_released"] = False
+
+    save_state(state)
+
+    print(
+        "NEW SETUP LOCK ARMED:",
+        side,
+        zone,
+        flush=True
+    )
+
+
+def update_setup_lock(
+    state,
+    candles,
+    atr
+):
+
+    side = state.get(
+        "locked_side"
+    )
+
+    zone = state.get(
+        "locked_zone"
+    )
+
+    if (
+        side is None
+        or zone is None
+        or state.get(
+            "setup_released",
+            True
+        )
+    ):
+        return
+
+    last = candles[-1]
+
+    release_distance = max(
+        atr * NEW_SETUP_RELEASE_ATR,
+        MIN_ZONE_TOLERANCE
+    )
+
+    released = False
+
+    # Po BUY setup-e musi cena odist hore od stareho supportu.
+    if side == "BUY":
+
+        if (
+            last["close"]
+            >= zone + release_distance
+        ):
+            released = True
+
+    # Po SELL setup-e musi cena odist dole od starej rezistencie.
+    elif side == "SELL":
+
+        if (
+            last["close"]
+            <= zone - release_distance
+        ):
+            released = True
+
+    if released:
+
+        state["setup_released"] = True
+
+        save_state(state)
+
+        notify(
+            "RIO V12 OLD SETUP RELEASED\n"
+            f"SIDE: {side}\n"
+            "NEW FRESH SETUP CAN FORM"
+        )
+
+
+def same_setup_blocked(
+    state,
+    side
+):
+
+    locked_side = state.get(
+        "locked_side"
+    )
+
+    released = state.get(
+        "setup_released",
+        True
+    )
+
+    return (
+        locked_side == side
+        and not released
+    )
+
+
+# =====================================================
 # NEWS
 # =====================================================
 
@@ -1488,6 +1609,19 @@ async def open_batch(
     ):
         return
 
+    if same_setup_blocked(
+        state,
+        side
+    ):
+
+        print(
+            "ENTRY BLOCKED: OLD SETUP STILL LOCKED",
+            side,
+            flush=True
+        )
+
+        return
+
     positions = await get_positions(
         connection
     )
@@ -1657,6 +1791,14 @@ async def open_batch(
         )
         return
 
+    # Zamkneme tento setup uz pred prvou objednavkou.
+    # Ak batch skonci na SL, nemoze sa stary setup hned zopakovat.
+    arm_setup_lock(
+        state,
+        side,
+        zone
+    )
+
     state["order_uncertain"] = True
     save_state(state)
 
@@ -1801,14 +1943,12 @@ async def open_batch(
             "RIO V12 BATCH COMPLETED\n"
             f"CONFIRMED: "
             f"{state['trade_count']}/4\n"
-            "BE ONLY ACTIVE"
+            "BE ONLY ACTIVE\n"
+            "OLD SETUP LOCK ACTIVE"
         )
 
     except Exception as e:
 
-        # Dolezite:
-        # pri chybe objednavky nehadame, ci broker obchod otvoril.
-        # Nasledujuci reconnect overi skutocne pozicie.
         state["halted"] = True
         state["order_uncertain"] = True
 
@@ -2051,18 +2191,14 @@ async def adopt_positions(
 
         adopted += 1
 
-    if positions:
+    state["trade_count"] = len(
+        positions
+    )
 
-        state["trade_count"] = len(
-            positions
-        )
+    state["order_uncertain"] = False
+    state["halted"] = False
 
-        # Broker potvrdil skutocne otvorene pozicie.
-        # Uz nie sme v neistom stave.
-        state["order_uncertain"] = False
-        state["halted"] = False
-
-        save_state(state)
+    save_state(state)
 
     if adopted:
 
@@ -2083,9 +2219,6 @@ async def reconcile_state(
     connection,
     state
 ):
-
-    # Toto sa vykona az po uspesnom synchronize + get_positions.
-    # Teda ked MetaApi naozaj potvrdi stav brokera.
 
     positions = await get_positions(
         connection
@@ -2108,8 +2241,6 @@ async def reconcile_state(
 
         return positions
 
-    # MetaApi uspesne odpovedala a broker nema XAUUSD poziciu.
-    # Mozeme bezpecne zrusit stary HALT po neuspesnej objednavke.
     state["positions"] = {}
     state["trade_count"] = 0
     state["order_uncertain"] = False
@@ -2183,7 +2314,6 @@ async def bot_session(state):
             retries=4
         )
 
-        # Po kazdom skutocnom reconnecte overime broker stav.
         positions = await reconcile_state(
             connection,
             state
@@ -2192,6 +2322,7 @@ async def bot_session(state):
         notify(
             "RIO GOLD V12 SWING ZONES CONNECTED\n"
             "STRONG METAAPI RECOVERY ACTIVE\n"
+            "NEW SETUP LOCK ACTIVE\n"
             "POSITIONS VERIFIED\n"
             f"OPEN: {len(positions)}/4\n"
             f"COUNT: "
@@ -2210,7 +2341,6 @@ async def bot_session(state):
                     connection
                 )
 
-                # Uspesny RPC = pocitadlo vypadkov od nuly
                 consecutive_rpc_failures = 0
 
                 current_ids = {
@@ -2263,13 +2393,12 @@ async def bot_session(state):
                     notify(
                         "RIO V12 BATCH FINISHED\n"
                         "COUNT RESET: 0/4\n"
-                        "WAITING FOR NEW SIGNAL"
+                        "OLD SETUP LOCKED\n"
+                        "WAITING FOR FRESH SETUP"
                     )
 
                 if positions:
 
-                    # Ak po reconnecte vznikla pozicia,
-                    # ktoru este nemame v state, adoptujeme ju.
                     missing = [
                         p for p in positions
                         if str(p["id"])
@@ -2319,8 +2448,6 @@ async def bot_session(state):
                     or state["order_uncertain"]
                 ):
 
-                    # Ak broker prave uspesne vratil prazdny
-                    # zoznam pozicii, neistotu mozeme zrusit.
                     state["positions"] = {}
                     state["trade_count"] = 0
                     state["halted"] = False
@@ -2391,6 +2518,14 @@ async def bot_session(state):
                     )
                     continue
 
+                # Najprv overime, ci cena uz skutocne
+                # opustila stary setup.
+                update_setup_lock(
+                    state,
+                    candles,
+                    atr
+                )
+
                 (
                     support,
                     resistance,
@@ -2427,6 +2562,26 @@ async def bot_session(state):
                 save_state(state)
 
                 if side is None:
+
+                    await asyncio.sleep(
+                        LOOP_SECONDS
+                    )
+                    continue
+
+                # Klucova ochrana:
+                # stary SELL/BUY sa nemoze opakovat,
+                # kym cena neopustila predchadzajuci setup.
+                if same_setup_blocked(
+                    state,
+                    side
+                ):
+
+                    print(
+                        "SIGNAL BLOCKED: "
+                        "OLD SETUP NOT RELEASED:",
+                        side,
+                        flush=True
+                    )
 
                     await asyncio.sleep(
                         LOOP_SECONDS
@@ -2499,6 +2654,7 @@ async def bot_session(state):
                         f"M5 EMA50: {ema50:.2f}\n"
                         "STRICT ZONE REJECTION: OK\n"
                         "M1 MOMENTUM: OK\n"
+                        "FRESH SETUP: OK\n"
                         "REQUEST: 4 POSITIONS"
                     )
 
@@ -2653,6 +2809,8 @@ async def main():
     telegram(
         "RIOBOT GOLD V12 SWING ZONES START\n"
         "STRONG METAAPI RECOVERY ACTIVE\n"
+        "NEW FRESH SETUP PROTECTION ACTIVE\n"
+        "OLD SAME-DIRECTION SETUP LOCK ACTIVE\n"
         "SHORT RPC TIMEOUT DOES NOT KILL SESSION\n"
         "STRICT CURRENT-CANDLE ZONE ENTRY\n"
         "M1 LOCAL SWING SUPPORT/RESISTANCE\n"
@@ -2732,4 +2890,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-        )
+            )
