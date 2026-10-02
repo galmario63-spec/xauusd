@@ -18,8 +18,6 @@ from metaapi_cloud_sdk import MetaApi
 # =====================================================
 
 SYMBOL = "XAUUSD"
-
-# KRATKY COMMENT - MetaApi ma limit dlzky
 COMMENT = "RIOV12"
 
 LOT_SIZE = 0.01
@@ -35,20 +33,23 @@ LOOP_SECONDS = 2
 
 
 # =====================================================
-# METAAPI STABILITY
+# METAAPI STABILITY - IMPROVED
 # =====================================================
 
-RECONNECT_SECONDS = 5
+# Kratky reconnect po skutocnom vypadku
+RECONNECT_SECONDS = 3
 
-RPC_TIMEOUT = 20
-RPC_RETRIES = 3
-RPC_RETRY_DELAY = 3
+# Jednotlive RPC volanie
+RPC_TIMEOUT = 25
+RPC_RETRIES = 4
+RPC_RETRY_DELAY = 2
 
-MAX_CONSECUTIVE_RPC_FAILURES = 5
-RPC_FAILURE_WAIT = 4
+# Nezhodime celu session po jednom/dvoch timeoutoch
+MAX_CONSECUTIVE_RPC_FAILURES = 8
+RPC_FAILURE_WAIT = 3
 
-CONNECT_TIMEOUT = 90
-ORDER_TIMEOUT = 40
+CONNECT_TIMEOUT = 120
+ORDER_TIMEOUT = 45
 
 COOLDOWN_SECONDS = 180
 
@@ -171,10 +172,6 @@ news_cache = {
 # =====================================================
 
 class MetaApiTemporaryError(Exception):
-    """
-    Docasna MetaApi/RPC chyba.
-    Kratky timeout neznamena automaticky reconnect.
-    """
     pass
 
 
@@ -332,6 +329,7 @@ async def meta_call(
     for attempt in range(1, retries + 1):
 
         try:
+
             return await asyncio.wait_for(
                 coroutine_factory(),
                 timeout=timeout
@@ -366,7 +364,8 @@ async def meta_call(
                     "subscription",
                     "disconnected",
                     "broker yet",
-                    "connection lost"
+                    "connection lost",
+                    "failed to subscribe"
                 )
             )
 
@@ -381,6 +380,7 @@ async def meta_call(
             )
 
         if attempt < retries:
+
             await asyncio.sleep(
                 RPC_RETRY_DELAY
             )
@@ -398,6 +398,7 @@ async def get_positions(connection):
     )
 
     if not isinstance(result, list):
+
         raise RuntimeError(
             "INVALID POSITIONS RESPONSE"
         )
@@ -459,7 +460,7 @@ async def get_candles(region):
             params={
                 "limit": 300
             },
-            timeout=12
+            timeout=15
         )
 
         if response.status_code != 200:
@@ -476,13 +477,13 @@ async def get_candles(region):
 
         raw = await asyncio.wait_for(
             asyncio.to_thread(fetch),
-            timeout=16
+            timeout=20
         )
 
     except Exception as e:
 
-        raise RuntimeError(
-            f"M1 DATA REQUEST ERROR: {e}"
+        raise MetaApiTemporaryError(
+            f"M1 DATA TEMP ERROR: {e}"
         ) from e
 
     if not isinstance(raw, list):
@@ -547,7 +548,7 @@ async def get_candles(region):
 
     if len(candles) < 70:
 
-        raise RuntimeError(
+        raise MetaApiTemporaryError(
             f"NOT ENOUGH M1 HISTORY: {len(candles)}"
         )
 
@@ -559,7 +560,7 @@ async def get_candles(region):
         now - last
     ).total_seconds() > 180:
 
-        raise RuntimeError(
+        raise MetaApiTemporaryError(
             "STALE M1 DATA"
         )
 
@@ -880,10 +881,7 @@ def find_swing_levels(candles):
     )
 
 
-def cluster_levels(
-    levels,
-    atr
-):
+def cluster_levels(levels, atr):
 
     if not levels:
         return []
@@ -1418,11 +1416,12 @@ async def verify_new_position(
     side
 ):
 
-    for attempt in range(6):
+    for attempt in range(8):
 
         await asyncio.sleep(1)
 
         try:
+
             positions = await get_positions(
                 connection
             )
@@ -1684,6 +1683,7 @@ async def open_batch(
         }
 
         if previous_ids:
+
             raise RuntimeError(
                 "POSITIONS APPEARED BEFORE BATCH"
             )
@@ -1693,9 +1693,6 @@ async def open_batch(
             BATCH_SIZE + 1
         ):
 
-            # FIX:
-            # MetaApi ma limit dlzky comment/clientId.
-            # Pouzivame kratky comment.
             options = {
                 "comment": COMMENT
             }
@@ -1762,6 +1759,7 @@ async def open_batch(
                 actual_sl <= 0
                 or actual_tp <= 0
             ):
+
                 raise RuntimeError(
                     "BROKER SL OR TP MISSING"
                 )
@@ -1795,6 +1793,8 @@ async def open_batch(
             )
 
         state["order_uncertain"] = False
+        state["halted"] = False
+
         save_state(state)
 
         notify(
@@ -1806,6 +1806,9 @@ async def open_batch(
 
     except Exception as e:
 
+        # Dolezite:
+        # pri chybe objednavky nehadame, ci broker obchod otvoril.
+        # Nasledujuci reconnect overi skutocne pozicie.
         state["halted"] = True
         state["order_uncertain"] = True
 
@@ -1972,7 +1975,7 @@ async def protect_position(
             wanted_sl,
             current_tp
         ),
-        timeout=20
+        timeout=25
     )
 
     notify(
@@ -1984,7 +1987,7 @@ async def protect_position(
 
 
 # =====================================================
-# RECOVER POSITIONS
+# RECOVER / ADOPT POSITIONS
 # =====================================================
 
 async def adopt_positions(
@@ -2048,13 +2051,20 @@ async def adopt_positions(
 
         adopted += 1
 
-    if adopted:
+    if positions:
 
         state["trade_count"] = len(
-            state["positions"]
+            positions
         )
 
+        # Broker potvrdil skutocne otvorene pozicie.
+        # Uz nie sme v neistom stave.
+        state["order_uncertain"] = False
+        state["halted"] = False
+
         save_state(state)
+
+    if adopted:
 
         notify(
             "RIO V12 POSITIONS ADOPTED\n"
@@ -2066,13 +2076,57 @@ async def adopt_positions(
 
 
 # =====================================================
+# SAFE STARTUP RECONCILIATION
+# =====================================================
+
+async def reconcile_state(
+    connection,
+    state
+):
+
+    # Toto sa vykona az po uspesnom synchronize + get_positions.
+    # Teda ked MetaApi naozaj potvrdi stav brokera.
+
+    positions = await get_positions(
+        connection
+    )
+
+    if positions:
+
+        await adopt_positions(
+            connection,
+            state
+        )
+
+        state["order_uncertain"] = False
+        state["halted"] = False
+        state["trade_count"] = len(
+            positions
+        )
+
+        save_state(state)
+
+        return positions
+
+    # MetaApi uspesne odpovedala a broker nema XAUUSD poziciu.
+    # Mozeme bezpecne zrusit stary HALT po neuspesnej objednavke.
+    state["positions"] = {}
+    state["trade_count"] = 0
+    state["order_uncertain"] = False
+    state["halted"] = False
+
+    save_state(state)
+
+    return []
+
+
+# =====================================================
 # CONNECTION SESSION
 # =====================================================
 
 async def bot_session(state):
 
-    # Python MetaApi SDK:
-    # region parameter sa sem NEPOSIELA.
+    # Python SDK - region sem NEPOSIELAME
     api = MetaApi(
         M_TOKEN
     )
@@ -2081,7 +2135,8 @@ async def bot_session(state):
         lambda: api.metatrader_account_api.get_account(
             M_ACC
         ),
-        timeout=35
+        timeout=40,
+        retries=4
     )
 
     region = (
@@ -2100,13 +2155,14 @@ async def bot_session(state):
 
         await meta_call(
             lambda: account.deploy(),
-            timeout=45
+            timeout=60,
+            retries=4
         )
 
     await meta_call(
         lambda: account.wait_connected(),
         timeout=CONNECT_TIMEOUT,
-        retries=3
+        retries=4
     )
 
     connection = (
@@ -2118,44 +2174,30 @@ async def bot_session(state):
         await meta_call(
             lambda: connection.connect(),
             timeout=CONNECT_TIMEOUT,
-            retries=3
+            retries=4
         )
 
         await meta_call(
             lambda: connection.wait_synchronized(),
             timeout=CONNECT_TIMEOUT,
-            retries=3
+            retries=4
         )
 
-        await adopt_positions(
+        # Po kazdom skutocnom reconnecte overime broker stav.
+        positions = await reconcile_state(
             connection,
             state
         )
 
-        positions = await get_positions(
-            connection
-        )
-
-        if (
-            not positions
-            and not state["order_uncertain"]
-        ):
-
-            state["positions"] = {}
-            state["trade_count"] = 0
-            state["halted"] = False
-
-            save_state(state)
-
         notify(
             "RIO GOLD V12 SWING ZONES CONNECTED\n"
-            "SAFE RPC MODE ACTIVE\n"
-            "SHORT TIMEOUT DOES NOT FORCE RECONNECT\n"
+            "STRONG METAAPI RECOVERY ACTIVE\n"
             "POSITIONS VERIFIED\n"
             f"OPEN: {len(positions)}/4\n"
             f"COUNT: "
             f"{state['trade_count']}/4\n"
-            f"LIVE: {ENABLE_TRADING}"
+            f"LIVE: {ENABLE_TRADING}\n"
+            f"SAFETY HALT: {state['halted']}"
         )
 
         consecutive_rpc_failures = 0
@@ -2168,6 +2210,7 @@ async def bot_session(state):
                     connection
                 )
 
+                # Uspesny RPC = pocitadlo vypadkov od nuly
                 consecutive_rpc_failures = 0
 
                 current_ids = {
@@ -2225,6 +2268,21 @@ async def bot_session(state):
 
                 if positions:
 
+                    # Ak po reconnecte vznikla pozicia,
+                    # ktoru este nemame v state, adoptujeme ju.
+                    missing = [
+                        p for p in positions
+                        if str(p["id"])
+                        not in state["positions"]
+                    ]
+
+                    if missing:
+
+                        await adopt_positions(
+                            connection,
+                            state
+                        )
+
                     market = await get_market(
                         connection
                     )
@@ -2261,10 +2319,14 @@ async def bot_session(state):
                     or state["order_uncertain"]
                 ):
 
-                    await asyncio.sleep(
-                        LOOP_SECONDS
-                    )
-                    continue
+                    # Ak broker prave uspesne vratil prazdny
+                    # zoznam pozicii, neistotu mozeme zrusit.
+                    state["positions"] = {}
+                    state["trade_count"] = 0
+                    state["halted"] = False
+                    state["order_uncertain"] = False
+
+                    save_state(state)
 
                 if (
                     time.time()
@@ -2297,28 +2359,9 @@ async def bot_session(state):
                     )
                     continue
 
-                try:
-
-                    candles = await get_candles(
-                        region
-                    )
-
-                except RuntimeError as e:
-
-                    if str(e) == "STALE M1 DATA":
-
-                        print(
-                            "M1 DATA STALE - "
-                            "WAITING",
-                            flush=True
-                        )
-
-                        await asyncio.sleep(
-                            LOOP_SECONDS
-                        )
-                        continue
-
-                    raise
+                candles = await get_candles(
+                    region
+                )
 
                 candle_time = (
                     candles[-1]["time"]
@@ -2484,14 +2527,6 @@ async def bot_session(state):
                     flush=True
                 )
 
-                notify(
-                    "RIO V12 METAAPI TEMPORARY TIMEOUT\n"
-                    f"FAILURE: "
-                    f"{consecutive_rpc_failures}/"
-                    f"{MAX_CONSECUTIVE_RPC_FAILURES}\n"
-                    "SESSION KEPT ALIVE"
-                )
-
                 if (
                     consecutive_rpc_failures
                     >= MAX_CONSECUTIVE_RPC_FAILURES
@@ -2538,6 +2573,7 @@ async def bot_session(state):
                             "timed out",
                             "timeout",
                             "subscription",
+                            "failed to subscribe",
                             "disconnected",
                             "broker yet",
                             "connection lost"
@@ -2616,8 +2652,8 @@ async def main():
 
     telegram(
         "RIOBOT GOLD V12 SWING ZONES START\n"
-        "SAFE METAAPI RPC MODE\n"
-        "SHORT TIMEOUT DOES NOT FORCE RECONNECT\n"
+        "STRONG METAAPI RECOVERY ACTIVE\n"
+        "SHORT RPC TIMEOUT DOES NOT KILL SESSION\n"
         "STRICT CURRENT-CANDLE ZONE ENTRY\n"
         "M1 LOCAL SWING SUPPORT/RESISTANCE\n"
         "ZONE REJECTION CONFIRMATION\n"
@@ -2628,6 +2664,7 @@ async def main():
         "METAAPI RPC RETRIES ACTIVE\n"
         f"FULL RECONNECT AFTER "
         f"{MAX_CONSECUTIVE_RPC_FAILURES} FAILED CYCLES\n"
+        "AUTO STATE RECOVERY ACTIVE\n"
         "AUTO BATCH RESET ACTIVE\n"
         "4 POSITIONS ON ONE SIGNAL\n"
         "ATR SL + 1.5R TP\n"
@@ -2659,7 +2696,7 @@ async def main():
             notify(
                 "RIO V12 METAAPI CONNECTION UNAVAILABLE\n"
                 f"{str(e)[:100]}\n"
-                "RETRYING IN 5 SECONDS"
+                f"RETRYING IN {RECONNECT_SECONDS} SECONDS"
             )
 
             await asyncio.sleep(
@@ -2678,7 +2715,8 @@ async def main():
                 "RIO V12 CONNECTION ERROR\n"
                 f"{type(e).__name__}: "
                 f"{str(e)[:100]}\n"
-                "FULL RECONNECT IN 5 SECONDS"
+                f"FULL RECONNECT IN "
+                f"{RECONNECT_SECONDS} SECONDS"
             )
 
             await asyncio.sleep(
@@ -2694,4 +2732,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-    )
+        )
