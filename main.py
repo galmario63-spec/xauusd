@@ -5,7 +5,7 @@ import asyncio
 import traceback
 import requests
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from threading import Thread
 
 from flask import Flask
@@ -13,11 +13,18 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V13 - M15 -> M5 -> M1
-# LIVE START / 9 POSITIONS / 3 TP GROUPS / 3x BE
+# RIOBOT GOLD V13.1 - M15 -> M5 -> M1
+# FRESH M1 DATA FIX
+#
+# LIVE START
+# 9 POSITIONS
+# 3 TP GROUPS
+# 3x BE
+# CURRENT M1 SUBSCRIPTION WARMUP
+# EXPLICIT HISTORICAL START TIME
 # =====================================================
 
-VERSION = "V13 M15-M5-M1"
+VERSION = "V13.1 FRESH M1 FIX"
 
 SYMBOL = "XAUUSD"
 COMMENT_PREFIX = "RIOGOLDV13"
@@ -44,9 +51,6 @@ TP3_RR = 2.00
 # LIVE START
 # =====================================================
 
-# OSTRY START
-# Ak ENABLE_TRADING na Renderi nie je nastavene,
-# default je TRUE.
 ENABLE_TRADING = (
     os.getenv("ENABLE_TRADING", "true")
     .strip()
@@ -85,6 +89,12 @@ MIN_M1_HISTORY = 400
 
 MAX_ENTRY_CANDLE_AGE = 130
 STALE_DATA_RETRY_SECONDS = 5
+
+# NEW V13.1
+CURRENT_M1_REFRESH_SECONDS = 30
+CURRENT_M1_TIMEOUT = 12
+HISTORY_TIMEOUT = 20
+HISTORY_WARMUP_WAIT = 1
 
 
 # =====================================================
@@ -138,15 +148,12 @@ MAX_SL_DISTANCE = 8.00
 # BREAK EVEN
 # =====================================================
 
-# VSETKY POZICIE
 BE1_TRIGGER_RR = 0.35
 BE1_LOCK_RR = 0.05
 
-# VSETKY POZICIE, KTORE ESTE ZIJU
 BE2_TRIGGER_RR = 0.70
 BE2_LOCK_RR = 0.30
 
-# LEN TP3 RUNNER POZICIE
 BE3_TRIGGER_RR = 1.30
 BE3_LOCK_RR = 0.80
 
@@ -196,6 +203,16 @@ STATE_FILE = os.path.join(
 
 
 # =====================================================
+# MARKET DATA CACHE
+# =====================================================
+
+market_data_cache = {
+    "last_current_check": 0,
+    "current_candle": None
+}
+
+
+# =====================================================
 # CUSTOM ERROR
 # =====================================================
 
@@ -214,7 +231,7 @@ app = Flask(__name__)
 def home():
 
     return (
-        "RIOBOT GOLD V13 M15-M5-M1 ACTIVE",
+        "RIOBOT GOLD V13.1 FRESH M1 ACTIVE",
         200
     )
 
@@ -312,10 +329,7 @@ def save_state(state):
         exist_ok=True
     )
 
-    temp = (
-        STATE_FILE
-        + ".tmp"
-    )
+    temp = STATE_FILE + ".tmp"
 
     with open(
         temp,
@@ -348,7 +362,7 @@ def load_state():
     ):
 
         print(
-            "NEW GOLD V13 STATE",
+            "NEW GOLD V13.1 STATE",
             flush=True
         )
 
@@ -367,7 +381,6 @@ def load_state():
         for key in state:
 
             if key in saved:
-
                 state[key] = saved[key]
 
     except Exception as e:
@@ -548,18 +561,84 @@ async def get_positions(connection):
 
 
 # =====================================================
-# M1 DATA
+# TIME HELPERS
 # =====================================================
 
-async def get_candles(region):
+def parse_api_time(value):
+
+    dt = datetime.fromisoformat(
+        str(value).replace(
+            "Z",
+            "+00:00"
+        )
+    )
+
+    if dt.tzinfo is None:
+
+        dt = dt.replace(
+            tzinfo=timezone.utc
+        )
+
+    return dt.astimezone(
+        timezone.utc
+    )
+
+
+def iso_z(dt):
+
+    dt = dt.astimezone(
+        timezone.utc
+    )
+
+    return (
+        dt.strftime(
+            "%Y-%m-%dT%H:%M:%S."
+        )
+        +
+        f"{int(dt.microsecond / 1000):03d}Z"
+    )
+
+
+# =====================================================
+# CURRENT LIVE M1 - V13.1 FIX
+# =====================================================
+
+async def get_current_m1(
+    region,
+    force=False
+):
+
+    now_ts = time.time()
+
+    if (
+        not force
+        and
+        market_data_cache[
+            "current_candle"
+        ] is not None
+        and
+        now_ts
+        -
+        market_data_cache[
+            "last_current_check"
+        ]
+        <
+        CURRENT_M1_REFRESH_SECONDS
+    ):
+
+        return market_data_cache[
+            "current_candle"
+        ]
+
 
     url = (
-        "https://mt-market-data-client-api-v1."
+        "https://mt-client-api-v1."
         f"{region}.agiliumtrade.ai/"
         f"users/current/accounts/{M_ACC}/"
-        "historical-market-data/symbols/"
-        f"{SYMBOL}/timeframes/1m/candles"
+        f"symbols/{SYMBOL}/"
+        "current-candles/1m"
     )
+
 
     def fetch():
 
@@ -569,6 +648,135 @@ async def get_candles(region):
                 "auth-token": M_TOKEN
             },
             params={
+                "keepSubscription":
+                    "true"
+            },
+            timeout=CURRENT_M1_TIMEOUT
+        )
+
+        if (
+            response.status_code
+            != 200
+        ):
+
+            raise RuntimeError(
+                "CURRENT M1 HTTP "
+                f"{response.status_code}: "
+                f"{response.text[:300]}"
+            )
+
+        return response.json()
+
+
+    try:
+
+        current = await asyncio.wait_for(
+            asyncio.to_thread(
+                fetch
+            ),
+            timeout=CURRENT_M1_TIMEOUT + 3
+        )
+
+    except Exception as e:
+
+        print(
+            "CURRENT M1 WARMUP ERROR:",
+            e,
+            flush=True
+        )
+
+        return market_data_cache.get(
+            "current_candle"
+        )
+
+
+    if not isinstance(
+        current,
+        dict
+    ):
+
+        print(
+            "CURRENT M1 INVALID RESPONSE",
+            flush=True
+        )
+
+        return market_data_cache.get(
+            "current_candle"
+        )
+
+
+    try:
+
+        candle_time = parse_api_time(
+            current["time"]
+        )
+
+        age = (
+            datetime.now(
+                timezone.utc
+            )
+            -
+            candle_time
+        ).total_seconds()
+
+        print(
+            "GOLD V13.1 CURRENT M1:",
+            candle_time.isoformat(),
+            f"AGE={age:.0f}s",
+            flush=True
+        )
+
+    except Exception as e:
+
+        print(
+            "CURRENT M1 TIME ERROR:",
+            e,
+            flush=True
+        )
+
+
+    market_data_cache[
+        "current_candle"
+    ] = current
+
+    market_data_cache[
+        "last_current_check"
+    ] = now_ts
+
+
+    return current
+
+
+# =====================================================
+# HISTORICAL M1 - V13.1 FIX
+# =====================================================
+
+async def fetch_historical_m1(
+    region,
+    start_time
+):
+
+    url = (
+        "https://mt-market-data-client-api-v1."
+        f"{region}.agiliumtrade.ai/"
+        f"users/current/accounts/{M_ACC}/"
+        "historical-market-data/symbols/"
+        f"{SYMBOL}/timeframes/1m/candles"
+    )
+
+
+    def fetch():
+
+        response = requests.get(
+            url,
+            headers={
+                "auth-token": M_TOKEN
+            },
+            params={
+                "startTime":
+                    iso_z(
+                        start_time
+                    ),
                 "limit":
                     M1_HISTORY_LIMIT
             },
@@ -583,18 +791,19 @@ async def get_candles(region):
             raise RuntimeError(
                 "M1 HTTP "
                 f"{response.status_code}: "
-                f"{response.text[:200]}"
+                f"{response.text[:300]}"
             )
 
         return response.json()
 
+
     try:
 
-        raw = await asyncio.wait_for(
+        return await asyncio.wait_for(
             asyncio.to_thread(
                 fetch
             ),
-            timeout=20
+            timeout=HISTORY_TIMEOUT
         )
 
     except Exception as e:
@@ -602,6 +811,16 @@ async def get_candles(region):
         raise MetaApiTemporaryError(
             f"M1 DATA ERROR: {e}"
         ) from e
+
+
+# =====================================================
+# PARSE HISTORICAL M1
+# =====================================================
+
+def parse_historical_candles(
+    raw,
+    now
+):
 
     if not isinstance(
         raw,
@@ -612,33 +831,14 @@ async def get_candles(region):
             "INVALID M1 DATA"
         )
 
-    now = datetime.now(
-        timezone.utc
-    )
-
     candles = []
 
     for item in raw:
 
         try:
 
-            dt = datetime.fromisoformat(
-                str(
-                    item["time"]
-                ).replace(
-                    "Z",
-                    "+00:00"
-                )
-            )
-
-            if dt.tzinfo is None:
-
-                dt = dt.replace(
-                    tzinfo=timezone.utc
-                )
-
-            dt = dt.astimezone(
-                timezone.utc
+            dt = parse_api_time(
+                item["time"]
             )
 
             # IBA ZAVRETA M1
@@ -682,6 +882,7 @@ async def get_candles(region):
 
             continue
 
+
     candles = sorted(
         {
             candle["time"]:
@@ -691,6 +892,55 @@ async def get_candles(region):
         key=lambda candle:
             candle["time"]
     )
+
+
+    return candles
+
+
+# =====================================================
+# GET FRESH M1 - V13.1 FIX
+# =====================================================
+
+async def get_candles(region):
+
+    now = datetime.now(
+        timezone.utc
+    )
+
+
+    # =================================================
+    # 1. PREBUDIME LIVE XAUUSD M1 SUBSCRIPTION
+    # =================================================
+
+    current = await get_current_m1(
+        region
+    )
+
+
+    # =================================================
+    # 2. HISTORIA VZDY OD AKTUALNEHO CASU DOZADU
+    # =================================================
+
+    history_start = (
+        now
+        +
+        timedelta(
+            minutes=1
+        )
+    )
+
+
+    raw = await fetch_historical_m1(
+        region,
+        history_start
+    )
+
+
+    candles = parse_historical_candles(
+        raw,
+        now
+    )
+
 
     if (
         len(candles)
@@ -702,17 +952,147 @@ async def get_candles(region):
             f"{len(candles)}"
         )
 
+
     last_time = datetime.fromisoformat(
         candles[-1]["time"]
     )
 
+
     age_seconds = (
-        now - last_time
+        now
+        -
+        last_time
     ).total_seconds()
+
+
+    # =================================================
+    # 3. AK HISTORIA OSTALE STARA,
+    #    ALE LIVE CANDLE JE CERSTVA,
+    #    VYNUCENE PREBUDIME SUBSCRIPTION
+    #    A HISTORIU NACITAME ESTE RAZ
+    # =================================================
+
+    current_time = None
+    current_age = None
+
+
+    if isinstance(
+        current,
+        dict
+    ):
+
+        try:
+
+            current_time = parse_api_time(
+                current["time"]
+            )
+
+            current_age = (
+                now
+                -
+                current_time
+            ).total_seconds()
+
+        except Exception:
+
+            current_time = None
+            current_age = None
+
+
+    if (
+        age_seconds
+        > MAX_ENTRY_CANDLE_AGE
+        and
+        current_time is not None
+        and
+        current_age is not None
+        and
+        current_age < 180
+    ):
+
+        print(
+            "GOLD V13.1 HISTORICAL M1 STALE "
+            "BUT LIVE M1 IS FRESH",
+            f"HIST_AGE={age_seconds:.0f}s",
+            f"LIVE_AGE={current_age:.0f}s",
+            flush=True
+        )
+
+
+        # FORCE NEW SUBSCRIPTION REFRESH
+        current = await get_current_m1(
+            region,
+            force=True
+        )
+
+
+        await asyncio.sleep(
+            HISTORY_WARMUP_WAIT
+        )
+
+
+        # startTime nastavime tesne ZA live candle
+        retry_start = (
+            current_time
+            +
+            timedelta(
+                minutes=1
+            )
+        )
+
+
+        raw = await fetch_historical_m1(
+            region,
+            retry_start
+        )
+
+
+        now = datetime.now(
+            timezone.utc
+        )
+
+
+        retry_candles = (
+            parse_historical_candles(
+                raw,
+                now
+            )
+        )
+
+
+        if (
+            len(retry_candles)
+            >= MIN_M1_HISTORY
+        ):
+
+            candles = retry_candles
+
+            last_time = (
+                datetime.fromisoformat(
+                    candles[-1]["time"]
+                )
+            )
+
+            age_seconds = (
+                now
+                -
+                last_time
+            ).total_seconds()
+
 
     candles[-1][
         "age_seconds"
     ] = age_seconds
+
+
+    print(
+        "GOLD V13.1 M1 DATA:",
+        candles[-1]["time"],
+        f"AGE={age_seconds:.0f}s",
+        f"COUNT={len(candles)}",
+        flush=True
+    )
+
 
     return candles
 
@@ -738,6 +1118,7 @@ def calculate_atr(candles):
     ):
 
         candle = candles[i]
+
         previous = candles[
             i - 1
         ]
@@ -773,7 +1154,7 @@ def calculate_atr(candles):
 
 
 # =====================================================
-# BUILD M5 / M15 FROM CLOSED M1
+# BUILD M5 / M15
 # =====================================================
 
 def build_tf_candles(
@@ -853,6 +1234,7 @@ def build_tf_candles(
                 "count"
             ] += 1
 
+
     result = [
         candle
         for candle
@@ -860,6 +1242,7 @@ def build_tf_candles(
         if candle["count"]
         == minutes
     ]
+
 
     return sorted(
         result,
@@ -882,7 +1265,8 @@ def ema_series(
 
     multiplier = (
         2.0
-        / (
+        /
+        (
             period + 1
         )
     )
@@ -907,7 +1291,8 @@ def ema_series(
             * multiplier
             +
             ema
-            * (
+            *
+            (
                 1
                 - multiplier
             )
@@ -933,7 +1318,8 @@ def m15_direction(candles):
 
     if (
         len(m15)
-        < M15_EMA_PERIOD + 2
+        <
+        M15_EMA_PERIOD + 2
     ):
 
         return (
@@ -965,10 +1351,13 @@ def m15_direction(candles):
     ema_now = emas[-1]
     ema_previous = emas[-2]
 
+
     if (
-        close_now > ema_now
+        close_now
+        > ema_now
         and
-        ema_now >= ema_previous
+        ema_now
+        >= ema_previous
     ):
 
         return (
@@ -977,10 +1366,13 @@ def m15_direction(candles):
             ema_now
         )
 
+
     if (
-        close_now < ema_now
+        close_now
+        < ema_now
         and
-        ema_now <= ema_previous
+        ema_now
+        <= ema_previous
     ):
 
         return (
@@ -988,6 +1380,7 @@ def m15_direction(candles):
             close_now,
             ema_now
         )
+
 
     return (
         None,
@@ -1012,7 +1405,8 @@ def m5_confirmation(
 
     if (
         len(m5)
-        < M5_EMA_PERIOD + 2
+        <
+        M5_EMA_PERIOD + 2
     ):
 
         return (
@@ -1044,21 +1438,27 @@ def m5_confirmation(
     ema_now = emas[-1]
     ema_previous = emas[-2]
 
+
     if side == "BUY":
 
         allowed = (
-            close_now > ema_now
+            close_now
+            > ema_now
             and
-            ema_now >= ema_previous
+            ema_now
+            >= ema_previous
         )
 
     else:
 
         allowed = (
-            close_now < ema_now
+            close_now
+            < ema_now
             and
-            ema_now <= ema_previous
+            ema_now
+            <= ema_previous
         )
+
 
     return (
         allowed,
@@ -1082,15 +1482,19 @@ def m1_trigger(
 
     current_range = (
         current["high"]
-        - current["low"]
+        -
+        current["low"]
     )
+
 
     if (
         current_range <= 0
         or
         current_range
-        > atr
-        * MAX_M1_RANGE_ATR
+        >
+        atr
+        *
+        MAX_M1_RANGE_ATR
     ):
 
         return (
@@ -1098,18 +1502,23 @@ def m1_trigger(
             None,
             None
         )
+
 
     body_ratio = (
         abs(
             current["close"]
-            - current["open"]
+            -
+            current["open"]
         )
-        / current_range
+        /
+        current_range
     )
+
 
     if (
         body_ratio
-        < M1_MIN_BODY_RATIO
+        <
+        M1_MIN_BODY_RATIO
     ):
 
         return (
@@ -1117,48 +1526,54 @@ def m1_trigger(
             None,
             None
         )
+
 
     lower_wick = (
         min(
             current["open"],
             current["close"]
         )
-        - current["low"]
+        -
+        current["low"]
     ) / current_range
+
 
     upper_wick = (
         current["high"]
-        - max(
+        -
+        max(
             current["open"],
             current["close"]
         )
     ) / current_range
 
 
-    # =================================================
-    # BUY
-    # =================================================
-
     if side == "BUY":
 
         continuation = (
             current["close"]
-            > current["open"]
+            >
+            current["open"]
             and
             current["close"]
-            > previous["close"]
+            >
+            previous["close"]
         )
 
         rejection = (
             current["close"]
-            > current["open"]
+            >
+            current["open"]
             and
             lower_wick
-            >= M1_MIN_WICK_RATIO
+            >=
+            M1_MIN_WICK_RATIO
             and
             current["close"]
-            > previous["open"]
+            >
+            previous["open"]
         )
+
 
         if (
             continuation
@@ -1172,30 +1587,32 @@ def m1_trigger(
             )
 
 
-    # =================================================
-    # SELL
-    # =================================================
-
     if side == "SELL":
 
         continuation = (
             current["close"]
-            < current["open"]
+            <
+            current["open"]
             and
             current["close"]
-            < previous["close"]
+            <
+            previous["close"]
         )
 
         rejection = (
             current["close"]
-            < current["open"]
+            <
+            current["open"]
             and
             upper_wick
-            >= M1_MIN_WICK_RATIO
+            >=
+            M1_MIN_WICK_RATIO
             and
             current["close"]
-            < previous["open"]
+            <
+            previous["open"]
         )
+
 
         if (
             continuation
@@ -1207,6 +1624,7 @@ def m1_trigger(
                 current["close"],
                 "M1 SELL START"
             )
+
 
     return (
         False,
@@ -1231,15 +1649,18 @@ def recent_protective_swing(
     search_start = max(
         SWING_LEFT,
         n
-        - SL_SWING_LOOKBACK
+        -
+        SL_SWING_LOOKBACK
     )
 
     search_end = (
         n
-        - SWING_RIGHT
+        -
+        SWING_RIGHT
     )
 
     candidates = []
+
 
     for i in range(
         search_start,
@@ -1258,15 +1679,19 @@ def recent_protective_swing(
             i + 1 + SWING_RIGHT
         ]
 
+
         if (
             len(left)
-            < SWING_LEFT
+            <
+            SWING_LEFT
             or
             len(right)
-            < SWING_RIGHT
+            <
+            SWING_RIGHT
         ):
 
             continue
+
 
         if side == "BUY":
 
@@ -1281,6 +1706,7 @@ def recent_protective_swing(
                     candle["low"]
                 )
 
+
         else:
 
             if all(
@@ -1294,6 +1720,7 @@ def recent_protective_swing(
                     candle["high"]
                 )
 
+
     if candidates:
 
         return (
@@ -1301,10 +1728,12 @@ def recent_protective_swing(
             "CONFIRMED_M1_SWING"
         )
 
+
     fallback = candles[
         -(SL_FALLBACK_BARS + 1):
         -1
     ]
+
 
     if not fallback:
 
@@ -1313,20 +1742,24 @@ def recent_protective_swing(
             None
         )
 
+
     if side == "BUY":
 
         return (
             min(
                 candle["low"]
-                for candle in fallback
+                for candle
+                in fallback
             ),
             "FALLBACK_M1_LOW"
         )
 
+
     return (
         max(
             candle["high"]
-            for candle in fallback
+            for candle
+            in fallback
         ),
         "FALLBACK_M1_HIGH"
     )
@@ -1380,6 +1813,7 @@ def update_setup_lock(
         "locked_reference"
     )
 
+
     if (
         side is None
         or
@@ -1393,36 +1827,45 @@ def update_setup_lock(
 
         return
 
+
     last_close = candles[-1][
         "close"
     ]
 
     release_distance = (
         atr
-        * NEW_SETUP_RELEASE_ATR
+        *
+        NEW_SETUP_RELEASE_ATR
     )
 
     released = False
+
 
     if side == "BUY":
 
         if (
             last_close
-            >= reference
-            + release_distance
+            >=
+            reference
+            +
+            release_distance
         ):
 
             released = True
+
 
     elif side == "SELL":
 
         if (
             last_close
-            <= reference
-            - release_distance
+            <=
+            reference
+            -
+            release_distance
         ):
 
             released = True
+
 
     if released:
 
@@ -1472,24 +1915,30 @@ def broker_break_blocked():
     current_minutes = (
         now.hour
         * 60
-        + now.minute
+        +
+        now.minute
     )
 
     break_minutes = (
         BROKER_BREAK_HOUR_UTC
         * 60
-        + BROKER_BREAK_MINUTE_UTC
+        +
+        BROKER_BREAK_MINUTE_UTC
     )
 
     start_block = (
         break_minutes
-        - BREAK_BLOCK_BEFORE_MINUTES
+        -
+        BREAK_BLOCK_BEFORE_MINUTES
     )
+
 
     return (
         start_block
-        <= current_minutes
-        < break_minutes
+        <=
+        current_minutes
+        <
+        break_minutes
     )
 
 
@@ -1515,6 +1964,7 @@ async def get_market(connection):
         )
     )
 
+
     if (
         not spec
         or
@@ -1524,6 +1974,7 @@ async def get_market(connection):
         raise RuntimeError(
             "MARKET NOT READY"
         )
+
 
     digits = int(
         spec.get(
@@ -1550,6 +2001,7 @@ async def get_market(connection):
         price["ask"]
     )
 
+
     if (
         tick <= 0
         or
@@ -1561,6 +2013,7 @@ async def get_market(connection):
         raise RuntimeError(
             "INVALID MARKET PRICE"
         )
+
 
     return {
         "spec": spec,
@@ -1583,9 +2036,11 @@ def normalize(
     return round(
         round(
             value
-            / tick
+            /
+            tick
         )
-        * tick,
+        *
+        tick,
         market[
             "digits"
         ]
@@ -1603,12 +2058,15 @@ def spread_is_safe(
 
     spread = (
         market["ask"]
-        - market["bid"]
+        -
+        market["bid"]
     )
+
 
     if (
         spread
-        > MAX_SPREAD
+        >
+        MAX_SPREAD
     ):
 
         return (
@@ -1617,12 +2075,15 @@ def spread_is_safe(
             "ABSOLUTE SPREAD TOO HIGH"
         )
 
+
     if (
         atr > 0
         and
         spread
-        > atr
-        * MAX_SPREAD_ATR
+        >
+        atr
+        *
+        MAX_SPREAD_ATR
     ):
 
         return (
@@ -1630,6 +2091,7 @@ def spread_is_safe(
             spread,
             "SPREAD TOO LARGE VS ATR"
         )
+
 
     return (
         True,
@@ -1651,41 +2113,51 @@ def validate_live_entry(
 
     max_forward = (
         atr
-        * MAX_FORWARD_DRIFT_ATR
+        *
+        MAX_FORWARD_DRIFT_ATR
     )
 
     max_adverse = (
         atr
-        * MAX_ADVERSE_DRIFT_ATR
+        *
+        MAX_ADVERSE_DRIFT_ATR
     )
+
 
     if side == "BUY":
 
         forward_move = (
             entry
-            - signal_close
+            -
+            signal_close
         )
 
         adverse_move = (
             signal_close
-            - entry
+            -
+            entry
         )
+
 
     else:
 
         forward_move = (
             signal_close
-            - entry
+            -
+            entry
         )
 
         adverse_move = (
             entry
-            - signal_close
+            -
+            signal_close
         )
+
 
     if (
         forward_move
-        > max_forward
+        >
+        max_forward
     ):
 
         return (
@@ -1697,9 +2169,11 @@ def validate_live_entry(
             )
         )
 
+
     if (
         adverse_move
-        > max_adverse
+        >
+        max_adverse
     ):
 
         return (
@@ -1710,6 +2184,7 @@ def validate_live_entry(
                 f"> {max_adverse:.2f}"
             )
         )
+
 
     return (
         True,
@@ -1764,12 +2239,15 @@ def broker_min_stop_distance(
             stops_level,
             freeze_level
         )
-        * point
+        *
+        point
     )
+
 
     return max(
         broker_distance
-        + tick,
+        +
+        tick,
         tick * 2
     )
 
@@ -1784,7 +2262,8 @@ def tp_group_for_order(
 
     if (
         number
-        <= TP1_COUNT
+        <=
+        TP1_COUNT
     ):
 
         return (
@@ -1792,16 +2271,20 @@ def tp_group_for_order(
             TP1_RR
         )
 
+
     if (
         number
-        <= TP1_COUNT
-        + TP2_COUNT
+        <=
+        TP1_COUNT
+        +
+        TP2_COUNT
     ):
 
         return (
             "TP2",
             TP2_RR
         )
+
 
     return (
         "TP3",
@@ -1824,7 +2307,8 @@ def get_levels(
 
     structural_buffer = (
         atr
-        * SL_SWING_BUFFER_ATR
+        *
+        SL_SWING_BUFFER_ATR
     )
 
     min_broker_distance = (
@@ -1834,28 +2318,29 @@ def get_levels(
     )
 
 
-    # =================================================
-    # BUY
-    # =================================================
-
     if side == "BUY":
 
         desired_sl = (
             anchor
-            - structural_buffer
+            -
+            structural_buffer
         )
 
         risk = max(
             entry
-            - desired_sl,
+            -
+            desired_sl,
             MIN_SL_DISTANCE,
             min_broker_distance
-            + market["tick"]
+            +
+            market["tick"]
         )
+
 
         if (
             risk
-            > MAX_SL_DISTANCE
+            >
+            MAX_SL_DISTANCE
         ):
 
             return (
@@ -1867,22 +2352,32 @@ def get_levels(
                 )
             )
 
+
         sl = normalize(
-            entry - risk,
+            entry
+            -
+            risk,
             market
         )
 
         tp = normalize(
             entry
-            + risk
-            * tp_rr,
+            +
+            risk
+            *
+            tp_rr,
             market
         )
 
+
         if (
-            sl >= market["bid"]
+            sl
+            >=
+            market["bid"]
             or
-            tp <= market["ask"]
+            tp
+            <=
+            market["ask"]
         ):
 
             return (
@@ -1891,28 +2386,29 @@ def get_levels(
             )
 
 
-    # =================================================
-    # SELL
-    # =================================================
-
     else:
 
         desired_sl = (
             anchor
-            + structural_buffer
+            +
+            structural_buffer
         )
 
         risk = max(
             desired_sl
-            - entry,
+            -
+            entry,
             MIN_SL_DISTANCE,
             min_broker_distance
-            + market["tick"]
+            +
+            market["tick"]
         )
+
 
         if (
             risk
-            > MAX_SL_DISTANCE
+            >
+            MAX_SL_DISTANCE
         ):
 
             return (
@@ -1924,22 +2420,32 @@ def get_levels(
                 )
             )
 
+
         sl = normalize(
-            entry + risk,
+            entry
+            +
+            risk,
             market
         )
 
         tp = normalize(
             entry
-            - risk
-            * tp_rr,
+            -
+            risk
+            *
+            tp_rr,
             market
         )
 
+
         if (
-            sl <= market["ask"]
+            sl
+            <=
+            market["ask"]
             or
-            tp >= market["bid"]
+            tp
+            >=
+            market["bid"]
         ):
 
             return (
@@ -1947,18 +2453,24 @@ def get_levels(
                 "INVALID SELL STOPS"
             )
 
+
     actual_risk = abs(
-        entry - sl
+        entry
+        -
+        sl
     )
 
+
     if (
-        actual_risk <= 0
+        actual_risk
+        <= 0
     ):
 
         return (
             None,
             "INVALID RISK"
         )
+
 
     return {
         "sl": sl,
@@ -1995,6 +2507,7 @@ async def verify_new_position(
 
             continue
 
+
         matches = [
             position
             for position
@@ -2021,11 +2534,14 @@ async def verify_new_position(
                             0
                         )
                     )
-                    - LOT_SIZE
+                    -
+                    LOT_SIZE
                 )
-                < 0.000001
+                <
+                0.000001
             )
         ]
+
 
         if (
             len(matches)
@@ -2033,6 +2549,7 @@ async def verify_new_position(
         ):
 
             return matches[0]
+
 
         if (
             len(matches)
@@ -2042,6 +2559,7 @@ async def verify_new_position(
             raise RuntimeError(
                 "AMBIGUOUS NEW POSITIONS"
             )
+
 
     raise RuntimeError(
         "NEW POSITION NOT VERIFIED"
@@ -2075,6 +2593,7 @@ async def open_batch(
 
         return
 
+
     if same_setup_blocked(
         state,
         side
@@ -2090,15 +2609,12 @@ async def open_batch(
         return
 
 
-    # =================================================
-    # MANUAL / OTHER XAUUSD PROTECTION
-    # =================================================
-
     existing_positions = (
         await get_positions(
             connection
         )
     )
+
 
     if existing_positions:
 
@@ -2114,13 +2630,10 @@ async def open_batch(
         return
 
 
-    # =================================================
-    # MARKET
-    # =================================================
-
     market = await get_market(
         connection
     )
+
 
     (
         spread_ok,
@@ -2130,6 +2643,7 @@ async def open_batch(
         market,
         atr
     )
+
 
     if not spread_ok:
 
@@ -2142,16 +2656,13 @@ async def open_batch(
 
         return
 
+
     entry = (
         market["ask"]
         if side == "BUY"
         else market["bid"]
     )
 
-
-    # =================================================
-    # NO CHASE
-    # =================================================
 
     (
         live_ok,
@@ -2163,6 +2674,7 @@ async def open_batch(
         atr
     )
 
+
     if not live_ok:
 
         print(
@@ -2173,10 +2685,6 @@ async def open_batch(
 
         return
 
-
-    # =================================================
-    # SL ANCHOR
-    # =================================================
 
     if (
         side == "BUY"
@@ -2192,6 +2700,7 @@ async def open_batch(
         )
 
         return
+
 
     if (
         side == "SELL"
@@ -2209,10 +2718,6 @@ async def open_batch(
         return
 
 
-    # =================================================
-    # SL PREVIEW
-    # =================================================
-
     preview, reason = get_levels(
         side,
         entry,
@@ -2221,6 +2726,7 @@ async def open_batch(
         market,
         TP1_RR
     )
+
 
     if preview is None:
 
@@ -2232,10 +2738,6 @@ async def open_batch(
 
         return
 
-
-    # =================================================
-    # LOT CHECK
-    # =================================================
 
     spec = market[
         "spec"
@@ -2255,23 +2757,28 @@ async def open_batch(
         or 0.01
     )
 
+
     if (
         LOT_SIZE
-        < min_volume
+        <
+        min_volume
         or
         volume_step
         <= 0
         or
         abs(
             LOT_SIZE
-            / volume_step
+            /
+            volume_step
             -
             round(
                 LOT_SIZE
-                / volume_step
+                /
+                volume_step
             )
         )
-        > 1e-7
+        >
+        1e-7
     ):
 
         notify(
@@ -2280,10 +2787,6 @@ async def open_batch(
 
         return
 
-
-    # =================================================
-    # TEST MODE
-    # =================================================
 
     if not ENABLE_TRADING:
 
@@ -2300,15 +2803,12 @@ async def open_batch(
         return
 
 
-    # =================================================
-    # FRESH SETUP LOCK
-    # =================================================
-
     arm_setup_lock(
         state,
         side,
         signal_close
     )
+
 
     state[
         "order_uncertain"
@@ -2317,6 +2817,7 @@ async def open_batch(
     save_state(
         state
     )
+
 
     notify(
         "RIO GOLD V13 ENTRY APPROVED\n"
@@ -2334,7 +2835,9 @@ async def open_batch(
         "OPENING 9 POSITIONS"
     )
 
+
     previous_ids = set()
+
 
     try:
 
@@ -2350,16 +2853,13 @@ async def open_batch(
             in positions
         }
 
+
         if previous_ids:
 
             raise RuntimeError(
                 "POSITION APPEARED BEFORE BATCH"
             )
 
-
-        # =================================================
-        # OPEN 9 POSITIONS
-        # =================================================
 
         for number in range(
             1,
@@ -2370,6 +2870,7 @@ async def open_batch(
                 connection
             )
 
+
             (
                 spread_ok,
                 spread,
@@ -2379,6 +2880,7 @@ async def open_batch(
                 atr
             )
 
+
             if not spread_ok:
 
                 raise RuntimeError(
@@ -2386,11 +2888,13 @@ async def open_batch(
                     f"SPREAD={spread:.2f}"
                 )
 
+
             entry = (
                 market["ask"]
                 if side == "BUY"
                 else market["bid"]
             )
+
 
             (
                 tp_group,
@@ -2398,6 +2902,7 @@ async def open_batch(
             ) = tp_group_for_order(
                 number
             )
+
 
             levels, reason = get_levels(
                 side,
@@ -2408,11 +2913,13 @@ async def open_batch(
                 tp_rr
             )
 
+
             if levels is None:
 
                 raise RuntimeError(
                     reason
                 )
+
 
             sl = levels[
                 "sl"
@@ -2422,10 +2929,12 @@ async def open_batch(
                 "tp"
             ]
 
+
             options = {
                 "comment":
                     f"{COMMENT_PREFIX}_{tp_group}"
             }
+
 
             if side == "BUY":
 
@@ -2442,6 +2951,7 @@ async def open_batch(
                     timeout=ORDER_TIMEOUT
                 )
 
+
             else:
 
                 result = await meta_call(
@@ -2457,6 +2967,7 @@ async def open_batch(
                     timeout=ORDER_TIMEOUT
                 )
 
+
             print(
                 "ORDER",
                 number,
@@ -2464,25 +2975,30 @@ async def open_batch(
                 flush=True
             )
 
+
             position = await verify_new_position(
                 connection,
                 previous_ids,
                 side
             )
 
+
             pid = str(
                 position["id"]
             )
+
 
             previous_ids.add(
                 pid
             )
 
+
             actual_entry = float(
                 position.get(
                     "openPrice"
                 )
-                or entry
+                or
+                entry
             )
 
             actual_sl = float(
@@ -2499,6 +3015,7 @@ async def open_batch(
                 or 0
             )
 
+
             if (
                 actual_sl <= 0
                 or
@@ -2509,18 +3026,23 @@ async def open_batch(
                     "BROKER SL OR TP MISSING"
                 )
 
+
             actual_risk = abs(
                 actual_entry
-                - actual_sl
+                -
+                actual_sl
             )
 
+
             if (
-                actual_risk <= 0
+                actual_risk
+                <= 0
             ):
 
                 raise RuntimeError(
                     "INVALID ACTUAL RISK"
                 )
+
 
             state[
                 "positions"
@@ -2542,13 +3064,16 @@ async def open_batch(
                     tp_rr
             }
 
+
             state[
                 "last_trade_time"
             ] = time.time()
 
+
             save_state(
                 state
             )
+
 
             notify(
                 "RIO GOLD V13 ORDER "
@@ -2563,6 +3088,7 @@ async def open_batch(
                 f"RISK: {actual_risk:.2f}"
             )
 
+
         state[
             "order_uncertain"
         ] = False
@@ -2571,9 +3097,11 @@ async def open_batch(
             "halted"
         ] = False
 
+
         save_state(
             state
         )
+
 
         notify(
             "RIO GOLD V13 BATCH COMPLETED\n"
@@ -2586,6 +3114,7 @@ async def open_batch(
             "BE3 TP3: 1.30R -> +0.80R"
         )
 
+
     except Exception as e:
 
         state[
@@ -2596,9 +3125,11 @@ async def open_batch(
             "halted"
         ] = True
 
+
         save_state(
             state
         )
+
 
         notify(
             "RIO GOLD V13 BATCH STOPPED\n"
@@ -2628,15 +3159,19 @@ async def protect_position(
         pid
     )
 
+
     if not info:
         return
+
 
     side = position_side(
         position
     )
 
+
     if side is None:
         return
+
 
     risk = float(
         info["risk"]
@@ -2657,6 +3192,7 @@ async def protect_position(
         "takeProfit"
     )
 
+
     if (
         risk <= 0
         or
@@ -2665,11 +3201,13 @@ async def protect_position(
 
         return
 
+
     direction = (
         1
         if side == "BUY"
         else -1
     )
+
 
     price = (
         market["bid"]
@@ -2677,10 +3215,13 @@ async def protect_position(
         else market["ask"]
     )
 
+
     profit_distance = (
         price
-        - entry
+        -
+        entry
     ) * direction
+
 
     group = str(
         info.get(
@@ -2690,16 +3231,14 @@ async def protect_position(
     ).upper()
 
 
-    # =================================================
-    # BE3 - LEN TP3
-    # =================================================
-
     if (
         group == "TP3"
         and
         profit_distance
-        >= risk
-        * BE3_TRIGGER_RR
+        >=
+        risk
+        *
+        BE3_TRIGGER_RR
     ):
 
         trigger_rr = (
@@ -2713,14 +3252,12 @@ async def protect_position(
         stage = "BE3"
 
 
-    # =================================================
-    # BE2
-    # =================================================
-
     elif (
         profit_distance
-        >= risk
-        * BE2_TRIGGER_RR
+        >=
+        risk
+        *
+        BE2_TRIGGER_RR
     ):
 
         trigger_rr = (
@@ -2734,14 +3271,12 @@ async def protect_position(
         stage = "BE2"
 
 
-    # =================================================
-    # BE1
-    # =================================================
-
     elif (
         profit_distance
-        >= risk
-        * BE1_TRIGGER_RR
+        >=
+        risk
+        *
+        BE1_TRIGGER_RR
     ):
 
         trigger_rr = (
@@ -2754,46 +3289,59 @@ async def protect_position(
 
         stage = "BE1"
 
+
     else:
 
         return
+
 
     wanted_sl = (
         entry
         +
         direction
-        * risk
-        * lock_rr
+        *
+        risk
+        *
+        lock_rr
     )
+
 
     wanted_sl = normalize(
         wanted_sl,
         market
     )
 
+
     tick = market[
         "tick"
     ]
+
 
     if side == "BUY":
 
         if (
             wanted_sl
-            <= current_sl
-            + tick / 2
+            <=
+            current_sl
+            +
+            tick / 2
         ):
 
             return
+
 
     else:
 
         if (
             wanted_sl
-            >= current_sl
-            - tick / 2
+            >=
+            current_sl
+            -
+            tick / 2
         ):
 
             return
+
 
     min_distance = (
         broker_min_stop_distance(
@@ -2801,25 +3349,32 @@ async def protect_position(
         )
     )
 
+
     if side == "BUY":
 
         if (
             wanted_sl
-            >= market["bid"]
-            - min_distance
+            >=
+            market["bid"]
+            -
+            min_distance
         ):
 
             return
+
 
     else:
 
         if (
             wanted_sl
-            <= market["ask"]
-            + min_distance
+            <=
+            market["ask"]
+            +
+            min_distance
         ):
 
             return
+
 
     await meta_call(
         lambda:
@@ -2830,6 +3385,7 @@ async def protect_position(
         ),
         timeout=25
     )
+
 
     notify(
         f"RIO GOLD V13 {stage} ACTIVE\n"
@@ -2845,7 +3401,7 @@ async def protect_position(
 
 
 # =====================================================
-# ADOPT / RECOVER MANAGED POSITIONS
+# ADOPT / RECOVER
 # =====================================================
 
 def rr_from_comment(comment):
@@ -2855,12 +3411,14 @@ def rr_from_comment(comment):
         or ""
     ).upper()
 
+
     if "TP1" in value:
 
         return (
             "TP1",
             TP1_RR
         )
+
 
     if "TP2" in value:
 
@@ -2869,12 +3427,14 @@ def rr_from_comment(comment):
             TP2_RR
         )
 
+
     if "TP3" in value:
 
         return (
             "TP3",
             TP3_RR
         )
+
 
     return (
         None,
@@ -2891,6 +3451,7 @@ async def adopt_positions(
         connection
     )
 
+
     managed = [
         position
         for position
@@ -2900,13 +3461,16 @@ async def adopt_positions(
         )
     ]
 
+
     adopted = 0
+
 
     for position in managed:
 
         pid = str(
             position["id"]
         )
+
 
         if (
             pid
@@ -2917,12 +3481,15 @@ async def adopt_positions(
 
             continue
 
+
         side = position_side(
             position
         )
 
+
         if side is None:
             continue
+
 
         entry = float(
             position.get(
@@ -2945,8 +3512,10 @@ async def adopt_positions(
             or 0
         )
 
+
         if entry <= 0:
             continue
+
 
         (
             group,
@@ -2956,6 +3525,7 @@ async def adopt_positions(
                 "comment"
             )
         )
+
 
         if (
             tp > 0
@@ -2968,23 +3538,31 @@ async def adopt_positions(
             risk = (
                 abs(
                     tp
-                    - entry
+                    -
+                    entry
                 )
-                / rr
+                /
+                rr
             )
+
 
         elif sl > 0:
 
             risk = abs(
-                entry - sl
+                entry
+                -
+                sl
             )
+
 
         else:
 
             continue
 
+
         if risk <= 0:
             continue
+
 
         state[
             "positions"
@@ -3008,7 +3586,9 @@ async def adopt_positions(
                 or 0
         }
 
+
         adopted += 1
+
 
     if managed:
 
@@ -3020,9 +3600,11 @@ async def adopt_positions(
             "halted"
         ] = False
 
+
     save_state(
         state
     )
+
 
     if adopted:
 
@@ -3033,6 +3615,7 @@ async def adopt_positions(
             f"{len(state['positions'])}/9\n"
             "BE PROTECTION RESTORED"
         )
+
 
     return managed
 
@@ -3050,6 +3633,7 @@ async def reconcile_state(
         connection
     )
 
+
     managed = [
         position
         for position
@@ -3059,6 +3643,7 @@ async def reconcile_state(
         )
     ]
 
+
     current_managed_ids = {
         str(
             position["id"]
@@ -3067,16 +3652,20 @@ async def reconcile_state(
         in managed
     }
 
+
     known_ids = set(
         state[
             "positions"
         ].keys()
     )
 
+
     closed_ids = (
         known_ids
-        - current_managed_ids
+        -
+        current_managed_ids
     )
+
 
     for pid in closed_ids:
 
@@ -3091,12 +3680,14 @@ async def reconcile_state(
             "last_trade_time"
         ] = time.time()
 
+
         notify(
             "RIO GOLD V13 POSITION CLOSED\n"
             f"ID: {pid}\n"
             f"REMAINING BOT: "
             f"{len(state['positions'])}"
         )
+
 
     if managed:
 
@@ -3105,12 +3696,11 @@ async def reconcile_state(
             state
         )
 
+
     elif not state[
         "positions"
     ]:
 
-        # RPC potvrdilo, ze nema
-        # vlastne otvorene pozicie.
         state[
             "order_uncertain"
         ] = False
@@ -3119,9 +3709,11 @@ async def reconcile_state(
             "halted"
         ] = False
 
+
     save_state(
         state
     )
+
 
     return (
         positions,
@@ -3139,6 +3731,7 @@ async def bot_session(state):
         M_TOKEN
     )
 
+
     account = await meta_call(
         lambda:
         api.metatrader_account_api
@@ -3149,6 +3742,7 @@ async def bot_session(state):
         retries=4
     )
 
+
     region = (
         getattr(
             account,
@@ -3157,6 +3751,7 @@ async def bot_session(state):
         )
         or "london"
     )
+
 
     if (
         str(
@@ -3172,6 +3767,7 @@ async def bot_session(state):
             retries=4
         )
 
+
     await meta_call(
         lambda:
         account.wait_connected(),
@@ -3179,9 +3775,11 @@ async def bot_session(state):
         retries=4
     )
 
+
     connection = (
         account.get_rpc_connection()
     )
+
 
     try:
 
@@ -3192,12 +3790,14 @@ async def bot_session(state):
             retries=4
         )
 
+
         await meta_call(
             lambda:
             connection.wait_synchronized(),
             timeout=CONNECT_TIMEOUT,
             retries=4
         )
+
 
         (
             all_positions,
@@ -3207,8 +3807,32 @@ async def bot_session(state):
             state
         )
 
+
+        # =================================================
+        # V13.1 MARKET DATA WARMUP
+        # =================================================
+
+        try:
+
+            await get_current_m1(
+                region,
+                force=True
+            )
+
+        except Exception as e:
+
+            print(
+                "INITIAL CURRENT M1 WARMUP ERROR:",
+                e,
+                flush=True
+            )
+
+
         notify(
-            "RIO GOLD V13 CONNECTED\n"
+            "RIO GOLD V13.1 CONNECTED\n"
+            "FRESH M1 FIX ACTIVE\n"
+            "CURRENT M1 SUBSCRIPTION ACTIVE\n"
+            "HISTORICAL STARTTIME NOW ACTIVE\n"
             "M15 -> M5 -> M1 ACTIVE\n"
             "NEWS FILTER: OFF\n"
             "MANUAL XAUUSD PROTECTION ACTIVE\n"
@@ -3226,14 +3850,17 @@ async def bot_session(state):
             f"SL MIN/MAX: "
             f"{MIN_SL_DISTANCE:.2f}/"
             f"{MAX_SL_DISTANCE:.2f}\n"
-            f"MAX SPREAD: {MAX_SPREAD:.2f}\n"
+            f"MAX SPREAD: "
+            f"{MAX_SPREAD:.2f}\n"
             f"BOT OPEN: {len(managed)}/9\n"
             f"ALL XAUUSD OPEN: "
             f"{len(all_positions)}\n"
             f"LIVE: {ENABLE_TRADING}"
         )
 
+
         consecutive_rpc_failures = 0
+
 
         while True:
 
@@ -3246,6 +3873,7 @@ async def bot_session(state):
                     connection,
                     state
                 )
+
 
                 consecutive_rpc_failures = 0
 
@@ -3271,6 +3899,7 @@ async def bot_session(state):
                                 market
                             )
 
+
                     manual_count = (
                         len(
                             all_positions
@@ -3281,10 +3910,8 @@ async def bot_session(state):
                         )
                     )
 
-                    if (
-                        manual_count
-                        > 0
-                    ):
+
+                    if manual_count > 0:
 
                         print(
                             "GOLD V13 WAIT: "
@@ -3292,6 +3919,7 @@ async def bot_session(state):
                             manual_count,
                             flush=True
                         )
+
 
                     await asyncio.sleep(
                         LOOP_SECONDS
@@ -3341,17 +3969,13 @@ async def bot_session(state):
 
 
                 # =========================================
-                # NEWS FILTER IS OFF
-                # =========================================
-
-
-                # =========================================
                 # DATA
                 # =========================================
 
                 candles = await get_candles(
                     region
                 )
+
 
                 last_age = float(
                     candles[-1].get(
@@ -3360,13 +3984,15 @@ async def bot_session(state):
                     )
                 )
 
+
                 if (
                     last_age
-                    > MAX_ENTRY_CANDLE_AGE
+                    >
+                    MAX_ENTRY_CANDLE_AGE
                 ):
 
                     print(
-                        "GOLD V13 WAIT: "
+                        "GOLD V13.1 WAIT: "
                         "M1 NOT FRESH",
                         f"AGE={last_age:.0f}s",
                         flush=True
@@ -3378,15 +4004,18 @@ async def bot_session(state):
 
                     continue
 
+
                 candle_time = (
                     candles[-1][
                         "time"
                     ]
                 )
 
+
                 if (
                     candle_time
-                    == state[
+                    ==
+                    state[
                         "last_candle"
                     ]
                 ):
@@ -3397,17 +4026,21 @@ async def bot_session(state):
 
                     continue
 
+
                 state[
                     "last_candle"
                 ] = candle_time
+
 
                 save_state(
                     state
                 )
 
+
                 atr = calculate_atr(
                     candles
                 )
+
 
                 if (
                     atr is None
@@ -3421,6 +4054,7 @@ async def bot_session(state):
 
                     continue
 
+
                 update_setup_lock(
                     state,
                     candles,
@@ -3429,7 +4063,7 @@ async def bot_session(state):
 
 
                 # =========================================
-                # 1. M15 DIRECTION
+                # M15
                 # =========================================
 
                 (
@@ -3439,6 +4073,7 @@ async def bot_session(state):
                 ) = m15_direction(
                     candles
                 )
+
 
                 if direction is None:
 
@@ -3456,7 +4091,7 @@ async def bot_session(state):
 
 
                 # =========================================
-                # 2. M5 CONFIRMATION
+                # M5
                 # =========================================
 
                 (
@@ -3467,6 +4102,7 @@ async def bot_session(state):
                     candles,
                     direction
                 )
+
 
                 if not m5_ok:
 
@@ -3485,7 +4121,7 @@ async def bot_session(state):
 
 
                 # =========================================
-                # 3. M1 START OPEN
+                # M1
                 # =========================================
 
                 (
@@ -3497,6 +4133,7 @@ async def bot_session(state):
                     direction,
                     atr
                 )
+
 
                 if not trigger_ok:
 
@@ -3515,7 +4152,7 @@ async def bot_session(state):
 
 
                 # =========================================
-                # OLD SETUP PROTECTION
+                # OLD SETUP
                 # =========================================
 
                 if same_setup_blocked(
@@ -3549,6 +4186,7 @@ async def bot_session(state):
                     direction
                 )
 
+
                 if sl_anchor is None:
 
                     print(
@@ -3576,9 +4214,11 @@ async def bot_session(state):
                     f"{round(sl_anchor, 2)}"
                 )
 
+
                 if (
                     signal_key
-                    == state[
+                    ==
+                    state[
                         "last_signal"
                     ]
                 ):
@@ -3589,16 +4229,19 @@ async def bot_session(state):
 
                     continue
 
+
                 state[
                     "last_signal"
                 ] = signal_key
+
 
                 save_state(
                     state
                 )
 
+
                 print(
-                    "GOLD V13 SETUP READY:",
+                    "GOLD V13.1 SETUP READY:",
                     f"M15={direction}",
                     f"M15_CLOSE={m15_close}",
                     f"M15_EMA={m15_ema}",
@@ -3625,18 +4268,16 @@ async def bot_session(state):
                     state
                 )
 
+
                 await asyncio.sleep(
                     LOOP_SECONDS
                 )
 
 
-            # =============================================
-            # METAAPI TEMP ERROR
-            # =============================================
-
             except MetaApiTemporaryError as e:
 
                 consecutive_rpc_failures += 1
+
 
                 print(
                     "METAAPI TEMPORARY RPC FAILURE "
@@ -3645,6 +4286,7 @@ async def bot_session(state):
                     f"{e}",
                     flush=True
                 )
+
 
                 if (
                     consecutive_rpc_failures
@@ -3657,14 +4299,11 @@ async def bot_session(state):
                         "AFTER REPEATED RPC FAILURES"
                     ) from e
 
+
                 await asyncio.sleep(
                     RPC_FAILURE_WAIT
                 )
 
-
-            # =============================================
-            # OTHER ERROR
-            # =============================================
 
             except Exception as e:
 
@@ -3674,9 +4313,11 @@ async def bot_session(state):
                     flush=True
                 )
 
+
                 message = str(
                     e
                 ).lower()
+
 
                 connection_error = any(
                     word in message
@@ -3694,9 +4335,11 @@ async def bot_session(state):
                     )
                 )
 
+
                 if connection_error:
 
                     consecutive_rpc_failures += 1
+
 
                     if (
                         consecutive_rpc_failures
@@ -3709,15 +4352,18 @@ async def bot_session(state):
                             "AFTER REPEATED FAILURES"
                         ) from e
 
+
                     await asyncio.sleep(
                         RPC_FAILURE_WAIT
                     )
 
                     continue
 
+
                 await asyncio.sleep(
                     LOOP_SECONDS
                 )
+
 
     finally:
 
@@ -3741,6 +4387,7 @@ async def main():
 
     keep_alive()
 
+
     if (
         not M_TOKEN
         or
@@ -3748,16 +4395,21 @@ async def main():
     ):
 
         telegram(
-            "RIO GOLD V13 ERROR\n"
+            "RIO GOLD V13.1 ERROR\n"
             "M_TOKEN OR M_ACC MISSING"
         )
 
         return
 
+
     state = load_state()
 
+
     telegram(
-        "RIOBOT GOLD V13 START\n"
+        "RIOBOT GOLD V13.1 START\n"
+        "FRESH M1 DATA FIX ACTIVE\n"
+        "CURRENT M1 SUBSCRIPTION WARMUP\n"
+        "HISTORICAL STARTTIME NOW\n"
         "LIVE START\n"
         "M15 -> M5 -> M1\n"
         "M15 EMA20 DIRECTION\n"
@@ -3783,6 +4435,7 @@ async def main():
         f"LIVE: {ENABLE_TRADING}"
     )
 
+
     while True:
 
         try:
@@ -3790,6 +4443,7 @@ async def main():
             await bot_session(
                 state
             )
+
 
         except Exception as e:
 
@@ -3799,13 +4453,15 @@ async def main():
                 flush=True
             )
 
+
             notify(
-                "RIO GOLD V13 CONNECTION ERROR\n"
+                "RIO GOLD V13.1 CONNECTION ERROR\n"
                 f"{type(e).__name__}: "
                 f"{str(e)[:150]}\n"
                 f"RECONNECT IN "
                 f"{RECONNECT_SECONDS} SECONDS"
             )
+
 
             await asyncio.sleep(
                 RECONNECT_SECONDS
