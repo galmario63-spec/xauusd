@@ -13,23 +13,29 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V14.1 - STRICT SCALP
-# M15 trend -> M5 confirm -> M1 EMA9/EMA20 retest
-# 12 positions / 4 TP groups / common SL + common TP
+# RIOBOT GOLD V14.2 - STRICT SCALP / FAST BATCH
 #
-# UPDATE:
-# - LOT 0.10
-# - 180s cooldown po ukonceni batchu
-# - fresh setup reset po EMA20/pullbacku
-# - ochrana pred opakovanym rovnakym setupom
+# M15 trend
+# -> M5 confirmation
+# -> M1 EMA9/20 retest + momentum
+#
+# FIX V14.2:
+# - NO CHASE kontrola iba PRED batchom
+# - po schvaleni sa 12 prikazov odosle bez
+#   opakovanej CHASE kontroly medzi objednavkami
+# - overenie pozicii az po odoslani batchu
+# - 12 x 0.10 LOT = 1.20 LOT TOTAL
+# - 180 s cooldown
+# - fresh setup reset
 # =====================================================
 
-VERSION = "V14.1 STRICT SCALP"
+VERSION = "V14.2 STRICT SCALP FAST BATCH"
 
 SYMBOL = "XAUUSD"
 
-# Nechavame V14 prefix, aby nova verzia dokazala
-# spravovat aj pripadne otvorene pozicie starej V14.
+# Zachovame V14 prefix.
+# Nova verzia tak vie adoptovat a chranit aj
+# otvorenu poziciu z V14/V14.1.
 COMMENT_PREFIX = "RIOGOLDV14"
 
 
@@ -52,6 +58,11 @@ TP2_RR = 0.70
 TP3_RR = 1.00
 TP4_RR = 1.30
 
+# Po odoslani vsetkych prikazov pockame,
+# kym sa pozicie objavia v MetaApi.
+BATCH_VERIFY_ATTEMPTS = 16
+BATCH_VERIFY_DELAY = 0.50
+
 
 # =====================================================
 # LIVE
@@ -66,8 +77,7 @@ ENABLE_TRADING = (
 
 LOOP_SECONDS = 2
 
-# Po dokonceni batchu robot nepusti dalsi batch
-# okamzite. Plati aj po SL / BE / TP.
+# Po ukonceni poslednej pozicie batchu.
 COOLDOWN_SECONDS = 180
 
 
@@ -106,20 +116,20 @@ HISTORY_WARMUP_WAIT = 1
 
 
 # =====================================================
-# INDICATORS / TREND
+# INDICATORS
 # =====================================================
 
 ATR_PERIOD = 14
 
-# M15 hlavny trend
+# M15 trend
 M15_FAST_EMA = 20
 M15_SLOW_EMA = 50
 
-# M5 potvrdenie
+# M5 confirmation
 M5_FAST_EMA = 9
 M5_SLOW_EMA = 20
 
-# M1 scalp vstup
+# M1 entry
 M1_FAST_EMA = 9
 M1_SLOW_EMA = 20
 
@@ -129,7 +139,6 @@ M1_SLOW_EMA = 20
 # =====================================================
 
 M1_RETEST_LOOKBACK = 3
-
 M1_RETEST_TOLERANCE_ATR = 0.25
 
 M1_MAX_EMA9_DISTANCE_ATR = 0.60
@@ -157,7 +166,7 @@ MAX_SPREAD_ATR = 1.00
 
 
 # =====================================================
-# SL - SCALP
+# SL
 # =====================================================
 
 SWING_LEFT = 2
@@ -190,14 +199,9 @@ BE3_LOCK_RR = 0.50
 
 
 # =====================================================
-# FRESH SETUP RESET
+# FRESH SETUP
 # =====================================================
 
-# Stary setup sa uz NEUVOLNI iba preto,
-# ze cena isla dalej povodnym smerom.
-#
-# Rovnakemu smeru dovolime novy setup az ked trh
-# spravi skutocny reset/pullback.
 NEW_SETUP_RELEASE_ATR = 0.50
 
 
@@ -223,7 +227,6 @@ STATE_DIR = os.getenv(
     "/tmp"
 )
 
-# Zachovame povodny state V14
 STATE_FILE = os.path.join(
     STATE_DIR,
     "rio_gold_v14.json"
@@ -231,7 +234,7 @@ STATE_FILE = os.path.join(
 
 
 # =====================================================
-# MARKET DATA CACHE
+# CACHE
 # =====================================================
 
 market_data_cache = {
@@ -241,7 +244,7 @@ market_data_cache = {
 
 
 # =====================================================
-# CUSTOM ERROR
+# ERROR
 # =====================================================
 
 class MetaApiTemporaryError(Exception):
@@ -257,9 +260,8 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-
     return (
-        "RIOBOT GOLD V14.1 STRICT SCALP ACTIVE",
+        "RIOBOT GOLD V14.2 STRICT SCALP ACTIVE",
         200
     )
 
@@ -341,6 +343,7 @@ def default_state():
         "last_trade_time": 0,
         "last_candle": None,
         "last_signal": None,
+
         "order_uncertain": False,
         "halted": False,
 
@@ -370,7 +373,6 @@ def save_state(state):
         )
 
         f.flush()
-
         os.fsync(
             f.fileno()
         )
@@ -390,7 +392,7 @@ def load_state():
     ):
 
         print(
-            "NEW GOLD V14.1 STATE",
+            "NEW GOLD V14.2 STATE",
             flush=True
         )
 
@@ -525,7 +527,6 @@ def position_side(position):
         "BUY",
         "0"
     ):
-
         return "BUY"
 
     if value in (
@@ -534,7 +535,6 @@ def position_side(position):
         "SELL",
         "1"
     ):
-
         return "SELL"
 
     return None
@@ -595,9 +595,7 @@ async def get_positions(connection):
 def parse_api_time(value):
 
     dt = datetime.fromisoformat(
-        str(
-            value
-        ).replace(
+        str(value).replace(
             "Z",
             "+00:00"
         )
@@ -741,7 +739,7 @@ async def get_current_m1(
         ).total_seconds()
 
         print(
-            "GOLD V14.1 CURRENT M1:",
+            "GOLD V14.2 CURRENT M1:",
             candle_time.isoformat(),
             f"AGE={age:.0f}s",
             flush=True
@@ -851,7 +849,7 @@ def parse_historical_candles(
                 item["time"]
             )
 
-            # Iba uzavreta M1 sviecka
+            # Pouzivame iba uzavrete M1.
             if (
                 now - dt
             ).total_seconds() < 61:
@@ -994,7 +992,7 @@ async def get_candles(region):
     ):
 
         print(
-            "GOLD V14.1 HISTORICAL M1 STALE "
+            "GOLD V14.2 HISTORICAL M1 STALE "
             "BUT LIVE M1 FRESH",
             f"HIST_AGE={age_seconds:.0f}s",
             f"LIVE_AGE={current_age:.0f}s",
@@ -1059,7 +1057,7 @@ async def get_candles(region):
     ] = age_seconds
 
     print(
-        "GOLD V14.1 M1 DATA:",
+        "GOLD V14.2 M1 DATA:",
         candles[-1]["time"],
         f"AGE={age_seconds:.0f}s",
         f"COUNT={len(candles)}",
@@ -1091,7 +1089,6 @@ def calculate_atr(candles):
     ):
 
         candle = candles[i]
-
         previous = candles[
             i - 1
         ]
@@ -1219,7 +1216,6 @@ def ema_series(
 ):
 
     if len(values) < period:
-
         return []
 
     multiplier = (
@@ -1283,7 +1279,6 @@ def last_ema(
     )
 
     if not values:
-
         return None
 
     return values[-1]
@@ -1446,7 +1441,6 @@ def m5_confirmation(
 
     e9 = ema9[-1]
     e9_previous = ema9[-2]
-
     e20 = ema20[-1]
 
     if side == "BUY":
@@ -1654,13 +1648,9 @@ def m1_scalp_trigger(
     if side == "BUY":
 
         if not (
-            ema9
-            >
-            ema20
+            ema9 > ema20
             and
-            current["close"]
-            >
-            ema9
+            current["close"] > ema9
         ):
 
             return (
@@ -1772,13 +1762,9 @@ def m1_scalp_trigger(
     if side == "SELL":
 
         if not (
-            ema9
-            <
-            ema20
+            ema9 < ema20
             and
-            current["close"]
-            <
-            ema9
+            current["close"] < ema9
         ):
 
             return (
@@ -2102,13 +2088,6 @@ def update_setup_lock(
     reset_by_ema20 = False
     reset_by_distance = False
 
-    # -------------------------------------------------
-    # Po BUY nechceme povolit dalsi BUY iba preto,
-    # ze cena pokracovala hore.
-    #
-    # Musi najprv vzniknut reset/pullback.
-    # -------------------------------------------------
-
     if side == "BUY":
 
         reset_by_ema20 = (
@@ -2124,13 +2103,6 @@ def update_setup_lock(
             -
             release_distance
         )
-
-    # -------------------------------------------------
-    # Po SELL nechceme povolit dalsi SELL iba preto,
-    # ze cena pokracovala dole.
-    #
-    # Musi najprv vzniknut reset/pullback.
-    # -------------------------------------------------
 
     elif side == "SELL":
 
@@ -2177,7 +2149,6 @@ def update_setup_lock(
         "locked_reference"
     ] = None
 
-    # Stary signal uz nechceme drzat.
     state[
         "last_signal"
     ] = None
@@ -2187,7 +2158,7 @@ def update_setup_lock(
     )
 
     notify(
-        "RIO GOLD V14.1 OLD SETUP RESET\n"
+        "RIO GOLD V14.2 OLD SETUP RESET\n"
         f"OLD SIDE: {old_side}\n"
         f"RESET: {reason}\n"
         "NEW FRESH SETUP CAN FORM"
@@ -2199,8 +2170,6 @@ def same_setup_blocked(
     side
 ):
 
-    # Blokuje iba rovnaky stary smer.
-    # Opačný kvalitny setup moze vzniknut normalne.
     return (
         state.get(
             "locked_side"
@@ -2857,22 +2826,66 @@ def common_levels_valid_for_market(
 
 
 # =====================================================
-# VERIFY POSITION
+# RR FROM COMMENT
 # =====================================================
 
-async def verify_new_position(
+def rr_from_comment(comment):
+
+    value = str(
+        comment
+        or ""
+    ).upper()
+
+    if "TP1" in value:
+
+        return (
+            "TP1",
+            TP1_RR
+        )
+
+    if "TP2" in value:
+
+        return (
+            "TP2",
+            TP2_RR
+        )
+
+    if "TP3" in value:
+
+        return (
+            "TP3",
+            TP3_RR
+        )
+
+    if "TP4" in value:
+
+        return (
+            "TP4",
+            TP4_RR
+        )
+
+    return (
+        None,
+        None
+    )
+
+
+# =====================================================
+# WAIT FOR COMPLETE BATCH
+# =====================================================
+
+async def wait_for_batch_positions(
     connection,
     previous_ids,
     side
 ):
 
-    for attempt in range(
-        8
-    ):
+    best_matches = []
 
-        await asyncio.sleep(
-            1
-        )
+    for attempt in range(
+        1,
+        BATCH_VERIFY_ATTEMPTS + 1
+    ):
 
         try:
 
@@ -2882,6 +2895,10 @@ async def verify_new_position(
 
         except MetaApiTemporaryError:
 
+            await asyncio.sleep(
+                BATCH_VERIFY_DELAY
+            )
+
             continue
 
         matches = [
@@ -2889,7 +2906,10 @@ async def verify_new_position(
             for position in positions
             if (
                 str(
-                    position["id"]
+                    position.get(
+                        "id",
+                        ""
+                    )
                 )
                 not in previous_ids
                 and
@@ -2901,46 +2921,145 @@ async def verify_new_position(
                 is_managed_position(
                     position
                 )
-                and
-                abs(
-                    float(
-                        position.get(
-                            "volume",
-                            0
-                        )
-                    )
-                    -
-                    LOT_SIZE
-                )
-                <
-                0.000001
             )
         ]
 
         if (
             len(matches)
-            == 1
+            >
+            len(best_matches)
         ):
 
-            return matches[0]
+            best_matches = matches
+
+        print(
+            "GOLD V14.2 BATCH VERIFY:",
+            f"{len(matches)}/{BATCH_SIZE}",
+            f"ATTEMPT={attempt}",
+            flush=True
+        )
 
         if (
             len(matches)
-            >
-            1
+            >=
+            BATCH_SIZE
         ):
 
-            raise RuntimeError(
-                "AMBIGUOUS NEW POSITIONS"
-            )
+            return matches[
+                :BATCH_SIZE
+            ]
 
-    raise RuntimeError(
-        "NEW POSITION NOT VERIFIED"
-    )
+        await asyncio.sleep(
+            BATCH_VERIFY_DELAY
+        )
+
+    return best_matches
 
 
 # =====================================================
-# OPEN 12 POSITION BATCH
+# REGISTER BATCH POSITIONS
+# =====================================================
+
+def register_batch_positions(
+    state,
+    positions
+):
+
+    registered = 0
+
+    for position in positions:
+
+        pid = str(
+            position["id"]
+        )
+
+        side = position_side(
+            position
+        )
+
+        if side is None:
+            continue
+
+        entry = float(
+            position.get(
+                "openPrice"
+            )
+            or 0
+        )
+
+        sl = float(
+            position.get(
+                "stopLoss"
+            )
+            or 0
+        )
+
+        tp = float(
+            position.get(
+                "takeProfit"
+            )
+            or 0
+        )
+
+        if (
+            entry <= 0
+            or
+            sl <= 0
+        ):
+
+            continue
+
+        group, rr = rr_from_comment(
+            position.get(
+                "comment"
+            )
+        )
+
+        risk = abs(
+            entry
+            -
+            sl
+        )
+
+        if risk <= 0:
+            continue
+
+        state[
+            "positions"
+        ][pid] = {
+            "risk":
+                risk,
+
+            "entry":
+                entry,
+
+            "side":
+                side,
+
+            "tp_group":
+                group
+                or "UNKNOWN",
+
+            "tp_rr":
+                rr
+                or 0
+        }
+
+        registered += 1
+
+    state[
+        "last_trade_time"
+    ] = time.time()
+
+    save_state(
+        state
+    )
+
+    return registered
+
+
+# =====================================================
+# OPEN 12 POSITION FAST BATCH
 # =====================================================
 
 async def open_batch(
@@ -2970,7 +3089,7 @@ async def open_batch(
     ):
 
         print(
-            "GOLD V14.1 BLOCKED: "
+            "GOLD V14.2 BLOCKED: "
             "OLD SAME-DIRECTION SETUP",
             side,
             flush=True
@@ -2987,7 +3106,7 @@ async def open_batch(
     if existing_positions:
 
         print(
-            "GOLD V14.1 WAIT: "
+            "GOLD V14.2 WAIT: "
             "XAUUSD POSITION ALREADY OPEN",
             len(
                 existing_positions
@@ -2996,6 +3115,11 @@ async def open_batch(
         )
 
         return
+
+
+    # =================================================
+    # PRE-BATCH MARKET CHECK
+    # =================================================
 
     market = await get_market(
         connection
@@ -3013,7 +3137,7 @@ async def open_batch(
     if not spread_ok:
 
         print(
-            "GOLD V14.1 ENTRY BLOCKED:",
+            "GOLD V14.2 ENTRY BLOCKED:",
             spread_reason,
             f"SPREAD={spread:.2f}",
             flush=True
@@ -3026,6 +3150,15 @@ async def open_batch(
         if side == "BUY"
         else market["bid"]
     )
+
+
+    # =================================================
+    # IMPORTANT V14.2 FIX
+    #
+    # NO CHASE SA KONTROLUJE IBA TU.
+    # Po schvaleni batchu sa uz medzi 12 prikazmi
+    # znovu nekontroluje.
+    # =================================================
 
     (
         live_ok,
@@ -3040,12 +3173,17 @@ async def open_batch(
     if not live_ok:
 
         print(
-            "GOLD V14.1 ENTRY BLOCKED:",
+            "GOLD V14.2 ENTRY BLOCKED:",
             live_reason,
             flush=True
         )
 
         return
+
+
+    # =================================================
+    # EMA DISTANCE
+    # =================================================
 
     if side == "BUY":
 
@@ -3060,7 +3198,7 @@ async def open_batch(
         ):
 
             print(
-                "GOLD V14.1 BLOCKED: "
+                "GOLD V14.2 BLOCKED: "
                 "TOO FAR ABOVE M1 EMA9",
                 flush=True
             )
@@ -3080,12 +3218,17 @@ async def open_batch(
         ):
 
             print(
-                "GOLD V14.1 BLOCKED: "
+                "GOLD V14.2 BLOCKED: "
                 "TOO FAR BELOW M1 EMA9",
                 flush=True
             )
 
             return
+
+
+    # =================================================
+    # SL ANCHOR
+    # =================================================
 
     if (
         side == "BUY"
@@ -3096,7 +3239,7 @@ async def open_batch(
     ):
 
         print(
-            "GOLD V14.1 BLOCKED: "
+            "GOLD V14.2 BLOCKED: "
             "BUY SL ANCHOR INVALID",
             flush=True
         )
@@ -3112,12 +3255,17 @@ async def open_batch(
     ):
 
         print(
-            "GOLD V14.1 BLOCKED: "
+            "GOLD V14.2 BLOCKED: "
             "SELL SL ANCHOR INVALID",
             flush=True
         )
 
         return
+
+
+    # =================================================
+    # LOCK COMMON LEVELS BEFORE BATCH
+    # =================================================
 
     levels, reason = get_common_levels(
         side,
@@ -3130,12 +3278,49 @@ async def open_batch(
     if levels is None:
 
         print(
-            "GOLD V14.1 ENTRY BLOCKED BY SL:",
+            "GOLD V14.2 ENTRY BLOCKED BY SL:",
             reason,
             flush=True
         )
 
         return
+
+
+    # =================================================
+    # VALIDATE ALL 4 TP LEVELS BEFORE FIRST ORDER
+    # =================================================
+
+    for group in (
+        "TP1",
+        "TP2",
+        "TP3",
+        "TP4"
+    ):
+
+        valid, valid_reason = (
+            common_levels_valid_for_market(
+                side,
+                levels["sl"],
+                levels["tps"][group],
+                market
+            )
+        )
+
+        if not valid:
+
+            print(
+                "GOLD V14.2 ENTRY BLOCKED:",
+                group,
+                valid_reason,
+                flush=True
+            )
+
+            return
+
+
+    # =================================================
+    # LOT CHECK
+    # =================================================
 
     spec = market[
         "spec"
@@ -3179,15 +3364,20 @@ async def open_batch(
     ):
 
         notify(
-            "RIO GOLD V14.1 INVALID LOT"
+            "RIO GOLD V14.2 INVALID LOT"
         )
 
         return
 
+
+    # =================================================
+    # TEST MODE
+    # =================================================
+
     if not ENABLE_TRADING:
 
         notify(
-            "RIO GOLD V14.1 TEST SIGNAL\n"
+            "RIO GOLD V14.2 TEST SIGNAL\n"
             f"SIDE: {side}\n"
             f"M1: {trigger_mode}\n"
             f"EMA9: {m1_ema9:.2f}\n"
@@ -3204,6 +3394,11 @@ async def open_batch(
 
         return
 
+
+    # =================================================
+    # ARM LOCK
+    # =================================================
+
     arm_setup_lock(
         state,
         side,
@@ -3218,8 +3413,47 @@ async def open_batch(
         state
     )
 
+
+    # =================================================
+    # IDs BEFORE BATCH
+    # =================================================
+
+    before_positions = await get_positions(
+        connection
+    )
+
+    previous_ids = {
+        str(
+            position["id"]
+        )
+        for position in before_positions
+    }
+
+    if previous_ids:
+
+        state[
+            "order_uncertain"
+        ] = False
+
+        save_state(
+            state
+        )
+
+        print(
+            "GOLD V14.2 BATCH CANCELLED: "
+            "POSITION APPEARED BEFORE BATCH",
+            flush=True
+        )
+
+        return
+
+
+    # =================================================
+    # ENTRY APPROVED
+    # =================================================
+
     notify(
-        "RIO GOLD V14.1 ENTRY APPROVED\n"
+        "RIO GOLD V14.2 ENTRY APPROVED\n"
         f"SIDE: {side}\n"
         "M15 TREND: OK\n"
         "M5 CONFIRMATION: OK\n"
@@ -3237,105 +3471,23 @@ async def open_batch(
         f"RISK: {levels['risk']:.2f}\n"
         f"ATR: {atr:.2f}\n"
         f"SPREAD: {spread:.2f}\n"
+        "FAST BATCH LOCKED\n"
         "OPENING 12 POSITIONS"
     )
 
-    previous_ids = set()
+
+    # =================================================
+    # FAST ORDER SEND
+    # =================================================
+
+    sent_count = 0
 
     try:
-
-        positions = await get_positions(
-            connection
-        )
-
-        previous_ids = {
-            str(
-                position["id"]
-            )
-            for position in positions
-        }
-
-        if previous_ids:
-
-            raise RuntimeError(
-                "POSITION APPEARED BEFORE BATCH"
-            )
 
         for number in range(
             1,
             BATCH_SIZE + 1
         ):
-
-            # Ochrana proti inej/ruckej XAUUSD pozicii
-            current_positions = (
-                await get_positions(
-                    connection
-                )
-            )
-
-            current_ids = {
-                str(
-                    position["id"]
-                )
-                for position
-                in current_positions
-            }
-
-            unexpected_ids = (
-                current_ids
-                -
-                previous_ids
-            )
-
-            if unexpected_ids:
-
-                raise RuntimeError(
-                    "UNEXPECTED XAUUSD POSITION "
-                    "DURING BATCH: "
-                    f"{len(unexpected_ids)}"
-                )
-
-            market = await get_market(
-                connection
-            )
-
-            (
-                spread_ok,
-                spread,
-                spread_reason
-            ) = spread_is_safe(
-                market,
-                atr
-            )
-
-            if not spread_ok:
-
-                raise RuntimeError(
-                    f"{spread_reason} "
-                    f"SPREAD={spread:.2f}"
-                )
-
-            live_entry = (
-                market["ask"]
-                if side == "BUY"
-                else market["bid"]
-            )
-
-            (
-                live_ok,
-                live_reason
-            ) = validate_live_entry(
-                side,
-                live_entry,
-                signal_close,
-                atr
-            )
-
-            if not live_ok:
-
-                raise RuntimeError(
-                    live_reason
-                )
 
             (
                 tp_group,
@@ -3354,38 +3506,42 @@ async def open_batch(
                 tp_group
             ]
 
-            (
-                valid,
-                valid_reason
-            ) = common_levels_valid_for_market(
-                side,
-                common_sl,
-                common_tp,
-                market
+            # Unikatny comment pre kazdu poziciu.
+            comment = (
+                f"{COMMENT_PREFIX}_"
+                f"{tp_group}_"
+                f"{number:02d}"
             )
 
-            if not valid:
-
-                raise RuntimeError(
-                    valid_reason
-                )
-
             options = {
-                "comment":
-                    f"{COMMENT_PREFIX}_{tp_group}"
+                "comment": comment
             }
+
+            # -----------------------------------------
+            # DÔLEŽITÉ:
+            # TU UZ NIE JE:
+            # - validate_live_entry()
+            # - CHASE TOO FAR
+            # - get_positions()
+            # - 1 sekundove verify medzi objednavkami
+            #
+            # Batch sa preto neposklada 12 sekund.
+            # -----------------------------------------
 
             if side == "BUY":
 
                 result = await meta_call(
-                    lambda:
+                    lambda
+                    sl=common_sl,
+                    tp=common_tp,
+                    opts=options:
                     connection
                     .create_market_buy_order(
                         SYMBOL,
                         LOT_SIZE,
-                        common_sl,
-                        common_tp,
-                        options
+                        sl,
+                        tp,
+                        opts
                     ),
                     timeout=ORDER_TIMEOUT
                 )
@@ -3393,123 +3549,84 @@ async def open_batch(
             else:
 
                 result = await meta_call(
-                    lambda:
+                    lambda
+                    sl=common_sl,
+                    tp=common_tp,
+                    opts=options:
                     connection
                     .create_market_sell_order(
                         SYMBOL,
                         LOT_SIZE,
-                        common_sl,
-                        common_tp,
-                        options
+                        sl,
+                        tp,
+                        opts
                     ),
                     timeout=ORDER_TIMEOUT
                 )
 
+            sent_count += 1
+
             print(
-                "ORDER",
-                number,
+                "GOLD V14.2 ORDER SENT",
+                f"{number}/{BATCH_SIZE}",
+                tp_group,
                 result,
                 flush=True
             )
 
-            position = await verify_new_position(
+
+        # =================================================
+        # VERIFY AFTER ALL 12 ORDERS
+        # =================================================
+
+        new_positions = (
+            await wait_for_batch_positions(
                 connection,
                 previous_ids,
                 side
             )
+        )
 
-            pid = str(
-                position["id"]
-            )
+        registered = register_batch_positions(
+            state,
+            new_positions
+        )
 
-            previous_ids.add(
-                pid
-            )
+        if (
+            len(new_positions)
+            <
+            BATCH_SIZE
+        ):
 
-            actual_entry = float(
-                position.get(
-                    "openPrice"
-                )
-                or
-                live_entry
-            )
-
-            actual_sl = float(
-                position.get(
-                    "stopLoss"
-                )
-                or 0
-            )
-
-            actual_tp = float(
-                position.get(
-                    "takeProfit"
-                )
-                or 0
-            )
-
-            if (
-                actual_sl <= 0
-                or
-                actual_tp <= 0
-            ):
-
-                raise RuntimeError(
-                    "BROKER SL OR TP MISSING"
-                )
-
-            actual_risk = abs(
-                actual_entry
-                -
-                actual_sl
-            )
-
-            if actual_risk <= 0:
-
-                raise RuntimeError(
-                    "INVALID ACTUAL RISK"
-                )
+            # Partial batch.
+            # Existujuce pozicie su zaznamenane a budu
+            # normalne chranene BE.
+            state[
+                "order_uncertain"
+            ] = True
 
             state[
-                "positions"
-            ][pid] = {
-
-                "risk":
-                    actual_risk,
-
-                "entry":
-                    actual_entry,
-
-                "side":
-                    side,
-
-                "tp_group":
-                    tp_group,
-
-                "tp_rr":
-                    tp_rr
-            }
-
-            state[
-                "last_trade_time"
-            ] = time.time()
+                "halted"
+            ] = True
 
             save_state(
                 state
             )
 
             notify(
-                "RIO GOLD V14.1 ORDER "
-                f"{number}/12 OK\n"
-                f"GROUP: {tp_group}\n"
-                f"RR: {tp_rr:.2f}R\n"
-                f"SIDE: {side}\n"
-                f"LOT: {LOT_SIZE}\n"
-                f"ENTRY: {actual_entry}\n"
-                f"COMMON SL: {actual_sl}\n"
-                f"COMMON TP: {actual_tp}\n"
-                f"RISK: {actual_risk:.2f}"
+                "RIO GOLD V14.2 PARTIAL BATCH\n"
+                f"SENT: {sent_count}/12\n"
+                f"VISIBLE: {len(new_positions)}/12\n"
+                f"TRACKED: {registered}\n"
+                "NO NEW BATCH UNTIL RECONCILED"
             )
+
+            return
+
+
+        # =================================================
+        # SUCCESS
+        # =================================================
 
         state[
             "order_uncertain"
@@ -3519,12 +3636,16 @@ async def open_batch(
             "halted"
         ] = False
 
+        state[
+            "last_trade_time"
+        ] = time.time()
+
         save_state(
             state
         )
 
         notify(
-            "RIO GOLD V14.1 BATCH COMPLETED\n"
+            "RIO GOLD V14.2 BATCH COMPLETED\n"
             "12/12 OPENED\n"
             f"LOT EACH: {LOT_SIZE}\n"
             f"TOTAL: "
@@ -3538,7 +3659,41 @@ async def open_batch(
             "BE3: 0.90R -> +0.50R"
         )
 
+
+    # =================================================
+    # BATCH ERROR
+    # =================================================
+
     except Exception as e:
+
+        print(
+            "GOLD V14.2 BATCH ERROR:",
+            traceback.format_exc(),
+            flush=True
+        )
+
+        # Skusime okamzite zistit,
+        # ci niektore prikazy napriek chybe presli.
+        try:
+
+            partial_positions = (
+                await wait_for_batch_positions(
+                    connection,
+                    previous_ids,
+                    side
+                )
+            )
+
+            if partial_positions:
+
+                register_batch_positions(
+                    state,
+                    partial_positions
+                )
+
+        except Exception:
+
+            pass
 
         state[
             "order_uncertain"
@@ -3553,7 +3708,9 @@ async def open_batch(
         )
 
         notify(
-            "RIO GOLD V14.1 BATCH STOPPED\n"
+            "RIO GOLD V14.2 BATCH STOPPED\n"
+            f"SENT BEFORE ERROR: "
+            f"{sent_count}/12\n"
             f"ERROR: {type(e).__name__}\n"
             f"{str(e)[:180]}"
         )
@@ -3581,7 +3738,6 @@ async def protect_position(
     )
 
     if not info:
-
         return
 
     side = position_side(
@@ -3589,7 +3745,6 @@ async def protect_position(
     )
 
     if side is None:
-
         return
 
     risk = float(
@@ -3637,7 +3792,11 @@ async def protect_position(
         entry
     ) * direction
 
+
+    # =================================================
     # BE3
+    # =================================================
+
     if (
         profit_distance
         >=
@@ -3656,7 +3815,11 @@ async def protect_position(
 
         stage = "BE3"
 
+
+    # =================================================
     # BE2
+    # =================================================
+
     elif (
         profit_distance
         >=
@@ -3675,7 +3838,11 @@ async def protect_position(
 
         stage = "BE2"
 
+
+    # =================================================
     # BE1
+    # =================================================
+
     elif (
         profit_distance
         >=
@@ -3698,6 +3865,7 @@ async def protect_position(
 
         return
 
+
     wanted_sl = (
         entry
         +
@@ -3716,6 +3884,11 @@ async def protect_position(
     tick = market[
         "tick"
     ]
+
+
+    # =================================================
+    # ONLY IMPROVE SL
+    # =================================================
 
     if side == "BUY":
 
@@ -3740,6 +3913,11 @@ async def protect_position(
         ):
 
             return
+
+
+    # =================================================
+    # BROKER DISTANCE
+    # =================================================
 
     min_distance = (
         broker_min_stop_distance(
@@ -3771,6 +3949,11 @@ async def protect_position(
 
             return
 
+
+    # =================================================
+    # MODIFY
+    # =================================================
+
     await meta_call(
         lambda:
         connection.modify_position(
@@ -3782,7 +3965,7 @@ async def protect_position(
     )
 
     notify(
-        f"RIO GOLD V14.1 {stage} ACTIVE\n"
+        f"RIO GOLD V14.2 {stage} ACTIVE\n"
         f"POSITION: {pid}\n"
         f"SIDE: {side}\n"
         f"GROUP: "
@@ -3796,49 +3979,8 @@ async def protect_position(
 
 
 # =====================================================
-# RECOVERY
+# ADOPT POSITIONS
 # =====================================================
-
-def rr_from_comment(comment):
-
-    value = str(
-        comment
-        or ""
-    ).upper()
-
-    if "TP1" in value:
-
-        return (
-            "TP1",
-            TP1_RR
-        )
-
-    if "TP2" in value:
-
-        return (
-            "TP2",
-            TP2_RR
-        )
-
-    if "TP3" in value:
-
-        return (
-            "TP3",
-            TP3_RR
-        )
-
-    if "TP4" in value:
-
-        return (
-            "TP4",
-            TP4_RR
-        )
-
-    return (
-        None,
-        None
-    )
-
 
 async def adopt_positions(
     connection,
@@ -3879,7 +4021,6 @@ async def adopt_positions(
         )
 
         if side is None:
-
             continue
 
         entry = float(
@@ -3904,13 +4045,9 @@ async def adopt_positions(
         )
 
         if entry <= 0:
-
             continue
 
-        (
-            group,
-            rr
-        ) = rr_from_comment(
+        group, rr = rr_from_comment(
             position.get(
                 "comment"
             )
@@ -3947,13 +4084,11 @@ async def adopt_positions(
             continue
 
         if risk <= 0:
-
             continue
 
         state[
             "positions"
         ][pid] = {
-
             "risk":
                 risk,
 
@@ -3974,6 +4109,9 @@ async def adopt_positions(
 
         adopted += 1
 
+
+    # Ak existuju managed pozicie,
+    # nech robot ich normalne chráni.
     if managed:
 
         state[
@@ -3991,7 +4129,7 @@ async def adopt_positions(
     if adopted:
 
         notify(
-            "RIO GOLD V14.1 POSITIONS ADOPTED\n"
+            "RIO GOLD V14.2 POSITIONS ADOPTED\n"
             f"BOT OPEN: {len(managed)}/12\n"
             f"TRACKED: "
             f"{len(state['positions'])}/12\n"
@@ -4050,15 +4188,12 @@ async def reconcile_state(
             None
         )
 
-        # Kazde zatvorenie posunie cas ochrany.
-        # Po zatvoreni poslednej pozicie teda zacina
-        # plnych 180 sekund cooldown.
         state[
             "last_trade_time"
         ] = time.time()
 
         notify(
-            "RIO GOLD V14.1 POSITION CLOSED\n"
+            "RIO GOLD V14.2 POSITION CLOSED\n"
             f"ID: {pid}\n"
             f"REMAINING BOT: "
             f"{len(state['positions'])}"
@@ -4186,16 +4321,22 @@ async def bot_session(state):
                 flush=True
             )
 
+
+        # =================================================
+        # CONNECTED MESSAGE
+        # =================================================
+
         notify(
-            "RIO GOLD V14.1 CONNECTED\n"
+            "RIO GOLD V14.2 CONNECTED\n"
             "STRICT SCALP ACTIVE\n"
+            "FAST BATCH ACTIVE\n"
+            "NO CHASE PRE-BATCH ONLY\n"
             "M15 EMA20/50 TREND ACTIVE\n"
             "M5 EMA9/20 CONFIRM ACTIVE\n"
             "M1 EMA9/20 RETEST ACTIVE\n"
             "M1 MOMENTUM CONFIRM ACTIVE\n"
             "COMMON SL ACTIVE\n"
             "COMMON TP LEVELS ACTIVE\n"
-            "NO CHASE ACTIVE\n"
             "FRESH M1 FIX ACTIVE\n"
             "NEWS FILTER: OFF\n"
             "MANUAL XAUUSD PROTECTION ACTIVE\n"
@@ -4224,6 +4365,11 @@ async def bot_session(state):
         )
 
         consecutive_rpc_failures = 0
+
+
+        # =================================================
+        # MAIN LOOP
+        # =================================================
 
         while True:
 
@@ -4274,7 +4420,7 @@ async def bot_session(state):
                     if manual_count > 0:
 
                         print(
-                            "GOLD V14.1 WAIT: "
+                            "GOLD V14.2 WAIT: "
                             "MANUAL/OTHER XAUUSD OPEN:",
                             manual_count,
                             flush=True
@@ -4288,7 +4434,7 @@ async def bot_session(state):
 
 
                 # =====================================
-                # POST-BATCH / POST-SL COOLDOWN
+                # COOLDOWN
                 # =====================================
 
                 cooldown_left = (
@@ -4306,7 +4452,7 @@ async def bot_session(state):
                 if cooldown_left > 0:
 
                     print(
-                        "GOLD V14.1 WAIT: "
+                        "GOLD V14.2 WAIT: "
                         "POST-BATCH COOLDOWN",
                         f"{cooldown_left:.0f}s LEFT",
                         flush=True
@@ -4341,7 +4487,7 @@ async def bot_session(state):
                 ):
 
                     print(
-                        "GOLD V14.1 WAIT: "
+                        "GOLD V14.2 WAIT: "
                         "M1 NOT FRESH",
                         f"AGE={last_age:.0f}s",
                         flush=True
@@ -4380,6 +4526,11 @@ async def bot_session(state):
                 save_state(
                     state
                 )
+
+
+                # =====================================
+                # ATR
+                # =====================================
 
                 atr = calculate_atr(
                     candles
@@ -4425,7 +4576,7 @@ async def bot_session(state):
                 if direction is None:
 
                     print(
-                        "GOLD V14.1 WAIT: "
+                        "GOLD V14.2 WAIT: "
                         "M15 TREND NOT CLEAN",
                         flush=True
                     )
@@ -4454,7 +4605,7 @@ async def bot_session(state):
                 if not m5_ok:
 
                     print(
-                        "GOLD V14.1 WAIT: "
+                        "GOLD V14.2 WAIT: "
                         "M5 NOT CONFIRMED",
                         direction,
                         flush=True
@@ -4486,7 +4637,7 @@ async def bot_session(state):
                 if not trigger_ok:
 
                     print(
-                        "GOLD V14.1 WAIT: "
+                        "GOLD V14.2 WAIT: "
                         "M1 SCALP RETEST NOT READY",
                         direction,
                         f"EMA9={m1_ema9}",
@@ -4511,7 +4662,7 @@ async def bot_session(state):
                 ):
 
                     print(
-                        "GOLD V14.1 SIGNAL BLOCKED: "
+                        "GOLD V14.2 SIGNAL BLOCKED: "
                         "OLD SAME-DIRECTION SETUP",
                         direction,
                         flush=True
@@ -4539,7 +4690,7 @@ async def bot_session(state):
                 if sl_anchor is None:
 
                     print(
-                        "GOLD V14.1 WAIT: "
+                        "GOLD V14.2 WAIT: "
                         "NO SL SWING",
                         flush=True
                     )
@@ -4585,8 +4736,13 @@ async def bot_session(state):
                     state
                 )
 
+
+                # =====================================
+                # SETUP READY LOG
+                # =====================================
+
                 print(
-                    "GOLD V14.1 SETUP READY:",
+                    "GOLD V14.2 SETUP READY:",
                     f"M15={direction}",
                     f"M15_CLOSE={m15_close}",
                     f"M15_E20={m15_ema20}",
@@ -4603,7 +4759,7 @@ async def bot_session(state):
 
 
                 # =====================================
-                # OPEN
+                # OPEN FAST BATCH
                 # =====================================
 
                 await open_batch(
@@ -4625,7 +4781,7 @@ async def bot_session(state):
 
 
             # =========================================
-            # METAAPI TEMPORARY ERROR
+            # METAAPI TEMP ERROR
             # =========================================
 
             except MetaApiTemporaryError as e:
@@ -4742,7 +4898,7 @@ async def main():
     ):
 
         telegram(
-            "RIO GOLD V14.1 ERROR\n"
+            "RIO GOLD V14.2 ERROR\n"
             "M_TOKEN OR M_ACC MISSING"
         )
 
@@ -4751,13 +4907,14 @@ async def main():
     state = load_state()
 
     telegram(
-        "RIOBOT GOLD V14.1 START\n"
+        "RIOBOT GOLD V14.2 START\n"
         "STRICT SCALP\n"
+        "FAST 12-POSITION BATCH\n"
+        "NO CHASE PRE-BATCH ONLY\n"
         "M15 EMA20/50 TREND\n"
         "M5 EMA9/20 CONFIRMATION\n"
         "M1 EMA9/20 RETEST + CONFIRM\n"
         "COMMON SL + COMMON TP LEVELS\n"
-        "NO CHASE ACTIVE\n"
         "FRESH M1 FIX ACTIVE\n"
         "NEWS FILTER: OFF\n"
         "MANUAL XAUUSD PROTECTION ACTIVE\n"
@@ -4799,7 +4956,7 @@ async def main():
             )
 
             notify(
-                "RIO GOLD V14.1 CONNECTION ERROR\n"
+                "RIO GOLD V14.2 CONNECTION ERROR\n"
                 f"{type(e).__name__}: "
                 f"{str(e)[:150]}\n"
                 f"RECONNECT IN "
@@ -4819,4 +4976,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-        )
+                   )
