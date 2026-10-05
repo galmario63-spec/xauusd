@@ -13,29 +13,32 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V14.2 - STRICT SCALP / FAST BATCH
+# RIOBOT GOLD V14.3 - ADAPTIVE M15 / STRICT SCALP
 #
-# M15 trend
-# -> M5 confirmation
-# -> M1 EMA9/20 retest + momentum
+# V14.3 FIX:
+# - M15 uz NIE JE tvrdy blok pri "TREND NOT CLEAN"
+# - silny M15 trend sa stale respektuje
+# - M15 transition dovoluje skor zachytit otocenie
+# - ak je M15 neutralny, smer moze potvrdit M5
+# - M1 EMA9/20 retest + momentum ostava povinny
 #
-# FIX V14.2:
-# - NO CHASE kontrola iba PRED batchom
-# - po schvaleni sa 12 prikazov odosle bez
-#   opakovanej CHASE kontroly medzi objednavkami
-# - overenie pozicii az po odoslani batchu
-# - 12 x 0.10 LOT = 1.20 LOT TOTAL
+# ZACHOVANE:
+# - FAST 12-position batch
+# - NO CHASE pred batchom
+# - spolocny SL
+# - 4 TP skupiny
+# - 3x BE
 # - 180 s cooldown
-# - fresh setup reset
+# - fresh setup lock
+# - ochrana proti opakovanemu vstupu
 # =====================================================
 
-VERSION = "V14.2 STRICT SCALP FAST BATCH"
+VERSION = "V14.3 ADAPTIVE M15 STRICT SCALP"
 
 SYMBOL = "XAUUSD"
 
-# Zachovame V14 prefix.
-# Nova verzia tak vie adoptovat a chranit aj
-# otvorenu poziciu z V14/V14.1.
+# Zachovame V14 prefix, aby robot vedel
+# adoptovat otvorene pozicie zo starsich V14 verzii.
 COMMENT_PREFIX = "RIOGOLDV14"
 
 
@@ -58,8 +61,6 @@ TP2_RR = 0.70
 TP3_RR = 1.00
 TP4_RR = 1.30
 
-# Po odoslani vsetkych prikazov pockame,
-# kym sa pozicie objavia v MetaApi.
 BATCH_VERIFY_ATTEMPTS = 16
 BATCH_VERIFY_DELAY = 0.50
 
@@ -77,7 +78,6 @@ ENABLE_TRADING = (
 
 LOOP_SECONDS = 2
 
-# Po ukonceni poslednej pozicie batchu.
 COOLDOWN_SECONDS = 180
 
 
@@ -132,6 +132,26 @@ M5_SLOW_EMA = 20
 # M1 entry
 M1_FAST_EMA = 9
 M1_SLOW_EMA = 20
+
+
+# =====================================================
+# V14.3 ADAPTIVE M15
+# =====================================================
+
+# Povodny STRICT M15 trend zostava.
+#
+# Nova TRANSITION logika:
+# cena nad EMA20 + EMA20 rastie = BUY transition
+# cena pod EMA20 + EMA20 klesa = SELL transition
+#
+# Uz sa teda nemusi cakat, kym EMA20 kompletne
+# prejde cez EMA50.
+#
+# Ak ani transition neexistuje, M15 je NEUTRAL
+# a smer musi jednoznacne potvrdit M5.
+
+M15_ALLOW_TRANSITION = True
+M15_ALLOW_M5_FALLBACK = True
 
 
 # =====================================================
@@ -227,6 +247,8 @@ STATE_DIR = os.getenv(
     "/tmp"
 )
 
+# Nechavame rovnaky state subor,
+# aby sa nestratili otvorene pozicie / lock.
 STATE_FILE = os.path.join(
     STATE_DIR,
     "rio_gold_v14.json"
@@ -261,7 +283,7 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     return (
-        "RIOBOT GOLD V14.2 STRICT SCALP ACTIVE",
+        "RIOBOT GOLD V14.3 ADAPTIVE M15 ACTIVE",
         200
     )
 
@@ -392,7 +414,7 @@ def load_state():
     ):
 
         print(
-            "NEW GOLD V14.2 STATE",
+            "NEW GOLD V14.3 STATE",
             flush=True
         )
 
@@ -739,7 +761,7 @@ async def get_current_m1(
         ).total_seconds()
 
         print(
-            "GOLD V14.2 CURRENT M1:",
+            "GOLD V14.3 CURRENT M1:",
             candle_time.isoformat(),
             f"AGE={age:.0f}s",
             flush=True
@@ -849,7 +871,7 @@ def parse_historical_candles(
                 item["time"]
             )
 
-            # Pouzivame iba uzavrete M1.
+            # Iba uzavrete M1 sviecky.
             if (
                 now - dt
             ).total_seconds() < 61:
@@ -992,7 +1014,7 @@ async def get_candles(region):
     ):
 
         print(
-            "GOLD V14.2 HISTORICAL M1 STALE "
+            "GOLD V14.3 HISTORICAL M1 STALE "
             "BUT LIVE M1 FRESH",
             f"HIST_AGE={age_seconds:.0f}s",
             f"LIVE_AGE={current_age:.0f}s",
@@ -1057,7 +1079,7 @@ async def get_candles(region):
     ] = age_seconds
 
     print(
-        "GOLD V14.2 M1 DATA:",
+        "GOLD V14.3 M1 DATA:",
         candles[-1]["time"],
         f"AGE={age_seconds:.0f}s",
         f"COUNT={len(candles)}",
@@ -1285,7 +1307,7 @@ def last_ema(
 
 
 # =====================================================
-# M15 TREND
+# M15 ADAPTIVE TREND - V14.3
 # =====================================================
 
 def m15_direction(candles):
@@ -1305,7 +1327,8 @@ def m15_direction(candles):
             None,
             None,
             None,
-            None
+            None,
+            "M15_NO_DATA"
         )
 
     closes = [
@@ -1333,7 +1356,8 @@ def m15_direction(candles):
             None,
             None,
             None,
-            None
+            None,
+            "M15_NO_EMA"
         )
 
     close_now = closes[-1]
@@ -1342,6 +1366,12 @@ def m15_direction(candles):
     e20_previous = ema20[-2]
 
     e50 = ema50[-1]
+
+
+    # =================================================
+    # STRICT BUY
+    # Povodna V14.2 logika.
+    # =================================================
 
     if (
         close_now > e20
@@ -1355,8 +1385,15 @@ def m15_direction(candles):
             "BUY",
             close_now,
             e20,
-            e50
+            e50,
+            "M15_STRICT_BUY"
         )
+
+
+    # =================================================
+    # STRICT SELL
+    # Povodna V14.2 logika.
+    # =================================================
 
     if (
         close_now < e20
@@ -1370,14 +1407,71 @@ def m15_direction(candles):
             "SELL",
             close_now,
             e20,
-            e50
+            e50,
+            "M15_STRICT_SELL"
         )
+
+
+    # =================================================
+    # TRANSITION BUY
+    #
+    # Cena uz presla nad M15 EMA20 a EMA20 sa otaca
+    # hore. Nemusime cakat, kym EMA20 prejde EMA50.
+    #
+    # Toto riesi oneskorenie pri rychlom obrate trhu.
+    # =================================================
+
+    if (
+        M15_ALLOW_TRANSITION
+        and
+        close_now > e20
+        and
+        e20 > e20_previous
+    ):
+
+        return (
+            "BUY",
+            close_now,
+            e20,
+            e50,
+            "M15_TRANSITION_BUY"
+        )
+
+
+    # =================================================
+    # TRANSITION SELL
+    # =================================================
+
+    if (
+        M15_ALLOW_TRANSITION
+        and
+        close_now < e20
+        and
+        e20 < e20_previous
+    ):
+
+        return (
+            "SELL",
+            close_now,
+            e20,
+            e50,
+            "M15_TRANSITION_SELL"
+        )
+
+
+    # =================================================
+    # NEUTRAL
+    #
+    # V14.2 tu obchod okamzite zablokoval.
+    # V14.3 dovoli M5 rozhodnut smer.
+    # =================================================
 
     return (
         None,
         close_now,
         e20,
-        e50
+        e50,
+        "M15_NEUTRAL"
     )
 
 
@@ -2158,7 +2252,7 @@ def update_setup_lock(
     )
 
     notify(
-        "RIO GOLD V14.2 OLD SETUP RESET\n"
+        "RIO GOLD V14.3 OLD SETUP RESET\n"
         f"OLD SIDE: {old_side}\n"
         f"RESET: {reason}\n"
         "NEW FRESH SETUP CAN FORM"
@@ -2933,7 +3027,7 @@ async def wait_for_batch_positions(
             best_matches = matches
 
         print(
-            "GOLD V14.2 BATCH VERIFY:",
+            "GOLD V14.3 BATCH VERIFY:",
             f"{len(matches)}/{BATCH_SIZE}",
             f"ATTEMPT={attempt}",
             flush=True
@@ -3067,6 +3161,7 @@ async def open_batch(
     side,
     signal_close,
     trigger_mode,
+    m15_mode,
     m1_ema9,
     m1_ema20,
     sl_anchor,
@@ -3089,7 +3184,7 @@ async def open_batch(
     ):
 
         print(
-            "GOLD V14.2 BLOCKED: "
+            "GOLD V14.3 BLOCKED: "
             "OLD SAME-DIRECTION SETUP",
             side,
             flush=True
@@ -3106,7 +3201,7 @@ async def open_batch(
     if existing_positions:
 
         print(
-            "GOLD V14.2 WAIT: "
+            "GOLD V14.3 WAIT: "
             "XAUUSD POSITION ALREADY OPEN",
             len(
                 existing_positions
@@ -3137,7 +3232,7 @@ async def open_batch(
     if not spread_ok:
 
         print(
-            "GOLD V14.2 ENTRY BLOCKED:",
+            "GOLD V14.3 ENTRY BLOCKED:",
             spread_reason,
             f"SPREAD={spread:.2f}",
             flush=True
@@ -3153,11 +3248,7 @@ async def open_batch(
 
 
     # =================================================
-    # IMPORTANT V14.2 FIX
-    #
-    # NO CHASE SA KONTROLUJE IBA TU.
-    # Po schvaleni batchu sa uz medzi 12 prikazmi
-    # znovu nekontroluje.
+    # NO CHASE IBA PRED BATCHOM
     # =================================================
 
     (
@@ -3173,7 +3264,7 @@ async def open_batch(
     if not live_ok:
 
         print(
-            "GOLD V14.2 ENTRY BLOCKED:",
+            "GOLD V14.3 ENTRY BLOCKED:",
             live_reason,
             flush=True
         )
@@ -3198,7 +3289,7 @@ async def open_batch(
         ):
 
             print(
-                "GOLD V14.2 BLOCKED: "
+                "GOLD V14.3 BLOCKED: "
                 "TOO FAR ABOVE M1 EMA9",
                 flush=True
             )
@@ -3218,7 +3309,7 @@ async def open_batch(
         ):
 
             print(
-                "GOLD V14.2 BLOCKED: "
+                "GOLD V14.3 BLOCKED: "
                 "TOO FAR BELOW M1 EMA9",
                 flush=True
             )
@@ -3239,7 +3330,7 @@ async def open_batch(
     ):
 
         print(
-            "GOLD V14.2 BLOCKED: "
+            "GOLD V14.3 BLOCKED: "
             "BUY SL ANCHOR INVALID",
             flush=True
         )
@@ -3255,7 +3346,7 @@ async def open_batch(
     ):
 
         print(
-            "GOLD V14.2 BLOCKED: "
+            "GOLD V14.3 BLOCKED: "
             "SELL SL ANCHOR INVALID",
             flush=True
         )
@@ -3264,7 +3355,7 @@ async def open_batch(
 
 
     # =================================================
-    # LOCK COMMON LEVELS BEFORE BATCH
+    # LOCK COMMON LEVELS
     # =================================================
 
     levels, reason = get_common_levels(
@@ -3278,7 +3369,7 @@ async def open_batch(
     if levels is None:
 
         print(
-            "GOLD V14.2 ENTRY BLOCKED BY SL:",
+            "GOLD V14.3 ENTRY BLOCKED BY SL:",
             reason,
             flush=True
         )
@@ -3287,7 +3378,7 @@ async def open_batch(
 
 
     # =================================================
-    # VALIDATE ALL 4 TP LEVELS BEFORE FIRST ORDER
+    # VALIDATE TP
     # =================================================
 
     for group in (
@@ -3309,7 +3400,7 @@ async def open_batch(
         if not valid:
 
             print(
-                "GOLD V14.2 ENTRY BLOCKED:",
+                "GOLD V14.3 ENTRY BLOCKED:",
                 group,
                 valid_reason,
                 flush=True
@@ -3364,7 +3455,7 @@ async def open_batch(
     ):
 
         notify(
-            "RIO GOLD V14.2 INVALID LOT"
+            "RIO GOLD V14.3 INVALID LOT"
         )
 
         return
@@ -3377,8 +3468,9 @@ async def open_batch(
     if not ENABLE_TRADING:
 
         notify(
-            "RIO GOLD V14.2 TEST SIGNAL\n"
+            "RIO GOLD V14.3 TEST SIGNAL\n"
             f"SIDE: {side}\n"
+            f"M15 MODE: {m15_mode}\n"
             f"M1: {trigger_mode}\n"
             f"EMA9: {m1_ema9:.2f}\n"
             f"EMA20: {m1_ema20:.2f}\n"
@@ -3440,7 +3532,7 @@ async def open_batch(
         )
 
         print(
-            "GOLD V14.2 BATCH CANCELLED: "
+            "GOLD V14.3 BATCH CANCELLED: "
             "POSITION APPEARED BEFORE BATCH",
             flush=True
         )
@@ -3453,9 +3545,9 @@ async def open_batch(
     # =================================================
 
     notify(
-        "RIO GOLD V14.2 ENTRY APPROVED\n"
+        "RIO GOLD V14.3 ENTRY APPROVED\n"
         f"SIDE: {side}\n"
-        "M15 TREND: OK\n"
+        f"M15 MODE: {m15_mode}\n"
         "M5 CONFIRMATION: OK\n"
         f"M1 SCALP: {trigger_mode}\n"
         f"EMA9: {m1_ema9:.2f}\n"
@@ -3506,7 +3598,6 @@ async def open_batch(
                 tp_group
             ]
 
-            # Unikatny comment pre kazdu poziciu.
             comment = (
                 f"{COMMENT_PREFIX}_"
                 f"{tp_group}_"
@@ -3516,17 +3607,6 @@ async def open_batch(
             options = {
                 "comment": comment
             }
-
-            # -----------------------------------------
-            # DÔLEŽITÉ:
-            # TU UZ NIE JE:
-            # - validate_live_entry()
-            # - CHASE TOO FAR
-            # - get_positions()
-            # - 1 sekundove verify medzi objednavkami
-            #
-            # Batch sa preto neposklada 12 sekund.
-            # -----------------------------------------
 
             if side == "BUY":
 
@@ -3567,7 +3647,7 @@ async def open_batch(
             sent_count += 1
 
             print(
-                "GOLD V14.2 ORDER SENT",
+                "GOLD V14.3 ORDER SENT",
                 f"{number}/{BATCH_SIZE}",
                 tp_group,
                 result,
@@ -3576,7 +3656,7 @@ async def open_batch(
 
 
         # =================================================
-        # VERIFY AFTER ALL 12 ORDERS
+        # VERIFY AFTER 12 ORDERS
         # =================================================
 
         new_positions = (
@@ -3598,9 +3678,6 @@ async def open_batch(
             BATCH_SIZE
         ):
 
-            # Partial batch.
-            # Existujuce pozicie su zaznamenane a budu
-            # normalne chranene BE.
             state[
                 "order_uncertain"
             ] = True
@@ -3614,7 +3691,7 @@ async def open_batch(
             )
 
             notify(
-                "RIO GOLD V14.2 PARTIAL BATCH\n"
+                "RIO GOLD V14.3 PARTIAL BATCH\n"
                 f"SENT: {sent_count}/12\n"
                 f"VISIBLE: {len(new_positions)}/12\n"
                 f"TRACKED: {registered}\n"
@@ -3645,7 +3722,7 @@ async def open_batch(
         )
 
         notify(
-            "RIO GOLD V14.2 BATCH COMPLETED\n"
+            "RIO GOLD V14.3 BATCH COMPLETED\n"
             "12/12 OPENED\n"
             f"LOT EACH: {LOT_SIZE}\n"
             f"TOTAL: "
@@ -3667,13 +3744,11 @@ async def open_batch(
     except Exception as e:
 
         print(
-            "GOLD V14.2 BATCH ERROR:",
+            "GOLD V14.3 BATCH ERROR:",
             traceback.format_exc(),
             flush=True
         )
 
-        # Skusime okamzite zistit,
-        # ci niektore prikazy napriek chybe presli.
         try:
 
             partial_positions = (
@@ -3708,7 +3783,7 @@ async def open_batch(
         )
 
         notify(
-            "RIO GOLD V14.2 BATCH STOPPED\n"
+            "RIO GOLD V14.3 BATCH STOPPED\n"
             f"SENT BEFORE ERROR: "
             f"{sent_count}/12\n"
             f"ERROR: {type(e).__name__}\n"
@@ -3965,7 +4040,7 @@ async def protect_position(
     )
 
     notify(
-        f"RIO GOLD V14.2 {stage} ACTIVE\n"
+        f"RIO GOLD V14.3 {stage} ACTIVE\n"
         f"POSITION: {pid}\n"
         f"SIDE: {side}\n"
         f"GROUP: "
@@ -4110,8 +4185,6 @@ async def adopt_positions(
         adopted += 1
 
 
-    # Ak existuju managed pozicie,
-    # nech robot ich normalne chráni.
     if managed:
 
         state[
@@ -4129,7 +4202,7 @@ async def adopt_positions(
     if adopted:
 
         notify(
-            "RIO GOLD V14.2 POSITIONS ADOPTED\n"
+            "RIO GOLD V14.3 POSITIONS ADOPTED\n"
             f"BOT OPEN: {len(managed)}/12\n"
             f"TRACKED: "
             f"{len(state['positions'])}/12\n"
@@ -4193,7 +4266,7 @@ async def reconcile_state(
         ] = time.time()
 
         notify(
-            "RIO GOLD V14.2 POSITION CLOSED\n"
+            "RIO GOLD V14.3 POSITION CLOSED\n"
             f"ID: {pid}\n"
             f"REMAINING BOT: "
             f"{len(state['positions'])}"
@@ -4327,11 +4400,13 @@ async def bot_session(state):
         # =================================================
 
         notify(
-            "RIO GOLD V14.2 CONNECTED\n"
+            "RIO GOLD V14.3 CONNECTED\n"
+            "ADAPTIVE M15 ACTIVE\n"
             "STRICT SCALP ACTIVE\n"
             "FAST BATCH ACTIVE\n"
             "NO CHASE PRE-BATCH ONLY\n"
-            "M15 EMA20/50 TREND ACTIVE\n"
+            "M15 STRICT + TRANSITION ACTIVE\n"
+            "M15 NEUTRAL -> M5 FALLBACK ACTIVE\n"
             "M5 EMA9/20 CONFIRM ACTIVE\n"
             "M1 EMA9/20 RETEST ACTIVE\n"
             "M1 MOMENTUM CONFIRM ACTIVE\n"
@@ -4420,7 +4495,7 @@ async def bot_session(state):
                     if manual_count > 0:
 
                         print(
-                            "GOLD V14.2 WAIT: "
+                            "GOLD V14.3 WAIT: "
                             "MANUAL/OTHER XAUUSD OPEN:",
                             manual_count,
                             flush=True
@@ -4452,7 +4527,7 @@ async def bot_session(state):
                 if cooldown_left > 0:
 
                     print(
-                        "GOLD V14.2 WAIT: "
+                        "GOLD V14.3 WAIT: "
                         "POST-BATCH COOLDOWN",
                         f"{cooldown_left:.0f}s LEFT",
                         flush=True
@@ -4487,7 +4562,7 @@ async def bot_session(state):
                 ):
 
                     print(
-                        "GOLD V14.2 WAIT: "
+                        "GOLD V14.3 WAIT: "
                         "M1 NOT FRESH",
                         f"AGE={last_age:.0f}s",
                         flush=True
@@ -4561,55 +4636,178 @@ async def bot_session(state):
 
 
                 # =====================================
-                # M15 TREND
+                # M15 ADAPTIVE DIRECTION
                 # =====================================
 
                 (
                     direction,
                     m15_close,
                     m15_ema20,
-                    m15_ema50
+                    m15_ema50,
+                    m15_mode
                 ) = m15_direction(
                     candles
                 )
 
+
+                # =====================================
+                # V14.3:
+                # M15 NEUTRAL -> LET M5 DECIDE
+                # =====================================
+
                 if direction is None:
 
-                    print(
-                        "GOLD V14.2 WAIT: "
-                        "M15 TREND NOT CLEAN",
-                        flush=True
+                    if not M15_ALLOW_M5_FALLBACK:
+
+                        print(
+                            "GOLD V14.3 WAIT: "
+                            "M15 NEUTRAL",
+                            flush=True
+                        )
+
+                        await asyncio.sleep(
+                            LOOP_SECONDS
+                        )
+
+                        continue
+
+
+                    # -----------------------------
+                    # CHECK BUY ON M5
+                    # -----------------------------
+
+                    (
+                        m5_buy_ok,
+                        m5_buy_close,
+                        m5_buy_ema9,
+                        m5_buy_ema20
+                    ) = m5_confirmation(
+                        candles,
+                        "BUY"
                     )
 
-                    await asyncio.sleep(
-                        LOOP_SECONDS
+
+                    # -----------------------------
+                    # CHECK SELL ON M5
+                    # -----------------------------
+
+                    (
+                        m5_sell_ok,
+                        m5_sell_close,
+                        m5_sell_ema9,
+                        m5_sell_ema20
+                    ) = m5_confirmation(
+                        candles,
+                        "SELL"
                     )
 
-                    continue
+
+                    # -----------------------------
+                    # ONLY ONE SIDE MAY WIN
+                    # -----------------------------
+
+                    if (
+                        m5_buy_ok
+                        and
+                        not m5_sell_ok
+                    ):
+
+                        direction = "BUY"
+
+                        m15_mode = (
+                            "M15_NEUTRAL_M5_BUY"
+                        )
+
+                        m5_ok = True
+                        m5_close = m5_buy_close
+                        m5_ema9 = m5_buy_ema9
+                        m5_ema20 = m5_buy_ema20
+
+                        print(
+                            "GOLD V14.3 M15 NEUTRAL -> "
+                            "M5 BUY FALLBACK",
+                            flush=True
+                        )
+
+
+                    elif (
+                        m5_sell_ok
+                        and
+                        not m5_buy_ok
+                    ):
+
+                        direction = "SELL"
+
+                        m15_mode = (
+                            "M15_NEUTRAL_M5_SELL"
+                        )
+
+                        m5_ok = True
+                        m5_close = m5_sell_close
+                        m5_ema9 = m5_sell_ema9
+                        m5_ema20 = m5_sell_ema20
+
+                        print(
+                            "GOLD V14.3 M15 NEUTRAL -> "
+                            "M5 SELL FALLBACK",
+                            flush=True
+                        )
+
+
+                    else:
+
+                        print(
+                            "GOLD V14.3 WAIT: "
+                            "M15 NEUTRAL + "
+                            "M5 NO CLEAN DIRECTION",
+                            flush=True
+                        )
+
+                        await asyncio.sleep(
+                            LOOP_SECONDS
+                        )
+
+                        continue
 
 
                 # =====================================
-                # M5 CONFIRMATION
+                # NORMAL M15 DIRECTION -> M5 CONFIRM
                 # =====================================
 
-                (
-                    m5_ok,
-                    m5_close,
-                    m5_ema9,
-                    m5_ema20
-                ) = m5_confirmation(
-                    candles,
-                    direction
-                )
+                else:
+
+                    (
+                        m5_ok,
+                        m5_close,
+                        m5_ema9,
+                        m5_ema20
+                    ) = m5_confirmation(
+                        candles,
+                        direction
+                    )
+
+                    if not m5_ok:
+
+                        print(
+                            "GOLD V14.3 WAIT: "
+                            "M5 NOT CONFIRMED",
+                            direction,
+                            f"M15_MODE={m15_mode}",
+                            flush=True
+                        )
+
+                        await asyncio.sleep(
+                            LOOP_SECONDS
+                        )
+
+                        continue
+
+
+                # =====================================
+                # SAFETY
+                # =====================================
 
                 if not m5_ok:
-
-                    print(
-                        "GOLD V14.2 WAIT: "
-                        "M5 NOT CONFIRMED",
-                        direction,
-                        flush=True
-                    )
 
                     await asyncio.sleep(
                         LOOP_SECONDS
@@ -4637,9 +4835,10 @@ async def bot_session(state):
                 if not trigger_ok:
 
                     print(
-                        "GOLD V14.2 WAIT: "
+                        "GOLD V14.3 WAIT: "
                         "M1 SCALP RETEST NOT READY",
                         direction,
+                        f"M15_MODE={m15_mode}",
                         f"EMA9={m1_ema9}",
                         f"EMA20={m1_ema20}",
                         flush=True
@@ -4662,7 +4861,7 @@ async def bot_session(state):
                 ):
 
                     print(
-                        "GOLD V14.2 SIGNAL BLOCKED: "
+                        "GOLD V14.3 SIGNAL BLOCKED: "
                         "OLD SAME-DIRECTION SETUP",
                         direction,
                         flush=True
@@ -4690,7 +4889,7 @@ async def bot_session(state):
                 if sl_anchor is None:
 
                     print(
-                        "GOLD V14.2 WAIT: "
+                        "GOLD V14.3 WAIT: "
                         "NO SL SWING",
                         flush=True
                     )
@@ -4742,8 +4941,9 @@ async def bot_session(state):
                 # =====================================
 
                 print(
-                    "GOLD V14.2 SETUP READY:",
-                    f"M15={direction}",
+                    "GOLD V14.3 SETUP READY:",
+                    f"SIDE={direction}",
+                    f"M15_MODE={m15_mode}",
                     f"M15_CLOSE={m15_close}",
                     f"M15_E20={m15_ema20}",
                     f"M15_E50={m15_ema50}",
@@ -4767,6 +4967,7 @@ async def bot_session(state):
                     direction,
                     signal_close,
                     trigger_mode,
+                    m15_mode,
                     m1_ema9,
                     m1_ema20,
                     sl_anchor,
@@ -4898,7 +5099,7 @@ async def main():
     ):
 
         telegram(
-            "RIO GOLD V14.2 ERROR\n"
+            "RIO GOLD V14.3 ERROR\n"
             "M_TOKEN OR M_ACC MISSING"
         )
 
@@ -4907,11 +5108,14 @@ async def main():
     state = load_state()
 
     telegram(
-        "RIOBOT GOLD V14.2 START\n"
+        "RIOBOT GOLD V14.3 START\n"
+        "ADAPTIVE M15\n"
         "STRICT SCALP\n"
         "FAST 12-POSITION BATCH\n"
         "NO CHASE PRE-BATCH ONLY\n"
-        "M15 EMA20/50 TREND\n"
+        "M15 STRICT TREND\n"
+        "M15 TRANSITION MODE\n"
+        "M15 NEUTRAL -> M5 FALLBACK\n"
         "M5 EMA9/20 CONFIRMATION\n"
         "M1 EMA9/20 RETEST + CONFIRM\n"
         "COMMON SL + COMMON TP LEVELS\n"
@@ -4956,7 +5160,7 @@ async def main():
             )
 
             notify(
-                "RIO GOLD V14.2 CONNECTION ERROR\n"
+                "RIO GOLD V14.3 CONNECTION ERROR\n"
                 f"{type(e).__name__}: "
                 f"{str(e)[:150]}\n"
                 f"RECONNECT IN "
@@ -4976,4 +5180,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-                   )
+    )
