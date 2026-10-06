@@ -18,7 +18,11 @@ from metaapi_cloud_sdk import MetaApi
 # M15 TRANSITION -> NORMAL M5 OVERRIDE
 # SHARED BATCH BE / POSITIVE LOCK
 #
-# ZMENA V14.9:
+# ZMENA:
+# - LOT_SIZE 0.01
+# - 12 pozicii = 0.12 lot spolu
+#
+# V14.9:
 # - FAST BE 0.15R -> +0.08R ODSTRANENY
 # - prva ochrana je az BE1:
 #     0.25R -> +0.12R
@@ -53,7 +57,7 @@ COMMENT_PREFIX = "RIOGOLDV14"
 # BATCH
 # =====================================================
 
-LOT_SIZE = 0.10
+LOT_SIZE = 0.01
 
 BATCH_SIZE = 12
 MAX_TRADES = 12
@@ -212,9 +216,6 @@ MAX_SL_ATR_MULT = 3.50
 
 # =====================================================
 # SHARED BATCH BREAK EVEN
-#
-# V14.9:
-# FAST BE ODSTRANENY
 # =====================================================
 
 BE1_TRIGGER_RR = 0.25
@@ -379,11 +380,6 @@ def default_state():
         "locked_reference": None,
         "setup_released": True,
 
-        # V14.9:
-        # 0 = nic
-        # 1 = BE1
-        # 2 = BE2
-        # 3 = BE3
         "batch_be_stage": 0
     }
 
@@ -1954,10 +1950,6 @@ def m1_scalp_trigger(
     )
 
 
-    # =================================================
-    # BUY
-    # =================================================
-
     if side == "BUY":
 
         strict_ema_alignment = (
@@ -2108,10 +2100,6 @@ def m1_scalp_trigger(
             ema20
         )
 
-
-    # =================================================
-    # SELL
-    # =================================================
 
     if side == "SELL":
 
@@ -4158,10 +4146,6 @@ async def protect_position(
     ]
 
 
-    # =================================================
-    # BUY
-    # =================================================
-
     if side == "BUY":
 
         minimum_positive_sl = (
@@ -4224,11 +4208,6 @@ async def protect_position(
         ):
 
             return True
-
-
-    # =================================================
-    # SELL
-    # =================================================
 
     else:
 
@@ -4293,10 +4272,6 @@ async def protect_position(
 
             return True
 
-
-    # =================================================
-    # MODIFY
-    # =================================================
 
     await meta_call(
         lambda:
@@ -4982,10 +4957,6 @@ async def bot_session(state):
                 consecutive_rpc_failures = 0
 
 
-                # =====================================
-                # OPEN POSITIONS
-                # =====================================
-
                 if all_positions:
 
                     if managed:
@@ -5027,10 +4998,6 @@ async def bot_session(state):
                     continue
 
 
-                # =====================================
-                # COOLDOWN
-                # =====================================
-
                 cooldown_left = (
                     COOLDOWN_SECONDS
                     -
@@ -5058,10 +5025,6 @@ async def bot_session(state):
 
                     continue
 
-
-                # =====================================
-                # DATA
-                # =====================================
 
                 candles = await get_candles(
                     region
@@ -5122,10 +5085,6 @@ async def bot_session(state):
                 )
 
 
-                # =====================================
-                # ATR
-                # =====================================
-
                 atr = calculate_atr(
                     candles
                 )
@@ -5150,10 +5109,6 @@ async def bot_session(state):
                 )
 
 
-                # =====================================
-                # M15
-                # =====================================
-
                 (
                     direction,
                     m15_close,
@@ -5167,10 +5122,6 @@ async def bot_session(state):
                 original_m15_direction = direction
                 original_m15_mode = m15_mode
 
-
-                # =====================================
-                # M5 NORMAL
-                # =====================================
 
                 (
                     m5_buy_ok,
@@ -5192,10 +5143,6 @@ async def bot_session(state):
                     "SELL"
                 )
 
-
-                # =====================================
-                # M5 STRONG REVERSAL
-                # =====================================
 
                 (
                     strong_buy,
@@ -5219,10 +5166,6 @@ async def bot_session(state):
                     "SELL"
                 )
 
-
-                # =====================================
-                # M15 NEUTRAL
-                # =====================================
 
                 if direction is None:
 
@@ -5360,10 +5303,6 @@ async def bot_session(state):
                         continue
 
 
-                # =====================================
-                # M15 BUY
-                # =====================================
-
                 elif direction == "BUY":
 
                     if m5_buy_ok:
@@ -5411,13 +5350,6 @@ async def bot_session(state):
                             "M15_TRANSITION_OVERRIDE_M5_SELL"
                         )
 
-                        print(
-                            "GOLD V14.9 M15 TRANSITION OVERRIDE:",
-                            "BUY -> SELL",
-                            "NORMAL M5 SELL CONFIRMED",
-                            flush=True
-                        )
-
                     elif (
                         M5_REVERSAL_OVERRIDE_ENABLED
                         and
@@ -5461,10 +5393,6 @@ async def bot_session(state):
 
                         continue
 
-
-                # =====================================
-                # M15 SELL
-                # =====================================
 
                 elif direction == "SELL":
 
@@ -5511,13 +5439,6 @@ async def bot_session(state):
 
                         m15_mode = (
                             "M15_TRANSITION_OVERRIDE_M5_BUY"
-                        )
-
-                        print(
-                            "GOLD V14.9 M15 TRANSITION OVERRIDE:",
-                            "SELL -> BUY",
-                            "NORMAL M5 BUY CONFIRMED",
-                            flush=True
                         )
 
                     elif (
@@ -5581,10 +5502,6 @@ async def bot_session(state):
                     continue
 
 
-                # =====================================
-                # M1
-                # =====================================
-
                 (
                     trigger_ok,
                     signal_close,
@@ -5637,10 +5554,6 @@ async def bot_session(state):
                     continue
 
 
-                # =====================================
-                # SL SWING
-                # =====================================
-
                 (
                     sl_anchor,
                     sl_anchor_mode
@@ -5657,10 +5570,6 @@ async def bot_session(state):
 
                     continue
 
-
-                # =====================================
-                # UNIQUE SIGNAL
-                # =====================================
 
                 signal_key = (
                     f"{candle_time}:"
@@ -5693,10 +5602,6 @@ async def bot_session(state):
                 )
 
 
-                # =====================================
-                # SETUP READY
-                # =====================================
-
                 print(
                     "GOLD V14.9 SETUP READY:",
                     f"SIDE={direction}",
@@ -5717,10 +5622,6 @@ async def bot_session(state):
                 )
 
 
-                # =====================================
-                # OPEN BATCH
-                # =====================================
-
                 await open_batch(
                     connection,
                     direction,
@@ -5739,10 +5640,6 @@ async def bot_session(state):
                     LOOP_SECONDS
                 )
 
-
-            # =========================================
-            # METAAPI TEMP ERROR
-            # =========================================
 
             except MetaApiTemporaryError as e:
 
@@ -5771,10 +5668,6 @@ async def bot_session(state):
                     RPC_FAILURE_WAIT
                 )
 
-
-            # =========================================
-            # OTHER ERROR
-            # =========================================
 
             except Exception as e:
 
