@@ -13,22 +13,23 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V14.10
+# RIOBOT GOLD V14.11
 #
-# FAST TREND ENTRY
-# SHARED BATCH BE
+# BETTER FAST ENTRY / ANTI-CHASE
 #
-# V14.10:
+# V14.11:
 # - LOT_SIZE 0.01
 # - 12 pozicii = 0.12 lot spolu
 #
-# FAST TREND ENTRY:
+# LEPSI FAST TREND ENTRY:
 # - iba M15 STRICT + normalny M5 v rovnakom smere
-# - M1 musi prerazit predchadzajuce HIGH/LOW
-# - pri tomto vstupe netreba klasicky M1 retest
+# - M1 breakout musi mat ATR rezervu
+# - silnejsie telo breakout sviecky
+# - close musi byt pri HIGH pre BUY / LOW pre SELL
+# - kontrola predchadzajuceho M1 momenta
+# - mensia maximalna vzdialenost od EMA9
+# - mensia maximalna breakout sviecka
 # - NO CHASE zostava
-# - spread ochrana zostava
-# - SL ochrana zostava
 #
 # SHARED BE:
 # - BE1: 0.35R -> pevne BE +0.15 ceny
@@ -41,11 +42,10 @@ from metaapi_cloud_sdk import MetaApi
 # - bez trailing stopu
 # =====================================================
 
-VERSION = "V14.10 FAST TREND + BE35"
+VERSION = "V14.11 BETTER FAST ENTRY"
 
 SYMBOL = "XAUUSD"
 
-# Nechavame V14 prefix kvoli pripadnym existujucim poziciam.
 COMMENT_PREFIX = "RIOGOLDV14"
 
 
@@ -176,19 +176,29 @@ M1_ALLOW_EARLY_TRANSITION = True
 
 
 # =====================================================
-# FAST TREND ENTRY
+# FAST TREND ENTRY V14.11
 # =====================================================
 
 FAST_TREND_ENTRY_ENABLED = True
 
-FAST_TREND_MIN_BODY_RATIO = 0.30
+# V14.10 = 0.30
+FAST_TREND_MIN_BODY_RATIO = 0.40
 
-# Silnu trendovu sviecku uz neblokujeme na 2.20 ATR,
-# ale stale nechceme extremny chase.
-FAST_TREND_MAX_RANGE_ATR = 3.20
+# V14.10 = 3.20
+FAST_TREND_MAX_RANGE_ATR = 2.20
 
-# Pri FAST TREND dovolime mierne vacsiu vzdialenost od EMA9.
-FAST_TREND_MAX_EMA9_DISTANCE_ATR = 1.10
+# V14.10 = 1.10
+FAST_TREND_MAX_EMA9_DISTANCE_ATR = 0.75
+
+# Breakout musi byt skutocny, nie iba tesne nad/pod HIGH/LOW.
+FAST_TREND_BREAK_BUFFER_ATR = 0.08
+
+# BUY close musi byt v hornej casti M1 sviecky.
+# SELL close musi byt v spodnej casti.
+FAST_TREND_CLOSE_POSITION_MIN = 0.70
+
+# Pred breakoutom nesmie M1 momentum uz slabnut.
+FAST_TREND_REQUIRE_PREVIOUS_MOMENTUM = True
 
 
 # =====================================================
@@ -230,10 +240,7 @@ MAX_SL_ATR_MULT = 3.50
 # SHARED BATCH BREAK EVEN
 # =====================================================
 
-# Najslabsia otvorena pozicia musi byt +0.35R.
 BE1_TRIGGER_RR = 0.35
-
-# BE1 je FIXNA vzdialenost ceny od vstupu.
 BE1_LOCK_DISTANCE = 0.15
 
 BE2_TRIGGER_RR = 0.40
@@ -274,7 +281,6 @@ STATE_DIR = os.getenv(
     "/tmp"
 )
 
-# Povodny state nechavame, aby sa po deployi nestratil stav.
 STATE_FILE = os.path.join(
     STATE_DIR,
     "rio_gold_v14.json"
@@ -306,7 +312,7 @@ app = Flask(__name__)
 def home():
 
     return (
-        "RIOBOT GOLD V14.10 FAST TREND ACTIVE",
+        "RIOBOT GOLD V14.11 BETTER FAST ENTRY ACTIVE",
         200
     )
 
@@ -396,10 +402,6 @@ def default_state():
         "locked_reference": None,
         "setup_released": True,
 
-        # 0 = nic
-        # 1 = BE1
-        # 2 = BE2
-        # 3 = BE3
         "batch_be_stage": 0
     }
 
@@ -444,7 +446,7 @@ def load_state():
     ):
 
         print(
-            "NEW GOLD V14.10 STATE",
+            "NEW GOLD V14.11 STATE",
             flush=True
         )
 
@@ -793,7 +795,7 @@ async def get_current_m1(
         ).total_seconds()
 
         print(
-            "GOLD V14.10 CURRENT M1:",
+            "GOLD V14.11 CURRENT M1:",
             candle_time.isoformat(),
             f"AGE={age:.0f}s",
             flush=True
@@ -1045,7 +1047,7 @@ async def get_candles(region):
     ):
 
         print(
-            "GOLD V14.10 HISTORICAL M1 STALE "
+            "GOLD V14.11 HISTORICAL M1 STALE "
             "BUT LIVE M1 FRESH",
             f"HIST_AGE={age_seconds:.0f}s",
             f"LIVE_AGE={current_age:.0f}s",
@@ -1110,7 +1112,7 @@ async def get_candles(region):
     ] = age_seconds
 
     print(
-        "GOLD V14.10 M1 DATA:",
+        "GOLD V14.11 M1 DATA:",
         candles[-1]["time"],
         f"AGE={age_seconds:.0f}s",
         f"COUNT={len(candles)}",
@@ -1793,7 +1795,7 @@ def m5_strong_reversal(
 
 
 # =====================================================
-# M1 FAST TREND ENTRY
+# M1 FAST TREND ENTRY V14.11
 # =====================================================
 
 def m1_fast_trend_trigger(
@@ -1805,7 +1807,7 @@ def m1_fast_trend_trigger(
     if (
         len(candles)
         <
-        M1_SLOW_EMA + 3
+        M1_SLOW_EMA + 4
     ):
 
         return (
@@ -1818,6 +1820,7 @@ def m1_fast_trend_trigger(
 
     current = candles[-1]
     previous = candles[-2]
+    previous2 = candles[-3]
 
     current_range = (
         current["high"]
@@ -1867,9 +1870,9 @@ def m1_fast_trend_trigger(
     )
 
     if (
-        len(ema9_values) < 2
+        len(ema9_values) < 3
         or
-        not ema20_values
+        len(ema20_values) < 2
     ):
 
         return (
@@ -1882,6 +1885,7 @@ def m1_fast_trend_trigger(
 
     ema9 = ema9_values[-1]
     ema9_previous = ema9_values[-2]
+    ema9_previous2 = ema9_values[-3]
 
     ema20 = ema20_values[-1]
 
@@ -1909,9 +1913,21 @@ def m1_fast_trend_trigger(
             ema20
         )
 
+    close_position = (
+        current["close"]
+        -
+        current["low"]
+    ) / current_range
+
+    breakout_buffer = (
+        atr
+        *
+        FAST_TREND_BREAK_BUFFER_ATR
+    )
+
 
     # =================================================
-    # FAST BUY
+    # BUY
     # =================================================
 
     if side == "BUY":
@@ -1922,28 +1938,8 @@ def m1_fast_trend_trigger(
             ema9 > ema20
             and
             ema9 > ema9_previous
-        )
-
-        candle_confirm = (
-            current["close"]
-            >
-            current["open"]
-        )
-
-        breakout_confirm = (
-            current["close"]
-            >
-            previous["high"]
-        )
-
-        distance_ok = (
-            current["close"]
-            -
-            ema9
-            <=
-            atr
-            *
-            FAST_TREND_MAX_EMA9_DISTANCE_ATR
+            and
+            ema9_previous >= ema9_previous2
         )
 
         if not ema_confirm:
@@ -1956,7 +1952,11 @@ def m1_fast_trend_trigger(
                 ema20
             )
 
-        if not candle_confirm:
+        if (
+            current["close"]
+            <=
+            current["open"]
+        ):
 
             return (
                 False,
@@ -1966,17 +1966,45 @@ def m1_fast_trend_trigger(
                 ema20
             )
 
-        if not breakout_confirm:
+        if (
+            current["close"]
+            <=
+            previous["high"]
+            +
+            breakout_buffer
+        ):
 
             return (
                 False,
                 None,
-                "FAST_TREND_BUY_NO_BREAK",
+                "FAST_TREND_BUY_WEAK_BREAKOUT",
                 ema9,
                 ema20
             )
 
-        if not distance_ok:
+        if (
+            close_position
+            <
+            FAST_TREND_CLOSE_POSITION_MIN
+        ):
+
+            return (
+                False,
+                None,
+                "FAST_TREND_BUY_WEAK_CLOSE",
+                ema9,
+                ema20
+            )
+
+        if (
+            current["close"]
+            -
+            ema9
+            >
+            atr
+            *
+            FAST_TREND_MAX_EMA9_DISTANCE_ATR
+        ):
 
             return (
                 False,
@@ -1986,17 +2014,39 @@ def m1_fast_trend_trigger(
                 ema20
             )
 
+        if FAST_TREND_REQUIRE_PREVIOUS_MOMENTUM:
+
+            previous_momentum_ok = (
+                previous["close"]
+                >=
+                previous2["close"]
+                and
+                previous["low"]
+                >=
+                previous2["low"]
+            )
+
+            if not previous_momentum_ok:
+
+                return (
+                    False,
+                    None,
+                    "FAST_TREND_BUY_MOMENTUM_WEAK",
+                    ema9,
+                    ema20
+                )
+
         return (
             True,
             current["close"],
-            "M1 BUY FAST TREND BREAKOUT",
+            "M1 BUY FAST TREND V14.11",
             ema9,
             ema20
         )
 
 
     # =================================================
-    # FAST SELL
+    # SELL
     # =================================================
 
     if side == "SELL":
@@ -2007,28 +2057,8 @@ def m1_fast_trend_trigger(
             ema9 < ema20
             and
             ema9 < ema9_previous
-        )
-
-        candle_confirm = (
-            current["close"]
-            <
-            current["open"]
-        )
-
-        breakout_confirm = (
-            current["close"]
-            <
-            previous["low"]
-        )
-
-        distance_ok = (
-            ema9
-            -
-            current["close"]
-            <=
-            atr
-            *
-            FAST_TREND_MAX_EMA9_DISTANCE_ATR
+            and
+            ema9_previous <= ema9_previous2
         )
 
         if not ema_confirm:
@@ -2041,7 +2071,11 @@ def m1_fast_trend_trigger(
                 ema20
             )
 
-        if not candle_confirm:
+        if (
+            current["close"]
+            >=
+            current["open"]
+        ):
 
             return (
                 False,
@@ -2051,17 +2085,49 @@ def m1_fast_trend_trigger(
                 ema20
             )
 
-        if not breakout_confirm:
+        if (
+            current["close"]
+            >=
+            previous["low"]
+            -
+            breakout_buffer
+        ):
 
             return (
                 False,
                 None,
-                "FAST_TREND_SELL_NO_BREAK",
+                "FAST_TREND_SELL_WEAK_BREAKOUT",
                 ema9,
                 ema20
             )
 
-        if not distance_ok:
+        if (
+            close_position
+            >
+            (
+                1.0
+                -
+                FAST_TREND_CLOSE_POSITION_MIN
+            )
+        ):
+
+            return (
+                False,
+                None,
+                "FAST_TREND_SELL_WEAK_CLOSE",
+                ema9,
+                ema20
+            )
+
+        if (
+            ema9
+            -
+            current["close"]
+            >
+            atr
+            *
+            FAST_TREND_MAX_EMA9_DISTANCE_ATR
+        ):
 
             return (
                 False,
@@ -2071,10 +2137,32 @@ def m1_fast_trend_trigger(
                 ema20
             )
 
+        if FAST_TREND_REQUIRE_PREVIOUS_MOMENTUM:
+
+            previous_momentum_ok = (
+                previous["close"]
+                <=
+                previous2["close"]
+                and
+                previous["high"]
+                <=
+                previous2["high"]
+            )
+
+            if not previous_momentum_ok:
+
+                return (
+                    False,
+                    None,
+                    "FAST_TREND_SELL_MOMENTUM_WEAK",
+                    ema9,
+                    ema20
+                )
+
         return (
             True,
             current["close"],
-            "M1 SELL FAST TREND BREAKOUT",
+            "M1 SELL FAST TREND V14.11",
             ema9,
             ema20
         )
@@ -2266,10 +2354,6 @@ def m1_scalp_trigger(
     )
 
 
-    # =================================================
-    # BUY
-    # =================================================
-
     if side == "BUY":
 
         strict_ema_alignment = (
@@ -2420,10 +2504,6 @@ def m1_scalp_trigger(
             ema20
         )
 
-
-    # =================================================
-    # SELL
-    # =================================================
 
     if side == "SELL":
 
@@ -2863,7 +2943,7 @@ def update_setup_lock(
     )
 
     notify(
-        "RIO GOLD V14.10 OLD SETUP RESET\n"
+        "RIO GOLD V14.11 OLD SETUP RESET\n"
         f"OLD SIDE: {old_side}\n"
         f"RESET: {reason}\n"
         "NEW FRESH SETUP CAN FORM"
@@ -3628,7 +3708,7 @@ async def wait_for_batch_positions(
             best_matches = matches
 
         print(
-            "GOLD V14.10 BATCH VERIFY:",
+            "GOLD V14.11 BATCH VERIFY:",
             f"{len(matches)}/{BATCH_SIZE}",
             f"ATTEMPT={attempt}",
             flush=True
@@ -3780,7 +3860,7 @@ async def open_batch(
     ):
 
         print(
-            "GOLD V14.10 BLOCKED: "
+            "GOLD V14.11 BLOCKED: "
             "OLD SAME-DIRECTION SETUP",
             side,
             flush=True
@@ -3795,15 +3875,6 @@ async def open_batch(
     )
 
     if existing_positions:
-
-        print(
-            "GOLD V14.10 WAIT: "
-            "XAUUSD POSITION ALREADY OPEN",
-            len(
-                existing_positions
-            ),
-            flush=True
-        )
 
         return
 
@@ -3823,7 +3894,7 @@ async def open_batch(
     if not spread_ok:
 
         print(
-            "GOLD V14.10 ENTRY BLOCKED:",
+            "GOLD V14.11 ENTRY BLOCKED:",
             spread_reason,
             f"SPREAD={spread:.2f}",
             flush=True
@@ -3850,7 +3921,7 @@ async def open_batch(
     if not live_ok:
 
         print(
-            "GOLD V14.10 ENTRY BLOCKED:",
+            "GOLD V14.11 ENTRY BLOCKED:",
             live_reason,
             flush=True
         )
@@ -3884,7 +3955,7 @@ async def open_batch(
         ):
 
             print(
-                "GOLD V14.10 BLOCKED: "
+                "GOLD V14.11 BLOCKED: "
                 "TOO FAR ABOVE M1 EMA9",
                 flush=True
             )
@@ -3904,7 +3975,7 @@ async def open_batch(
         ):
 
             print(
-                "GOLD V14.10 BLOCKED: "
+                "GOLD V14.11 BLOCKED: "
                 "TOO FAR BELOW M1 EMA9",
                 flush=True
             )
@@ -3919,12 +3990,6 @@ async def open_batch(
         reference_entry
     ):
 
-        print(
-            "GOLD V14.10 BLOCKED: "
-            "BUY SL ANCHOR INVALID",
-            flush=True
-        )
-
         return
 
     if (
@@ -3934,12 +3999,6 @@ async def open_batch(
         <=
         reference_entry
     ):
-
-        print(
-            "GOLD V14.10 BLOCKED: "
-            "SELL SL ANCHOR INVALID",
-            flush=True
-        )
 
         return
 
@@ -3954,7 +4013,7 @@ async def open_batch(
     if levels is None:
 
         print(
-            "GOLD V14.10 ENTRY BLOCKED BY SL:",
+            "GOLD V14.11 ENTRY BLOCKED BY SL:",
             reason,
             flush=True
         )
@@ -3980,7 +4039,7 @@ async def open_batch(
         if not valid:
 
             print(
-                "GOLD V14.10 ENTRY BLOCKED:",
+                "GOLD V14.11 ENTRY BLOCKED:",
                 group,
                 valid_reason,
                 flush=True
@@ -4030,7 +4089,7 @@ async def open_batch(
     ):
 
         notify(
-            "RIO GOLD V14.10 INVALID LOT"
+            "RIO GOLD V14.11 INVALID LOT"
         )
 
         return
@@ -4038,20 +4097,10 @@ async def open_batch(
     if not ENABLE_TRADING:
 
         notify(
-            "RIO GOLD V14.10 TEST SIGNAL\n"
+            "RIO GOLD V14.11 TEST SIGNAL\n"
             f"SIDE: {side}\n"
             f"M15 MODE: {m15_mode}\n"
-            f"M1: {trigger_mode}\n"
-            f"EMA9: {m1_ema9:.2f}\n"
-            f"EMA20: {m1_ema20:.2f}\n"
-            f"REF ENTRY: {reference_entry:.2f}\n"
-            f"COMMON SL: {levels['sl']:.2f}\n"
-            f"TP1: {levels['tps']['TP1']:.2f}\n"
-            f"TP2: {levels['tps']['TP2']:.2f}\n"
-            f"TP3: {levels['tps']['TP3']:.2f}\n"
-            f"TP4: {levels['tps']['TP4']:.2f}\n"
-            f"RISK: {levels['risk']:.2f}\n"
-            f"ATR: {atr:.2f}"
+            f"M1: {trigger_mode}"
         )
 
         return
@@ -4095,31 +4144,19 @@ async def open_batch(
             state
         )
 
-        print(
-            "GOLD V14.10 BATCH CANCELLED: "
-            "POSITION APPEARED BEFORE BATCH",
-            flush=True
-        )
-
         return
 
     notify(
-        "RIO GOLD V14.10 ENTRY APPROVED\n"
+        "RIO GOLD V14.11 ENTRY APPROVED\n"
         f"SIDE: {side}\n"
         f"M15 MODE: {m15_mode}\n"
-        "M5 CONFIRMATION: OK\n"
         f"M1: {trigger_mode}\n"
-        f"EMA9: {m1_ema9:.2f}\n"
-        f"EMA20: {m1_ema20:.2f}\n"
         f"REF ENTRY: {reference_entry:.2f}\n"
-        f"SL ANCHOR: {sl_anchor:.2f}\n"
-        f"SL MODE: {sl_anchor_mode}\n"
         f"COMMON SL: {levels['sl']:.2f}\n"
         f"TP1: {levels['tps']['TP1']:.2f}\n"
         f"TP2: {levels['tps']['TP2']:.2f}\n"
         f"TP3: {levels['tps']['TP3']:.2f}\n"
         f"TP4: {levels['tps']['TP4']:.2f}\n"
-        f"RISK: {levels['risk']:.2f}\n"
         f"ATR: {atr:.2f}\n"
         f"SPREAD: {spread:.2f}\n"
         "OPENING 12 POSITIONS"
@@ -4200,7 +4237,7 @@ async def open_batch(
             sent_count += 1
 
             print(
-                "GOLD V14.10 ORDER SENT",
+                "GOLD V14.11 ORDER SENT",
                 f"{number}/{BATCH_SIZE}",
                 tp_group,
                 result,
@@ -4239,11 +4276,10 @@ async def open_batch(
             )
 
             notify(
-                "RIO GOLD V14.10 PARTIAL BATCH\n"
+                "RIO GOLD V14.11 PARTIAL BATCH\n"
                 f"SENT: {sent_count}/12\n"
                 f"VISIBLE: {len(new_positions)}/12\n"
-                f"TRACKED: {registered}\n"
-                "NO NEW BATCH UNTIL RECONCILED"
+                f"TRACKED: {registered}"
             )
 
             return
@@ -4265,7 +4301,7 @@ async def open_batch(
         )
 
         notify(
-            "RIO GOLD V14.10 BATCH COMPLETED\n"
+            "RIO GOLD V14.11 BATCH COMPLETED\n"
             "12/12 OPENED\n"
             f"LOT EACH: {LOT_SIZE}\n"
             f"TOTAL: "
@@ -4282,7 +4318,7 @@ async def open_batch(
     except Exception as e:
 
         print(
-            "GOLD V14.10 BATCH ERROR:",
+            "GOLD V14.11 BATCH ERROR:",
             traceback.format_exc(),
             flush=True
         )
@@ -4321,7 +4357,7 @@ async def open_batch(
         )
 
         notify(
-            "RIO GOLD V14.10 BATCH STOPPED\n"
+            "RIO GOLD V14.11 BATCH STOPPED\n"
             f"SENT BEFORE ERROR: "
             f"{sent_count}/12\n"
             f"ERROR: {type(e).__name__}\n"
@@ -4330,7 +4366,7 @@ async def open_batch(
 
 
 # =====================================================
-# BATCH BE HELPERS
+# BATCH BE
 # =====================================================
 
 def be_stage_config(stage_number):
@@ -4382,10 +4418,6 @@ def be_stage_from_rr(rr):
 
     return 0
 
-
-# =====================================================
-# SINGLE POSITION - APPLY SHARED STAGE
-# =====================================================
 
 async def protect_position(
     connection,
@@ -4454,7 +4486,6 @@ async def protect_position(
         else -1
     )
 
-    # BE1 = presne +0.15 ceny od vstupu.
     if stage_name == "BE1":
 
         positive_lock_distance = (
@@ -4488,11 +4519,6 @@ async def protect_position(
         "tick"
     ]
 
-
-    # =================================================
-    # BUY
-    # =================================================
-
     if side == "BUY":
 
         minimum_positive_sl = (
@@ -4517,17 +4543,6 @@ async def protect_position(
             <
             minimum_positive_sl
         ):
-
-            print(
-                "GOLD V14.10 BE WAIT:",
-                pid,
-                stage_name,
-                "BUY POSITIVE LOCK NOT YET POSSIBLE",
-                f"ENTRY={entry:.2f}",
-                f"BID={market['bid']:.2f}",
-                f"CANDIDATE={candidate_sl:.2f}",
-                flush=True
-            )
 
             return False
 
@@ -4556,11 +4571,6 @@ async def protect_position(
 
             return True
 
-
-    # =================================================
-    # SELL
-    # =================================================
-
     else:
 
         maximum_positive_sl = (
@@ -4585,17 +4595,6 @@ async def protect_position(
             >
             maximum_positive_sl
         ):
-
-            print(
-                "GOLD V14.10 BE WAIT:",
-                pid,
-                stage_name,
-                "SELL POSITIVE LOCK NOT YET POSSIBLE",
-                f"ENTRY={entry:.2f}",
-                f"ASK={market['ask']:.2f}",
-                f"CANDIDATE={candidate_sl:.2f}",
-                flush=True
-            )
 
             return False
 
@@ -4624,11 +4623,6 @@ async def protect_position(
 
             return True
 
-
-    # =================================================
-    # MODIFY
-    # =================================================
-
     await meta_call(
         lambda:
         connection.modify_position(
@@ -4640,25 +4634,17 @@ async def protect_position(
     )
 
     print(
-        "GOLD V14.10",
+        "GOLD V14.11",
         stage_name,
         "PROTECTED",
         pid,
         f"SIDE={side}",
-        f"ENTRY={entry}",
-        f"RISK={risk:.2f}",
-        f"TRIGGER={trigger_rr:.2f}R",
-        f"LOCK_DISTANCE={positive_lock_distance:.2f}",
         f"SL={wanted_sl}",
         flush=True
     )
 
     return True
 
-
-# =====================================================
-# SHARED BATCH BE
-# =====================================================
 
 async def protect_managed_positions(
     connection,
@@ -4721,26 +4707,18 @@ async def protect_managed_positions(
 
         if side == "BUY":
 
-            price = market[
-                "bid"
-            ]
-
             profit_distance = (
-                price
+                market["bid"]
                 -
                 entry
             )
 
         else:
 
-            price = market[
-                "ask"
-            ]
-
             profit_distance = (
                 entry
                 -
-                price
+                market["ask"]
             )
 
         rr_now = (
@@ -4795,29 +4773,11 @@ async def protect_managed_positions(
             current_stage
         )
 
-        if new_stage_name == "BE1":
-
-            lock_text = (
-                f"+{BE1_LOCK_DISTANCE:.2f} PRICE"
-            )
-
-        else:
-
-            lock_text = (
-                f"+{new_lock_value:.2f}R"
-            )
-
         notify(
-            "RIO GOLD V14.10 SHARED BE TRIGGERED\n"
+            "RIO GOLD V14.11 SHARED BE TRIGGERED\n"
             f"STAGE: {new_stage_name}\n"
             f"WEAKEST POSITION: "
-            f"{weakest_rr:.2f}R\n"
-            f"TRIGGER: "
-            f"{new_trigger_rr:.2f}R\n"
-            f"LOCK: {lock_text}\n"
-            f"OPEN POSITIONS: "
-            f"{len(positions)}\n"
-            "PROTECTING ALL POSITIONS TOGETHER"
+            f"{weakest_rr:.2f}R"
         )
 
     latched_stage = max(
@@ -4856,55 +4816,9 @@ async def protect_managed_positions(
         for position in positions
     ]
 
-    results = await asyncio.gather(
+    await asyncio.gather(
         *tasks,
         return_exceptions=True
-    )
-
-    protected_count = 0
-    failed_count = 0
-
-    for position, result in zip(
-        positions,
-        results
-    ):
-
-        if isinstance(
-            result,
-            Exception
-        ):
-
-            failed_count += 1
-
-            print(
-                "GOLD V14.10 PROTECTION ERROR:",
-                position.get(
-                    "id"
-                ),
-                type(
-                    result
-                ).__name__,
-                str(
-                    result
-                )[:180],
-                flush=True
-            )
-
-        elif result:
-
-            protected_count += 1
-
-        else:
-
-            failed_count += 1
-
-    print(
-        "GOLD V14.10 SHARED BE:",
-        stage_name,
-        f"WEAKEST_RR={weakest_rr:.2f}",
-        f"PROTECTED={protected_count}/{len(positions)}",
-        f"WAIT/FAIL={failed_count}",
-        flush=True
     )
 
 
@@ -5059,11 +4973,9 @@ async def adopt_positions(
     if adopted:
 
         notify(
-            "RIO GOLD V14.10 POSITIONS ADOPTED\n"
+            "RIO GOLD V14.11 POSITIONS ADOPTED\n"
             f"BOT OPEN: {len(managed)}/12\n"
-            f"TRACKED: "
-            f"{len(state['positions'])}/12\n"
-            "SHARED BE PROTECTION RESTORED"
+            "SHARED BE RESTORED"
         )
 
     return managed
@@ -5123,7 +5035,7 @@ async def reconcile_state(
         ] = time.time()
 
         notify(
-            "RIO GOLD V14.10 POSITION CLOSED\n"
+            "RIO GOLD V14.11 POSITION CLOSED\n"
             f"ID: {pid}\n"
             f"REMAINING BOT: "
             f"{len(state['positions'])}"
@@ -5247,58 +5159,27 @@ async def bot_session(state):
                 force=True
             )
 
-        except Exception as e:
+        except Exception:
 
-            print(
-                "INITIAL CURRENT M1 WARMUP ERROR:",
-                e,
-                flush=True
-            )
+            pass
 
         notify(
-            "RIO GOLD V14.10 CONNECTED\n"
-            "FAST TREND ENTRY ACTIVE\n"
+            "RIO GOLD V14.11 CONNECTED\n"
+            "BETTER FAST ENTRY ACTIVE\n"
+            "ANTI-CHASE V14.11 ACTIVE\n"
             "M15 STRICT + M5 SAME DIRECTION\n"
-            "M1 HIGH/LOW BREAKOUT ACTIVE\n"
-            "FAST TREND RETEST NOT REQUIRED\n"
-            "NO CHASE ACTIVE\n"
-            "BE1: 0.35R -> FIXED +0.15\n"
+            "M1 BREAKOUT BUFFER ACTIVE\n"
+            "M1 MOMENTUM CHECK ACTIVE\n"
+            "M1 STRONG CLOSE CHECK ACTIVE\n"
+            "SHARED BATCH BE ACTIVE\n"
+            "BE1: 0.35R -> +0.15\n"
             "BE2: 0.40R -> +0.22R\n"
             "BE3: 0.60R -> +0.38R\n"
-            "M15 TRANSITION M5 OVERRIDE ACTIVE\n"
-            "M15 STRICT PROTECTION ACTIVE\n"
-            "SHARED BATCH BE ACTIVE\n"
-            "WEAKEST POSITION TRIGGER ACTIVE\n"
-            "BE STAGE LATCH ACTIVE\n"
-            "NORMAL M1 RETEST ACTIVE\n"
-            "STRONG M5 REVERSAL ACTIVE\n"
-            "ADAPTIVE M15 ACTIVE\n"
-            "M15 NEUTRAL -> M5 FALLBACK ACTIVE\n"
-            "M15 TRANSITION -> NORMAL M5 OVERRIDE ACTIVE\n"
-            "M15 STRICT -> STRONG M5 OVERRIDE ONLY\n"
-            "M5 EMA9/20 CONFIRM ACTIVE\n"
-            "M1 EARLY TRANSITION ACTIVE\n"
-            "COMMON SL ACTIVE\n"
-            "COMMON TP LEVELS ACTIVE\n"
-            "FRESH SETUP RESET ACTIVE\n"
-            "SAME-DIRECTION REENTRY PROTECTION ACTIVE\n"
-            "TRAILING: OFF\n"
-            f"POST-BATCH COOLDOWN: {COOLDOWN_SECONDS}s\n"
-            f"PROTECTION LOOP: {PROTECTION_LOOP_SECONDS}s\n"
             "12 POSITIONS / ONE SIGNAL\n"
             f"LOT EACH: {LOT_SIZE}\n"
             f"TOTAL BATCH: "
             f"{LOT_SIZE * BATCH_SIZE:.2f} LOT\n"
-            "TP1: 3 x 0.40R\n"
-            "TP2: 3 x 0.70R\n"
-            "TP3: 3 x 1.00R\n"
-            "TP4: 3 x 1.30R\n"
-            f"SL MIN: {MIN_SL_DISTANCE:.2f}\n"
-            f"SL MAX: {MAX_SL_DISTANCE:.2f}\n"
-            f"MAX SPREAD: {MAX_SPREAD:.2f}\n"
             f"BOT OPEN: {len(managed)}/12\n"
-            f"ALL XAUUSD OPEN: "
-            f"{len(all_positions)}\n"
             f"LIVE: {ENABLE_TRADING}"
         )
 
@@ -5318,11 +5199,6 @@ async def bot_session(state):
 
                 consecutive_rpc_failures = 0
 
-
-                # =====================================
-                # OPEN POSITIONS
-                # =====================================
-
                 if all_positions:
 
                     if managed:
@@ -5338,35 +5214,11 @@ async def bot_session(state):
                             market
                         )
 
-                    manual_count = (
-                        len(
-                            all_positions
-                        )
-                        -
-                        len(
-                            managed
-                        )
-                    )
-
-                    if manual_count > 0:
-
-                        print(
-                            "GOLD V14.10 WAIT: "
-                            "MANUAL/OTHER XAUUSD OPEN:",
-                            manual_count,
-                            flush=True
-                        )
-
                     await asyncio.sleep(
                         PROTECTION_LOOP_SECONDS
                     )
 
                     continue
-
-
-                # =====================================
-                # COOLDOWN
-                # =====================================
 
                 cooldown_left = (
                     COOLDOWN_SECONDS
@@ -5382,23 +5234,11 @@ async def bot_session(state):
 
                 if cooldown_left > 0:
 
-                    print(
-                        "GOLD V14.10 WAIT: "
-                        "POST-BATCH COOLDOWN",
-                        f"{cooldown_left:.0f}s LEFT",
-                        flush=True
-                    )
-
                     await asyncio.sleep(
                         LOOP_SECONDS
                     )
 
                     continue
-
-
-                # =====================================
-                # DATA
-                # =====================================
 
                 candles = await get_candles(
                     region
@@ -5416,13 +5256,6 @@ async def bot_session(state):
                     >
                     MAX_ENTRY_CANDLE_AGE
                 ):
-
-                    print(
-                        "GOLD V14.10 WAIT: "
-                        "M1 NOT FRESH",
-                        f"AGE={last_age:.0f}s",
-                        flush=True
-                    )
 
                     await asyncio.sleep(
                         STALE_DATA_RETRY_SECONDS
@@ -5458,11 +5291,6 @@ async def bot_session(state):
                     state
                 )
 
-
-                # =====================================
-                # ATR
-                # =====================================
-
                 atr = calculate_atr(
                     candles
                 )
@@ -5473,23 +5301,13 @@ async def bot_session(state):
                     atr <= 0
                 ):
 
-                    await asyncio.sleep(
-                        LOOP_SECONDS
-                    )
-
                     continue
-
 
                 update_setup_lock(
                     state,
                     candles,
                     atr
                 )
-
-
-                # =====================================
-                # M15
-                # =====================================
 
                 (
                     direction,
@@ -5503,11 +5321,6 @@ async def bot_session(state):
 
                 original_m15_direction = direction
                 original_m15_mode = m15_mode
-
-
-                # =====================================
-                # M5 NORMAL
-                # =====================================
 
                 (
                     m5_buy_ok,
@@ -5528,11 +5341,6 @@ async def bot_session(state):
                     candles,
                     "SELL"
                 )
-
-
-                # =====================================
-                # STRONG M5
-                # =====================================
 
                 (
                     strong_buy,
@@ -5556,20 +5364,14 @@ async def bot_session(state):
                     "SELL"
                 )
 
-
-                # =====================================
-                # M15 NEUTRAL
-                # =====================================
+                m5_ok = False
+                m5_close = None
+                m5_ema9 = None
+                m5_ema20 = None
 
                 if direction is None:
 
                     if not M15_ALLOW_M5_FALLBACK:
-
-                        print(
-                            "GOLD V14.10 WAIT: "
-                            "M15 NEUTRAL",
-                            flush=True
-                        )
 
                         await asyncio.sleep(
                             LOOP_SECONDS
@@ -5596,20 +5398,13 @@ async def bot_session(state):
                     ):
 
                         direction = "BUY"
+                        m5_ok = True
 
                         if m5_buy_ok:
 
-                            m5_close = (
-                                m5_buy_close
-                            )
-
-                            m5_ema9 = (
-                                m5_buy_ema9
-                            )
-
-                            m5_ema20 = (
-                                m5_buy_ema20
-                            )
+                            m5_close = m5_buy_close
+                            m5_ema9 = m5_buy_ema9
+                            m5_ema20 = m5_buy_ema20
 
                             m15_mode = (
                                 "M15_NEUTRAL_M5_BUY"
@@ -5617,23 +5412,13 @@ async def bot_session(state):
 
                         else:
 
-                            m5_close = (
-                                strong_buy_close
-                            )
-
-                            m5_ema9 = (
-                                strong_buy_ema9
-                            )
-
-                            m5_ema20 = (
-                                strong_buy_ema20
-                            )
+                            m5_close = strong_buy_close
+                            m5_ema9 = strong_buy_ema9
+                            m5_ema20 = strong_buy_ema20
 
                             m15_mode = (
                                 "M15_NEUTRAL_STRONG_M5_BUY"
                             )
-
-                        m5_ok = True
 
                     elif (
                         sell_candidate
@@ -5642,20 +5427,13 @@ async def bot_session(state):
                     ):
 
                         direction = "SELL"
+                        m5_ok = True
 
                         if m5_sell_ok:
 
-                            m5_close = (
-                                m5_sell_close
-                            )
-
-                            m5_ema9 = (
-                                m5_sell_ema9
-                            )
-
-                            m5_ema20 = (
-                                m5_sell_ema20
-                            )
+                            m5_close = m5_sell_close
+                            m5_ema9 = m5_sell_ema9
+                            m5_ema20 = m5_sell_ema20
 
                             m15_mode = (
                                 "M15_NEUTRAL_M5_SELL"
@@ -5663,32 +5441,15 @@ async def bot_session(state):
 
                         else:
 
-                            m5_close = (
-                                strong_sell_close
-                            )
-
-                            m5_ema9 = (
-                                strong_sell_ema9
-                            )
-
-                            m5_ema20 = (
-                                strong_sell_ema20
-                            )
+                            m5_close = strong_sell_close
+                            m5_ema9 = strong_sell_ema9
+                            m5_ema20 = strong_sell_ema20
 
                             m15_mode = (
                                 "M15_NEUTRAL_STRONG_M5_SELL"
                             )
 
-                        m5_ok = True
-
                     else:
-
-                        print(
-                            "GOLD V14.10 WAIT: "
-                            "M15 NEUTRAL + "
-                            "M5 NO CLEAN DIRECTION",
-                            flush=True
-                        )
 
                         await asyncio.sleep(
                             LOOP_SECONDS
@@ -5696,28 +5457,14 @@ async def bot_session(state):
 
                         continue
 
-
-                # =====================================
-                # M15 BUY
-                # =====================================
-
                 elif direction == "BUY":
 
                     if m5_buy_ok:
 
                         m5_ok = True
-
-                        m5_close = (
-                            m5_buy_close
-                        )
-
-                        m5_ema9 = (
-                            m5_buy_ema9
-                        )
-
-                        m5_ema20 = (
-                            m5_buy_ema20
-                        )
+                        m5_close = m5_buy_close
+                        m5_ema9 = m5_buy_ema9
+                        m5_ema20 = m5_buy_ema20
 
                     elif (
                         M15_TRANSITION_M5_OVERRIDE_ENABLED
@@ -5731,18 +5478,9 @@ async def bot_session(state):
 
                         direction = "SELL"
                         m5_ok = True
-
-                        m5_close = (
-                            m5_sell_close
-                        )
-
-                        m5_ema9 = (
-                            m5_sell_ema9
-                        )
-
-                        m5_ema20 = (
-                            m5_sell_ema20
-                        )
+                        m5_close = m5_sell_close
+                        m5_ema9 = m5_sell_ema9
+                        m5_ema20 = m5_sell_ema20
 
                         m15_mode = (
                             "M15_TRANSITION_OVERRIDE_M5_SELL"
@@ -5756,18 +5494,9 @@ async def bot_session(state):
 
                         direction = "SELL"
                         m5_ok = True
-
-                        m5_close = (
-                            strong_sell_close
-                        )
-
-                        m5_ema9 = (
-                            strong_sell_ema9
-                        )
-
-                        m5_ema20 = (
-                            strong_sell_ema20
-                        )
+                        m5_close = strong_sell_close
+                        m5_ema9 = strong_sell_ema9
+                        m5_ema20 = strong_sell_ema20
 
                         m15_mode = (
                             f"{original_m15_mode}"
@@ -5776,43 +5505,20 @@ async def bot_session(state):
 
                     else:
 
-                        print(
-                            "GOLD V14.10 WAIT: "
-                            "M5 NOT CONFIRMED BUY",
-                            f"M15_MODE={m15_mode}",
-                            f"M5_SELL={m5_sell_ok}",
-                            f"STRONG_SELL={strong_sell}",
-                            flush=True
-                        )
-
                         await asyncio.sleep(
                             LOOP_SECONDS
                         )
 
                         continue
 
-
-                # =====================================
-                # M15 SELL
-                # =====================================
-
                 elif direction == "SELL":
 
                     if m5_sell_ok:
 
                         m5_ok = True
-
-                        m5_close = (
-                            m5_sell_close
-                        )
-
-                        m5_ema9 = (
-                            m5_sell_ema9
-                        )
-
-                        m5_ema20 = (
-                            m5_sell_ema20
-                        )
+                        m5_close = m5_sell_close
+                        m5_ema9 = m5_sell_ema9
+                        m5_ema20 = m5_sell_ema20
 
                     elif (
                         M15_TRANSITION_M5_OVERRIDE_ENABLED
@@ -5826,18 +5532,9 @@ async def bot_session(state):
 
                         direction = "BUY"
                         m5_ok = True
-
-                        m5_close = (
-                            m5_buy_close
-                        )
-
-                        m5_ema9 = (
-                            m5_buy_ema9
-                        )
-
-                        m5_ema20 = (
-                            m5_buy_ema20
-                        )
+                        m5_close = m5_buy_close
+                        m5_ema9 = m5_buy_ema9
+                        m5_ema20 = m5_buy_ema20
 
                         m15_mode = (
                             "M15_TRANSITION_OVERRIDE_M5_BUY"
@@ -5851,18 +5548,9 @@ async def bot_session(state):
 
                         direction = "BUY"
                         m5_ok = True
-
-                        m5_close = (
-                            strong_buy_close
-                        )
-
-                        m5_ema9 = (
-                            strong_buy_ema9
-                        )
-
-                        m5_ema20 = (
-                            strong_buy_ema20
-                        )
+                        m5_close = strong_buy_close
+                        m5_ema9 = strong_buy_ema9
+                        m5_ema20 = strong_buy_ema20
 
                         m15_mode = (
                             f"{original_m15_mode}"
@@ -5871,45 +5559,19 @@ async def bot_session(state):
 
                     else:
 
-                        print(
-                            "GOLD V14.10 WAIT: "
-                            "M5 NOT CONFIRMED SELL",
-                            f"M15_MODE={m15_mode}",
-                            f"M5_BUY={m5_buy_ok}",
-                            f"STRONG_BUY={strong_buy}",
-                            flush=True
-                        )
-
                         await asyncio.sleep(
                             LOOP_SECONDS
                         )
 
                         continue
 
-                else:
-
-                    await asyncio.sleep(
-                        LOOP_SECONDS
-                    )
-
-                    continue
-
-
                 if not m5_ok:
-
-                    await asyncio.sleep(
-                        LOOP_SECONDS
-                    )
 
                     continue
 
 
                 # =====================================
                 # FAST TREND CONTEXT
-                #
-                # IBA:
-                # M15 STRICT + NORMAL M5
-                # V ROVNAKOM SMERE
                 # =====================================
 
                 fast_trend_context = False
@@ -5948,7 +5610,7 @@ async def bot_session(state):
 
 
                 # =====================================
-                # M1 FAST TREND FIRST
+                # M1 ENTRY
                 # =====================================
 
                 trigger_ok = False
@@ -5980,18 +5642,11 @@ async def bot_session(state):
                         m1_ema20 = fast_ema20
 
                         print(
-                            "GOLD V14.10 FAST TREND READY:",
+                            "GOLD V14.11 FAST ENTRY READY:",
                             direction,
                             trigger_mode,
-                            f"M15={original_m15_mode}",
-                            f"ATR={atr:.2f}",
                             flush=True
                         )
-
-
-                # =====================================
-                # NORMAL M1 FALLBACK
-                # =====================================
 
                 if not trigger_ok:
 
@@ -6008,18 +5663,13 @@ async def bot_session(state):
                         m15_mode
                     )
 
-
                 if not trigger_ok:
 
                     print(
-                        "GOLD V14.10 WAIT: "
-                        "M1 ENTRY NOT READY",
+                        "GOLD V14.11 WAIT:",
                         direction,
                         f"REASON={trigger_mode}",
-                        f"M15_MODE={m15_mode}",
-                        f"FAST_CONTEXT={fast_trend_context}",
-                        f"EMA9={m1_ema9}",
-                        f"EMA20={m1_ema20}",
+                        f"M15={m15_mode}",
                         flush=True
                     )
 
@@ -6028,34 +5678,17 @@ async def bot_session(state):
                     )
 
                     continue
-
-
-                # =====================================
-                # SAME SETUP LOCK
-                # =====================================
 
                 if same_setup_blocked(
                     state,
                     direction
                 ):
 
-                    print(
-                        "GOLD V14.10 SIGNAL BLOCKED: "
-                        "OLD SAME-DIRECTION SETUP",
-                        direction,
-                        flush=True
-                    )
-
                     await asyncio.sleep(
                         LOOP_SECONDS
                     )
 
                     continue
-
-
-                # =====================================
-                # SL SWING
-                # =====================================
 
                 (
                     sl_anchor,
@@ -6067,16 +5700,7 @@ async def bot_session(state):
 
                 if sl_anchor is None:
 
-                    await asyncio.sleep(
-                        LOOP_SECONDS
-                    )
-
                     continue
-
-
-                # =====================================
-                # UNIQUE SIGNAL
-                # =====================================
 
                 signal_key = (
                     f"{candle_time}:"
@@ -6094,10 +5718,6 @@ async def bot_session(state):
                     ]
                 ):
 
-                    await asyncio.sleep(
-                        LOOP_SECONDS
-                    )
-
                     continue
 
                 state[
@@ -6108,34 +5728,14 @@ async def bot_session(state):
                     state
                 )
 
-
-                # =====================================
-                # SETUP READY
-                # =====================================
-
                 print(
-                    "GOLD V14.10 SETUP READY:",
+                    "GOLD V14.11 SETUP READY:",
                     f"SIDE={direction}",
-                    f"M15_ORIGINAL={original_m15_direction}",
-                    f"M15_ORIGINAL_MODE={original_m15_mode}",
-                    f"M15_MODE={m15_mode}",
-                    f"M15_CLOSE={m15_close}",
-                    f"M15_E20={m15_ema20}",
-                    f"M15_E50={m15_ema50}",
-                    f"M5_CLOSE={m5_close}",
-                    f"M5_E9={m5_ema9}",
-                    f"M5_E20={m5_ema20}",
-                    f"M1_E9={m1_ema9}",
-                    f"M1_E20={m1_ema20}",
+                    f"M15={m15_mode}",
                     f"M1={trigger_mode}",
                     f"ATR={atr:.2f}",
                     flush=True
                 )
-
-
-                # =====================================
-                # OPEN BATCH
-                # =====================================
 
                 await open_batch(
                     connection,
@@ -6154,11 +5754,6 @@ async def bot_session(state):
                 await asyncio.sleep(
                     LOOP_SECONDS
                 )
-
-
-            # =========================================
-            # METAAPI TEMP ERROR
-            # =========================================
 
             except MetaApiTemporaryError as e:
 
@@ -6186,11 +5781,6 @@ async def bot_session(state):
                 await asyncio.sleep(
                     RPC_FAILURE_WAIT
                 )
-
-
-            # =========================================
-            # OTHER ERROR
-            # =========================================
 
             except Exception as e:
 
@@ -6274,7 +5864,7 @@ async def main():
     ):
 
         telegram(
-            "RIO GOLD V14.10 ERROR\n"
+            "RIO GOLD V14.11 ERROR\n"
             "M_TOKEN OR M_ACC MISSING"
         )
 
@@ -6283,35 +5873,20 @@ async def main():
     state = load_state()
 
     telegram(
-        "RIOBOT GOLD V14.10 START\n"
-        "FAST TREND ENTRY ACTIVE\n"
+        "RIOBOT GOLD V14.11 START\n"
+        "BETTER FAST ENTRY ACTIVE\n"
+        "ANTI-CHASE ACTIVE\n"
         "M15 STRICT + M5 SAME DIRECTION\n"
-        "M1 HIGH/LOW BREAKOUT\n"
-        "FAST TREND RETEST NOT REQUIRED\n"
-        "NO CHASE ACTIVE\n"
+        "M1 BREAKOUT BUFFER ACTIVE\n"
+        "M1 MOMENTUM CHECK ACTIVE\n"
+        "M1 STRONG CLOSE CHECK ACTIVE\n"
+        "NORMAL M1 RETEST ACTIVE\n"
+        "SHARED BATCH BE ACTIVE\n"
         "BE1: 0.35R -> FIXED +0.15\n"
         "BE2: 0.40R -> +0.22R\n"
         "BE3: 0.60R -> +0.38R\n"
-        "M15 TRANSITION M5 OVERRIDE\n"
-        "M15 STRICT PROTECTION\n"
-        "SHARED BATCH BE\n"
-        "WEAKEST POSITION TRIGGER\n"
-        "BE STAGE LATCH\n"
-        "NORMAL M1 RETEST ACTIVE\n"
-        "STRONG M5 REVERSAL OVERRIDE\n"
-        "ADAPTIVE M15\n"
-        "12-POSITION BATCH\n"
-        "M15 NEUTRAL -> M5 FALLBACK\n"
-        "M15 TRANSITION -> NORMAL M5 OVERRIDE\n"
-        "M15 STRICT -> STRONG M5 OVERRIDE ONLY\n"
-        "M5 EMA9/20 CONFIRMATION\n"
-        "M1 EARLY EMA TRANSITION\n"
-        "COMMON SL + COMMON TP LEVELS\n"
-        "FRESH SETUP RESET ACTIVE\n"
-        "SAME-DIRECTION REENTRY PROTECTION ACTIVE\n"
         "TRAILING: OFF\n"
         f"POST-BATCH COOLDOWN: {COOLDOWN_SECONDS}s\n"
-        f"PROTECTION LOOP: {PROTECTION_LOOP_SECONDS}s\n"
         "12 POSITIONS / ONE SIGNAL\n"
         f"LOT EACH: {LOT_SIZE}\n"
         f"TOTAL BATCH: "
@@ -6343,7 +5918,7 @@ async def main():
             )
 
             notify(
-                "RIO GOLD V14.10 CONNECTION ERROR\n"
+                "RIO GOLD V14.11 CONNECTION ERROR\n"
                 f"{type(e).__name__}: "
                 f"{str(e)[:150]}\n"
                 f"RECONNECT IN "
@@ -6363,4 +5938,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-    )
+            )
