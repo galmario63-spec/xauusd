@@ -13,10 +13,17 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V14.12
-# CLEAN TREND TEST
+# RIOBOT GOLD V14.13
+# CLEAN ENTRY FIX
 #
-# V14.12:
+# V14.13 ENTRY FIX:
+# - M1 EARLY TRANSITION OFF
+# - NORMAL RETEST requires strict M1 EMA alignment
+# - NORMAL RETEST requires EMA9 slope in trade direction
+# - LIVE price must still be on correct side of M1 EMA9
+# - adverse live drift tightened from 0.30 ATR to 0.18 ATR
+#
+# UNCHANGED:
 # - LOT_SIZE 0.02
 # - 20 positions = 0.40 lot total
 #
@@ -50,7 +57,7 @@ from metaapi_cloud_sdk import MetaApi
 # - trailing OFF
 # =====================================================
 
-VERSION = "V14.12 CLEAN TREND TEST"
+VERSION = "V14.13 CLEAN ENTRY FIX"
 
 SYMBOL = "XAUUSD"
 COMMENT_PREFIX = "RIOGOLDV14"
@@ -145,7 +152,7 @@ M1_SLOW_EMA = 20
 
 
 # =====================================================
-# M15 - V14.12 CLEAN TREND
+# M15 - CLEAN TREND
 # =====================================================
 
 M15_ALLOW_TRANSITION = False
@@ -154,7 +161,7 @@ M15_TRANSITION_M5_OVERRIDE_ENABLED = False
 
 
 # =====================================================
-# M5 REVERSAL - V14.12 OFF
+# M5 REVERSAL - OFF
 # =====================================================
 
 M5_REVERSAL_OVERRIDE_ENABLED = False
@@ -176,7 +183,10 @@ M1_MIN_WICK_RATIO = 0.12
 
 MAX_M1_RANGE_ATR = 2.20
 
-M1_ALLOW_EARLY_TRANSITION = True
+# V14.13:
+# Early transition was able to allow an entry before
+# full EMA9 / EMA20 alignment.
+M1_ALLOW_EARLY_TRANSITION = False
 
 
 # =====================================================
@@ -200,7 +210,14 @@ FAST_TREND_REQUIRE_PREVIOUS_MOMENTUM = True
 # =====================================================
 
 MAX_FORWARD_DRIFT_ATR = 0.40
-MAX_ADVERSE_DRIFT_ATR = 0.30
+
+# V14.13:
+# tighter protection if market already moves
+# against the closed M1 signal
+MAX_ADVERSE_DRIFT_ATR = 0.18
+
+# Small tolerance around EMA9 for live price validation
+LIVE_EMA9_TOLERANCE_ATR = 0.05
 
 
 # =====================================================
@@ -302,7 +319,7 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     return (
-        "RIOBOT GOLD V14.12 CLEAN TREND TEST ACTIVE",
+        "RIOBOT GOLD V14.13 CLEAN ENTRY FIX ACTIVE",
         200
     )
 
@@ -413,7 +430,7 @@ def load_state():
 
     if not os.path.exists(STATE_FILE):
         print(
-            "NEW GOLD V14.12 STATE",
+            "NEW GOLD V14.13 STATE",
             flush=True
         )
         return state
@@ -715,7 +732,7 @@ async def get_current_m1(
         ).total_seconds()
 
         print(
-            "GOLD V14.12 CURRENT M1:",
+            "GOLD V14.13 CURRENT M1:",
             candle_time.isoformat(),
             f"AGE={age:.0f}s",
             flush=True
@@ -923,7 +940,7 @@ async def get_candles(region):
     ):
 
         print(
-            "GOLD V14.12 HISTORICAL M1 STALE "
+            "GOLD V14.13 HISTORICAL M1 STALE "
             "BUT LIVE M1 FRESH",
             f"HIST_AGE={age_seconds:.0f}s",
             f"LIVE_AGE={current_age:.0f}s",
@@ -978,7 +995,7 @@ async def get_candles(region):
     candles[-1]["age_seconds"] = age_seconds
 
     print(
-        "GOLD V14.12 M1 DATA:",
+        "GOLD V14.13 M1 DATA:",
         candles[-1]["time"],
         f"AGE={age_seconds:.0f}s",
         f"COUNT={len(candles)}",
@@ -1368,7 +1385,7 @@ def m1_fast_trend_trigger(candles, side, atr):
         return (
             True,
             current["close"],
-            "M1 BUY FAST TREND V14.12",
+            "M1 BUY FAST TREND V14.13",
             ema9,
             ema20
         )
@@ -1421,7 +1438,7 @@ def m1_fast_trend_trigger(candles, side, atr):
         return (
             True,
             current["close"],
-            "M1 SELL FAST TREND V14.12",
+            "M1 SELL FAST TREND V14.13",
             ema9,
             ema20
         )
@@ -1512,34 +1529,17 @@ def m1_scalp_trigger(candles, side, atr, m15_mode):
     if not recent:
         return False, None, "M1_NO_RETEST_HISTORY", ema9, ema20
 
-    mode_text = str(
-        m15_mode or ""
-    ).upper()
-
-    strong_context = (
-        "STRICT" in mode_text
-    )
-
     if side == "BUY":
 
+        # V14.13:
+        # Full M1 alignment + EMA9 must still slope UP.
         strict_ema_alignment = (
             ema9 > ema20
-        )
-
-        early_transition = (
-            M1_ALLOW_EARLY_TRANSITION
-            and strong_context
             and ema9 > ema9_previous
             and current["close"] > ema9
         )
 
-        if not (
-            (
-                strict_ema_alignment
-                and current["close"] > ema9
-            )
-            or early_transition
-        ):
+        if not strict_ema_alignment:
             return False, None, "M1_BUY_EMA_NOT_READY", ema9, ema20
 
         retest_found = any(
@@ -1595,24 +1595,15 @@ def m1_scalp_trigger(candles, side, atr, m15_mode):
 
     if side == "SELL":
 
+        # V14.13:
+        # Full M1 alignment + EMA9 must still slope DOWN.
         strict_ema_alignment = (
             ema9 < ema20
-        )
-
-        early_transition = (
-            M1_ALLOW_EARLY_TRANSITION
-            and strong_context
             and ema9 < ema9_previous
             and current["close"] < ema9
         )
 
-        if not (
-            (
-                strict_ema_alignment
-                and current["close"] < ema9
-            )
-            or early_transition
-        ):
+        if not strict_ema_alignment:
             return False, None, "M1_SELL_EMA_NOT_READY", ema9, ema20
 
         retest_found = any(
@@ -1846,7 +1837,7 @@ def update_setup_lock(state, candles, atr):
     save_state(state)
 
     notify(
-        "RIO GOLD V14.12 OLD SETUP RESET\n"
+        "RIO GOLD V14.13 OLD SETUP RESET\n"
         f"OLD SIDE: {old_side}\n"
         f"RESET: {reason}\n"
         "NEW FRESH SETUP CAN FORM"
@@ -2012,6 +2003,64 @@ def validate_live_entry(
                 f"> {max_adverse:.2f}"
             )
         )
+
+    return True, "OK"
+
+
+# =====================================================
+# LIVE EMA9 VALIDATION - V14.13
+# =====================================================
+
+def validate_live_ema9(
+    side,
+    live_entry,
+    m1_ema9,
+    atr
+):
+
+    if m1_ema9 is None or atr <= 0:
+        return False, "LIVE EMA9 DATA INVALID"
+
+    tolerance = (
+        atr * LIVE_EMA9_TOLERANCE_ATR
+    )
+
+    if side == "BUY":
+
+        minimum_allowed = (
+            m1_ema9 - tolerance
+        )
+
+        if live_entry < minimum_allowed:
+            return (
+                False,
+                (
+                    "LIVE BUY INVALIDATED - "
+                    "PRICE BELOW M1 EMA9 "
+                    f"{live_entry:.2f} < "
+                    f"{minimum_allowed:.2f}"
+                )
+            )
+
+    elif side == "SELL":
+
+        maximum_allowed = (
+            m1_ema9 + tolerance
+        )
+
+        if live_entry > maximum_allowed:
+            return (
+                False,
+                (
+                    "LIVE SELL INVALIDATED - "
+                    "PRICE ABOVE M1 EMA9 "
+                    f"{live_entry:.2f} > "
+                    f"{maximum_allowed:.2f}"
+                )
+            )
+
+    else:
+        return False, "LIVE EMA9 INVALID SIDE"
 
     return True, "OK"
 
@@ -2290,7 +2339,7 @@ async def wait_for_batch_positions(
             best_matches = matches
 
         print(
-            "GOLD V14.12 BATCH VERIFY:",
+            "GOLD V14.13 BATCH VERIFY:",
             f"{len(matches)}/{BATCH_SIZE}",
             f"ATTEMPT={attempt}",
             flush=True
@@ -2389,7 +2438,7 @@ async def open_batch(
     if same_setup_blocked(state, side):
 
         print(
-            "GOLD V14.12 BLOCKED: "
+            "GOLD V14.13 BLOCKED: "
             "OLD SAME-DIRECTION SETUP",
             side,
             flush=True
@@ -2420,7 +2469,7 @@ async def open_batch(
     if not spread_ok:
 
         print(
-            "GOLD V14.12 ENTRY BLOCKED:",
+            "GOLD V14.13 ENTRY BLOCKED:",
             spread_reason,
             f"SPREAD={spread:.2f}",
             flush=True
@@ -2447,8 +2496,34 @@ async def open_batch(
     if not live_ok:
 
         print(
-            "GOLD V14.12 ENTRY BLOCKED:",
+            "GOLD V14.13 ENTRY BLOCKED:",
             live_reason,
+            flush=True
+        )
+
+        return
+
+    # -------------------------------------------------
+    # V14.13:
+    # Before opening 20 positions, make sure live market
+    # did not cross back through M1 EMA9 against signal.
+    # -------------------------------------------------
+
+    (
+        live_ema_ok,
+        live_ema_reason
+    ) = validate_live_ema9(
+        side,
+        reference_entry,
+        m1_ema9,
+        atr
+    )
+
+    if not live_ema_ok:
+
+        print(
+            "GOLD V14.13 ENTRY BLOCKED:",
+            live_ema_reason,
             flush=True
         )
 
@@ -2475,7 +2550,7 @@ async def open_batch(
             atr * max_ema_distance
         ):
             print(
-                "GOLD V14.12 BLOCKED: "
+                "GOLD V14.13 BLOCKED: "
                 "TOO FAR ABOVE M1 EMA9",
                 flush=True
             )
@@ -2489,7 +2564,7 @@ async def open_batch(
             atr * max_ema_distance
         ):
             print(
-                "GOLD V14.12 BLOCKED: "
+                "GOLD V14.13 BLOCKED: "
                 "TOO FAR BELOW M1 EMA9",
                 flush=True
             )
@@ -2512,7 +2587,7 @@ async def open_batch(
     if levels is None:
 
         print(
-            "GOLD V14.12 ENTRY BLOCKED BY SL:",
+            "GOLD V14.13 ENTRY BLOCKED BY SL:",
             reason,
             flush=True
         )
@@ -2537,7 +2612,7 @@ async def open_batch(
         if not valid:
 
             print(
-                "GOLD V14.12 ENTRY BLOCKED:",
+                "GOLD V14.13 ENTRY BLOCKED:",
                 group,
                 valid_reason,
                 flush=True
@@ -2568,7 +2643,7 @@ async def open_batch(
     ):
 
         notify(
-            "RIO GOLD V14.12 INVALID LOT"
+            "RIO GOLD V14.13 INVALID LOT"
         )
 
         return
@@ -2576,7 +2651,7 @@ async def open_batch(
     if not ENABLE_TRADING:
 
         notify(
-            "RIO GOLD V14.12 TEST SIGNAL\n"
+            "RIO GOLD V14.13 TEST SIGNAL\n"
             f"SIDE: {side}\n"
             f"M15 MODE: {m15_mode}\n"
             f"M1: {trigger_mode}"
@@ -2611,7 +2686,7 @@ async def open_batch(
         return
 
     notify(
-        "RIO GOLD V14.12 ENTRY APPROVED\n"
+        "RIO GOLD V14.13 ENTRY APPROVED\n"
         f"SIDE: {side}\n"
         f"M15 MODE: {m15_mode}\n"
         f"M1: {trigger_mode}\n"
@@ -2693,7 +2768,7 @@ async def open_batch(
             sent_count += 1
 
             print(
-                "GOLD V14.12 ORDER SENT",
+                "GOLD V14.13 ORDER SENT",
                 f"{number}/{BATCH_SIZE}",
                 tp_group,
                 result,
@@ -2719,7 +2794,7 @@ async def open_batch(
             save_state(state)
 
             notify(
-                "RIO GOLD V14.12 PARTIAL BATCH\n"
+                "RIO GOLD V14.13 PARTIAL BATCH\n"
                 f"SENT: {sent_count}/{BATCH_SIZE}\n"
                 f"VISIBLE: {len(new_positions)}/{BATCH_SIZE}\n"
                 f"TRACKED: {registered}"
@@ -2734,7 +2809,7 @@ async def open_batch(
         save_state(state)
 
         notify(
-            "RIO GOLD V14.12 BATCH COMPLETED\n"
+            "RIO GOLD V14.13 BATCH COMPLETED\n"
             "20/20 OPENED\n"
             f"LOT EACH: {LOT_SIZE}\n"
             f"TOTAL: {LOT_SIZE * BATCH_SIZE:.2f} LOT\n"
@@ -2749,7 +2824,7 @@ async def open_batch(
     except Exception as e:
 
         print(
-            "GOLD V14.12 BATCH ERROR:",
+            "GOLD V14.13 BATCH ERROR:",
             traceback.format_exc(),
             flush=True
         )
@@ -2777,7 +2852,7 @@ async def open_batch(
         save_state(state)
 
         notify(
-            "RIO GOLD V14.12 BATCH STOPPED\n"
+            "RIO GOLD V14.13 BATCH STOPPED\n"
             f"SENT BEFORE ERROR: "
             f"{sent_count}/{BATCH_SIZE}\n"
             f"ERROR: {type(e).__name__}\n"
@@ -2978,7 +3053,7 @@ async def protect_position(
     )
 
     print(
-        "GOLD V14.12",
+        "GOLD V14.13",
         stage_name,
         "PROTECTED",
         pid,
@@ -3085,7 +3160,7 @@ async def protect_managed_positions(
         )
 
         notify(
-            "RIO GOLD V14.12 SHARED BE TRIGGERED\n"
+            "RIO GOLD V14.13 SHARED BE TRIGGERED\n"
             f"STAGE: {new_stage_name}\n"
             f"WEAKEST POSITION: "
             f"{weakest_rr:.2f}R"
@@ -3235,7 +3310,7 @@ async def adopt_positions(
     if adopted:
 
         notify(
-            "RIO GOLD V14.12 POSITIONS ADOPTED\n"
+            "RIO GOLD V14.13 POSITIONS ADOPTED\n"
             f"BOT OPEN: {len(managed)}/{BATCH_SIZE}\n"
             "SHARED BE RESTORED"
         )
@@ -3285,7 +3360,7 @@ async def reconcile_state(
         state["last_trade_time"] = time.time()
 
         notify(
-            "RIO GOLD V14.12 POSITION CLOSED\n"
+            "RIO GOLD V14.13 POSITION CLOSED\n"
             f"ID: {pid}\n"
             f"REMAINING BOT: "
             f"{len(state['positions'])}"
@@ -3393,12 +3468,15 @@ async def bot_session(state):
             pass
 
         notify(
-            "RIO GOLD V14.12 CONNECTED\n"
-            "CLEAN TREND TEST ACTIVE\n"
+            "RIO GOLD V14.13 CONNECTED\n"
+            "CLEAN ENTRY FIX ACTIVE\n"
             "ONLY M15 STRICT + M5 SAME DIRECTION\n"
             "M15 NEUTRAL FALLBACK: OFF\n"
             "M15 TRANSITION ENTRY: OFF\n"
             "M5 REVERSAL OVERRIDE: OFF\n"
+            "M1 EARLY TRANSITION: OFF\n"
+            "M1 EMA9 SLOPE FILTER: ACTIVE\n"
+            "LIVE EMA9 ENTRY CHECK: ACTIVE\n"
             "FAST TREND ENTRY ACTIVE\n"
             "NORMAL M1 RETEST ACTIVE\n"
             "ANTI-CHASE ACTIVE\n"
@@ -3531,7 +3609,7 @@ async def bot_session(state):
                 if direction is None:
 
                     print(
-                        "GOLD V14.12 BLOCKED: "
+                        "GOLD V14.13 BLOCKED: "
                         "M15 NOT STRICT",
                         f"M15={m15_mode}",
                         flush=True
@@ -3549,7 +3627,7 @@ async def bot_session(state):
                 ):
 
                     print(
-                        "GOLD V14.12 BLOCKED: "
+                        "GOLD V14.13 BLOCKED: "
                         "BUY M15 NOT STRICT",
                         flush=True
                     )
@@ -3562,7 +3640,7 @@ async def bot_session(state):
                 ):
 
                     print(
-                        "GOLD V14.12 BLOCKED: "
+                        "GOLD V14.13 BLOCKED: "
                         "SELL M15 NOT STRICT",
                         flush=True
                     )
@@ -3582,7 +3660,7 @@ async def bot_session(state):
                 if not m5_ok:
 
                     print(
-                        "GOLD V14.12 BLOCKED: "
+                        "GOLD V14.13 BLOCKED: "
                         "M5 NOT CONFIRMED",
                         f"SIDE={direction}",
                         f"M15={m15_mode}",
@@ -3593,18 +3671,6 @@ async def bot_session(state):
                         LOOP_SECONDS
                     )
 
-                    continue
-
-                if (
-                    direction == "BUY"
-                    and m15_mode != "M15_STRICT_BUY"
-                ):
-                    continue
-
-                if (
-                    direction == "SELL"
-                    and m15_mode != "M15_STRICT_SELL"
-                ):
                     continue
 
                 fast_trend_context = (
@@ -3640,7 +3706,7 @@ async def bot_session(state):
                         m1_ema20 = fast_ema20
 
                         print(
-                            "GOLD V14.12 FAST ENTRY READY:",
+                            "GOLD V14.13 FAST ENTRY READY:",
                             direction,
                             trigger_mode,
                             flush=True
@@ -3664,7 +3730,7 @@ async def bot_session(state):
                 if not trigger_ok:
 
                     print(
-                        "GOLD V14.12 WAIT:",
+                        "GOLD V14.13 WAIT:",
                         direction,
                         f"REASON={trigger_mode}",
                         f"M15={m15_mode}",
@@ -3683,7 +3749,7 @@ async def bot_session(state):
                 ):
 
                     print(
-                        "GOLD V14.12 BLOCKED: "
+                        "GOLD V14.13 BLOCKED: "
                         "WAITING FOR FRESH SETUP",
                         direction,
                         flush=True
@@ -3722,7 +3788,7 @@ async def bot_session(state):
                 save_state(state)
 
                 print(
-                    "GOLD V14.12 SETUP READY:",
+                    "GOLD V14.13 SETUP READY:",
                     f"SIDE={direction}",
                     f"M15={m15_mode}",
                     "M5=SAME_DIRECTION_CONFIRMED",
@@ -3847,7 +3913,7 @@ async def main():
     if not M_TOKEN or not M_ACC:
 
         telegram(
-            "RIO GOLD V14.12 ERROR\n"
+            "RIO GOLD V14.13 ERROR\n"
             "M_TOKEN OR M_ACC MISSING"
         )
 
@@ -3856,12 +3922,15 @@ async def main():
     state = load_state()
 
     telegram(
-        "RIOBOT GOLD V14.12 START\n"
-        "CLEAN TREND TEST ACTIVE\n"
+        "RIOBOT GOLD V14.13 START\n"
+        "CLEAN ENTRY FIX ACTIVE\n"
         "ONLY M15 STRICT + M5 SAME DIRECTION\n"
         "M15 NEUTRAL FALLBACK: OFF\n"
         "M15 TRANSITION ENTRY: OFF\n"
         "M5 REVERSAL OVERRIDE: OFF\n"
+        "M1 EARLY TRANSITION: OFF\n"
+        "M1 EMA9 SLOPE FILTER: ACTIVE\n"
+        "LIVE EMA9 ENTRY CHECK: ACTIVE\n"
         "FAST TREND ENTRY ACTIVE\n"
         "NORMAL M1 RETEST ACTIVE\n"
         "ANTI-CHASE ACTIVE\n"
@@ -3902,7 +3971,7 @@ async def main():
             )
 
             notify(
-                "RIO GOLD V14.12 CONNECTION ERROR\n"
+                "RIO GOLD V14.13 CONNECTION ERROR\n"
                 f"{type(e).__name__}: "
                 f"{str(e)[:150]}\n"
                 f"RECONNECT IN "
