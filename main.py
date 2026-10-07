@@ -34,6 +34,11 @@ from metaapi_cloud_sdk import MetaApi
 # - ANTI-CHASE remains
 # - FRESH SETUP LOCK remains
 #
+# TAKE PROFIT:
+# - TP1: 8 positions x 0.40R
+# - TP2: 2 positions x 0.70R
+# - TP3: 2 positions x 1.00R
+#
 # SHARED BE:
 # - BE1: 0.35R -> fixed +0.15 price
 # - BE2: 0.40R -> +0.22R
@@ -64,11 +69,9 @@ TP1_COUNT = 8
 TP2_COUNT = 2
 TP3_COUNT = 2
 
-
 TP1_RR = 0.40
 TP2_RR = 0.70
 TP3_RR = 1.00
-
 
 BATCH_VERIFY_ATTEMPTS = 16
 BATCH_VERIFY_DELAY = 0.50
@@ -1650,7 +1653,6 @@ def m1_fast_trend_trigger(
         FAST_TREND_BREAK_BUFFER_ATR
     )
 
-    # BUY
     if side == "BUY":
 
         ema_confirm = (
@@ -1673,11 +1675,7 @@ def m1_fast_trend_trigger(
                 ema20
             )
 
-        if (
-            current["close"]
-            <=
-            current["open"]
-        ):
+        if current["close"] <= current["open"]:
 
             return (
                 False,
@@ -1765,7 +1763,6 @@ def m1_fast_trend_trigger(
             ema20
         )
 
-    # SELL
     if side == "SELL":
 
         ema_confirm = (
@@ -1788,11 +1785,7 @@ def m1_fast_trend_trigger(
                 ema20
             )
 
-        if (
-            current["close"]
-            >=
-            current["open"]
-        ):
+        if current["close"] >= current["open"]:
 
             return (
                 False,
@@ -2040,10 +2033,7 @@ def m1_scalp_trigger(
     )
 
     recent = candles[
-        -(
-            M1_RETEST_LOOKBACK
-            + 1
-        ):
+        -(M1_RETEST_LOOKBACK + 1):
         -1
     ]
 
@@ -2362,15 +2352,11 @@ def recent_protective_swing(
 
     search_start = max(
         SWING_LEFT,
-        n
-        -
-        SL_SWING_LOOKBACK
+        n - SL_SWING_LOOKBACK
     )
 
     search_end = (
-        n
-        -
-        SWING_RIGHT
+        n - SWING_RIGHT
     )
 
     candidates = []
@@ -2393,13 +2379,9 @@ def recent_protective_swing(
         ]
 
         if (
-            len(left)
-            <
-            SWING_LEFT
+            len(left) < SWING_LEFT
             or
-            len(right)
-            <
-            SWING_RIGHT
+            len(right) < SWING_RIGHT
         ):
             continue
 
@@ -2439,10 +2421,7 @@ def recent_protective_swing(
         )
 
     fallback = candles[
-        -(
-            SL_FALLBACK_BARS
-            + 1
-        ):
+        -(SL_FALLBACK_BARS + 1):
         -1
     ]
 
@@ -2689,9 +2668,7 @@ async def get_market(connection):
             "tickSize"
         )
         or
-        10 ** (
-            -digits
-        )
+        10 ** (-digits)
     )
 
     bid = float(
@@ -2760,11 +2737,7 @@ def spread_is_safe(
         market["bid"]
     )
 
-    if (
-        spread
-        >
-        MAX_SPREAD
-    ):
+    if spread > MAX_SPREAD:
 
         return (
             False,
@@ -2846,11 +2819,7 @@ def validate_live_entry(
             signal_close
         )
 
-    if (
-        forward_move
-        >
-        max_forward
-    ):
+    if forward_move > max_forward:
 
         return (
             False,
@@ -2861,11 +2830,7 @@ def validate_live_entry(
             )
         )
 
-    if (
-        adverse_move
-        >
-        max_adverse
-    ):
+    if adverse_move > max_adverse:
 
         return (
             False,
@@ -2904,9 +2869,7 @@ def broker_min_stop_distance(
         )
         or
         10 ** (
-            -market[
-                "digits"
-            ]
+            -market["digits"]
         )
     )
 
@@ -2967,24 +2930,9 @@ def tp_group_for_order(
             TP2_RR
         )
 
-    if (
-        number
-        <=
-        TP1_COUNT
-        +
-        TP2_COUNT
-        +
-        TP3_COUNT
-    ):
-
-        return (
-            "TP3",
-            TP3_RR
-        )
-
     return (
-        "TP4",
-        TP4_RR
+        "TP3",
+        TP3_RR
     )
 
 
@@ -3118,16 +3066,6 @@ def get_common_levels(
                     *
                     TP3_RR,
                     market
-                ),
-
-            "TP4":
-                normalize(
-                    reference_entry
-                    +
-                    risk
-                    *
-                    TP4_RR,
-                    market
                 )
         }
 
@@ -3168,16 +3106,6 @@ def get_common_levels(
                     risk
                     *
                     TP3_RR,
-                    market
-                ),
-
-            "TP4":
-                normalize(
-                    reference_entry
-                    -
-                    risk
-                    *
-                    TP4_RR,
                     market
                 )
         }
@@ -3306,13 +3234,6 @@ def rr_from_comment(comment):
         return (
             "TP3",
             TP3_RR
-        )
-
-    if "TP4" in value:
-
-        return (
-            "TP4",
-            TP4_RR
         )
 
     return (
@@ -3691,8 +3612,7 @@ async def open_batch(
     for group in (
         "TP1",
         "TP2",
-        "TP3",
-        "TP4"
+        "TP3"
     ):
 
         valid, valid_reason = (
@@ -3824,7 +3744,6 @@ async def open_batch(
         f"TP1: {levels['tps']['TP1']:.2f}\n"
         f"TP2: {levels['tps']['TP2']:.2f}\n"
         f"TP3: {levels['tps']['TP3']:.2f}\n"
-        f"TP4: {levels['tps']['TP4']:.2f}\n"
         f"ATR: {atr:.2f}\n"
         f"SPREAD: {spread:.2f}\n"
         "OPENING 12 POSITIONS"
@@ -3974,10 +3893,9 @@ async def open_batch(
             f"LOT EACH: {LOT_SIZE}\n"
             f"TOTAL: "
             f"{LOT_SIZE * BATCH_SIZE:.2f} LOT\n"
-            "TP1: 3 x 0.40R\n"
-            "TP2: 3 x 0.70R\n"
-            "TP3: 3 x 1.00R\n"
-            "TP4: 3 x 1.30R\n"
+            "TP1: 8 x 0.40R\n"
+            "TP2: 2 x 0.70R\n"
+            "TP3: 2 x 1.00R\n"
             "BE1: 0.35R -> FIXED +0.15\n"
             "BE2: 0.40R -> +0.22R\n"
             "BE3: 0.60R -> +0.38R"
@@ -4824,6 +4742,9 @@ async def bot_session(state):
             f"LOT EACH: {LOT_SIZE}\n"
             f"TOTAL BATCH: "
             f"{LOT_SIZE * BATCH_SIZE:.2f} LOT\n"
+            "TP1: 8 x 0.40R\n"
+            "TP2: 2 x 0.70R\n"
+            "TP3: 2 x 1.00R\n"
             f"BOT OPEN: {len(managed)}/12\n"
             f"LIVE: {ENABLE_TRADING}"
         )
@@ -4963,11 +4884,6 @@ async def bot_session(state):
                     candles
                 )
 
-                # =====================================
-                # V14.12 CLEAN TREND GATE
-                # ONLY STRICT M15
-                # =====================================
-
                 if direction is None:
 
                     print(
@@ -5015,10 +4931,6 @@ async def bot_session(state):
 
                     continue
 
-                # =====================================
-                # V14.12 NORMAL M5 SAME DIRECTION ONLY
-                # =====================================
-
                 (
                     m5_ok,
                     m5_close,
@@ -5045,10 +4957,6 @@ async def bot_session(state):
 
                     continue
 
-                # =====================================
-                # SECOND HARD SAFETY
-                # =====================================
-
                 if (
                     direction == "BUY"
                     and
@@ -5067,18 +4975,9 @@ async def bot_session(state):
                 ):
                     continue
 
-                # =====================================
-                # FAST TREND CONTEXT
-                # V14.12 is already strict here
-                # =====================================
-
                 fast_trend_context = (
                     FAST_TREND_ENTRY_ENABLED
                 )
-
-                # =====================================
-                # M1 ENTRY
-                # =====================================
 
                 trigger_ok = False
                 signal_close = None
@@ -5115,10 +5014,6 @@ async def bot_session(state):
                             flush=True
                         )
 
-                # If fast breakout is not ready,
-                # allow a normal M1 pullback/retest,
-                # BUT still only inside the strict
-                # M15 + M5 trend confirmed above.
                 if not trigger_ok:
 
                     (
@@ -5369,10 +5264,9 @@ async def main():
         f"LOT EACH: {LOT_SIZE}\n"
         f"TOTAL BATCH: "
         f"{LOT_SIZE * BATCH_SIZE:.2f} LOT\n"
-        "TP1: 3 x 0.40R\n"
-        "TP2: 3 x 0.70R\n"
-        "TP3: 3 x 1.00R\n"
-        "TP4: 3 x 1.30R\n"
+        "TP1: 8 x 0.40R\n"
+        "TP2: 2 x 0.70R\n"
+        "TP3: 2 x 1.00R\n"
         f"SL MIN: {MIN_SL_DISTANCE:.2f}\n"
         f"SL MAX: {MAX_SL_DISTANCE:.2f}\n"
         f"MAX SPREAD: {MAX_SPREAD:.2f}\n"
@@ -5416,4 +5310,4 @@ if __name__ == "__main__":
 
     asyncio.run(
         main()
-    )
+        )
