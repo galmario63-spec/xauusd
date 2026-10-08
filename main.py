@@ -1,4 +1,3 @@
-
 import os
 import json
 import time
@@ -13,11 +12,11 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V14.15
-# M1 HISTORY FIX / CLEAN ENTRY / SHARED BE
+# RIOBOT GOLD V14.16 - FAST SCALP
+# M5 TREND + M1 FAST ENTRY + SHARED BE
 # =====================================================
 
-VERSION = "V14.15"
+VERSION = "V14.16"
 SYMBOL = "XAUUSD"
 COMMENT_PREFIX = "RIOGOLDV14"
 
@@ -31,10 +30,8 @@ TP_GROUPS = [
     ("TP3", 5, 1.20),
 ]
 
-ENABLE_TRADING = (
-    os.getenv("ENABLE_TRADING", "false")
-    .strip().lower() == "true"
-)
+# REAL TRADING
+ENABLE_TRADING = True
 
 LOOP_SECONDS = 2
 PROTECTION_LOOP_SECONDS = 1
@@ -48,7 +45,7 @@ ORDER_TIMEOUT = 45
 M1_HISTORY_LIMIT = 1000
 MIN_M1_HISTORY = 800
 MAX_ENTRY_CANDLE_AGE = 130
-RECENT_CONTINUITY_BARS = 60
+RECENT_CONTINUITY_BARS = 45
 
 ATR_PERIOD = 14
 
@@ -56,18 +53,18 @@ MAX_SPREAD = 0.50
 MAX_FORWARD_DRIFT_ATR = 0.40
 MAX_ADVERSE_DRIFT_ATR = 0.18
 
-M1_MAX_EMA9_DISTANCE_ATR = 0.75
-LIVE_EMA9_TOLERANCE_ATR = 0.05
+M1_MAX_EMA9_DISTANCE_ATR = 0.85
+LIVE_EMA9_TOLERANCE_ATR = 0.08
 
 M1_RETEST_LOOKBACK = 5
-M1_RETEST_TOLERANCE_ATR = 0.40
+M1_RETEST_TOLERANCE_ATR = 0.45
 M1_MIN_BODY_RATIO = 0.25
 M1_MIN_WICK_RATIO = 0.12
 MAX_M1_RANGE_ATR = 2.20
 
-FAST_MIN_BODY_RATIO = 0.40
-FAST_BREAK_BUFFER_ATR = 0.08
-FAST_CLOSE_POSITION_MIN = 0.70
+FAST_MIN_BODY_RATIO = 0.35
+FAST_BREAK_BUFFER_ATR = 0.05
+FAST_CLOSE_POSITION_MIN = 0.65
 
 SL_SWING_LOOKBACK = 16
 SL_FALLBACK_BARS = 10
@@ -346,9 +343,6 @@ async def get_candles(region):
         )
         return None
 
-    # V14.15 FIX:
-    # Check only the latest 60 M1 candles.
-    # Older history gaps do not block trading.
     recent = candles[-RECENT_CONTINUITY_BARS:]
 
     for previous, current in zip(
@@ -453,6 +447,10 @@ def build_tf(candles, minutes):
     )
 
 
+# =====================================================
+# M15 - INFORMATION ONLY
+# =====================================================
+
 def m15_direction(candles):
 
     bars = build_tf(candles, 15)
@@ -480,12 +478,16 @@ def m15_direction(candles):
     return None
 
 
-def m5_confirmation(candles, side):
+# =====================================================
+# M5 - MAIN TREND
+# =====================================================
+
+def m5_direction(candles):
 
     bars = build_tf(candles, 5)
 
     if len(bars) < 23:
-        return False
+        return None
 
     closes = [c["close"] for c in bars]
 
@@ -495,22 +497,28 @@ def m5_confirmation(candles, side):
     current = bars[-1]
     previous = bars[-2]
 
-    if side == "BUY":
+    if (
+        current["close"] > e9[-1] > e20[-1]
+        and e9[-1] > e9[-2]
+        and current["close"] > current["open"]
+        and current["close"] > previous["close"]
+    ):
+        return "BUY"
 
-        return (
-            current["close"] > current["open"]
-            and current["close"] > previous["close"]
-            and current["close"] > e9[-1] > e20[-1]
-            and e9[-1] > e9[-2]
-        )
-
-    return (
-        current["close"] < current["open"]
-        and current["close"] < previous["close"]
-        and current["close"] < e9[-1] < e20[-1]
+    if (
+        current["close"] < e9[-1] < e20[-1]
         and e9[-1] < e9[-2]
-    )
+        and current["close"] < current["open"]
+        and current["close"] < previous["close"]
+    ):
+        return "SELL"
 
+    return None
+
+
+# =====================================================
+# M1 - FAST SCALP ENTRY
+# =====================================================
 
 def m1_trigger(candles, side, atr):
 
@@ -585,7 +593,6 @@ def m1_trigger(candles, side, atr):
 
         previous_momentum = (
             previous["close"] >= previous2["close"]
-            and previous["low"] >= previous2["low"]
         )
 
     else:
@@ -603,7 +610,6 @@ def m1_trigger(candles, side, atr):
 
         previous_momentum = (
             previous["close"] <= previous2["close"]
-            and previous["high"] <= previous2["high"]
         )
 
     if (
@@ -614,7 +620,7 @@ def m1_trigger(candles, side, atr):
     ):
 
         return {
-            "mode": "FAST TREND",
+            "mode": "FAST SCALP",
             "close": current["close"],
             "ema9": e9
         }
@@ -693,7 +699,7 @@ def m1_trigger(candles, side, atr):
     ):
 
         return {
-            "mode": "NORMAL RETEST",
+            "mode": "FAST RETEST",
             "close": current["close"],
             "ema9": e9
         }
@@ -1552,12 +1558,10 @@ async def bot_session(state):
 
         notify(
             f"RIO GOLD {VERSION} CONNECTED\n"
-            "M15 STRICT: ACTIVE\n"
-            "M5 CONFIRMATION: ACTIVE\n"
-            "M1 CLEAN ENTRY: ACTIVE\n"
-            "M1 HISTORY FIX: ACTIVE\n"
-            "FAST TREND: ACTIVE\n"
-            "NORMAL RETEST: ACTIVE\n"
+            "M15: INFORMATION ONLY\n"
+            "M5 TREND: ACTIVE\n"
+            "M1 FAST SCALP: ACTIVE\n"
+            "M1 FAST RETEST: ACTIVE\n"
             "NO CHASE: ACTIVE\n"
             "SHARED BE: ACTIVE\n"
             f"{BATCH_SIZE} x {LOT_SIZE:.2f} LOT\n"
@@ -1642,19 +1646,15 @@ async def bot_session(state):
                     state, candles, atr
                 )
 
-                side = m15_direction(candles)
+                # M15 ONLY CONTEXT
+                m15_side = m15_direction(candles)
+
+                # M5 IS MAIN TREND
+                side = m5_direction(candles)
 
                 if not side:
                     print(
-                        "WAIT: M15 NOT STRICT",
-                        flush=True
-                    )
-                    continue
-
-                if not m5_confirmation(candles, side):
-                    print(
-                        "WAIT: M5 NOT CONFIRMED",
-                        side,
+                        "WAIT: M5 TREND NOT READY",
                         flush=True
                     )
                     continue
@@ -1665,7 +1665,7 @@ async def bot_session(state):
 
                 if not signal:
                     print(
-                        "WAIT: M1 ENTRY NOT READY",
+                        "WAIT: M1 FAST ENTRY NOT READY",
                         side,
                         flush=True
                     )
@@ -1702,6 +1702,7 @@ async def bot_session(state):
                     f"RIO GOLD {VERSION} SETUP READY",
                     side,
                     signal["mode"],
+                    f"M15={m15_side}",
                     f"ATR={atr:.2f}",
                     flush=True
                 )
@@ -1754,11 +1755,10 @@ async def main():
 
     telegram(
         f"RIOBOT GOLD {VERSION} START\n"
-        "M1 HISTORY GAP FIX\n"
-        "M15 STRICT + M5 SAME DIRECTION\n"
-        "M1 FAST TREND + NORMAL RETEST\n"
-        "NO M15 TRANSITION\n"
-        "NO M5 REVERSAL OVERRIDE\n"
+        "FAST SCALP ACTIVE\n"
+        "M15 INFORMATION ONLY\n"
+        "M5 MAIN TREND\n"
+        "M1 FAST SCALP + FAST RETEST\n"
         "NO CHASE ACTIVE\n"
         "BROKER SL/TP CHECK ACTIVE\n"
         "SHARED BE ACTIVE\n"
