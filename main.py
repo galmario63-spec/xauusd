@@ -13,11 +13,11 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V14.14
-# CLEAN ENTRY + SAFE BATCH + SHARED BE
+# RIOBOT GOLD V14.15
+# M1 HISTORY FIX / CLEAN ENTRY / SHARED BE
 # =====================================================
 
-VERSION = "V14.14"
+VERSION = "V14.15"
 SYMBOL = "XAUUSD"
 COMMENT_PREFIX = "RIOGOLDV14"
 
@@ -32,7 +32,7 @@ TP_GROUPS = [
 ]
 
 ENABLE_TRADING = (
-    os.getenv("ENABLE_TRADING", "true")
+    os.getenv("ENABLE_TRADING", "false")
     .strip().lower() == "true"
 )
 
@@ -48,6 +48,7 @@ ORDER_TIMEOUT = 45
 M1_HISTORY_LIMIT = 1000
 MIN_M1_HISTORY = 800
 MAX_ENTRY_CANDLE_AGE = 130
+RECENT_CONTINUITY_BARS = 60
 
 ATR_PERIOD = 14
 
@@ -200,8 +201,11 @@ def load_state():
     return state
 
 
-async def meta_call(factory, timeout=RPC_TIMEOUT,
-                    retries=RPC_RETRIES):
+async def meta_call(
+    factory,
+    timeout=RPC_TIMEOUT,
+    retries=RPC_RETRIES
+):
 
     last_error = None
 
@@ -244,9 +248,12 @@ async def meta_call(factory, timeout=RPC_TIMEOUT,
 
 def parse_time(value):
 
-    dt = datetime.fromisoformat(
-        str(value).replace("Z", "+00:00")
-    )
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        dt = datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
+        )
 
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -339,9 +346,10 @@ async def get_candles(region):
         )
         return None
 
-    # Do not build trend indicators from a broken
-    # or discontinuous recent minute sequence.
-    recent = candles[-800:]
+    # V14.15 FIX:
+    # Check only the latest 60 M1 candles.
+    # Older history gaps do not block trading.
+    recent = candles[-RECENT_CONTINUITY_BARS:]
 
     for previous, current in zip(
         recent[:-1], recent[1:]
@@ -353,7 +361,7 @@ async def get_candles(region):
 
         if gap != 60:
             print(
-                "WAIT M1 HISTORY GAP",
+                "WAIT RECENT M1 HISTORY GAP",
                 gap,
                 flush=True
             )
@@ -610,8 +618,6 @@ def m1_trigger(candles, side, atr):
             "close": current["close"],
             "ema9": e9
         }
-
-    # NORMAL RETEST
 
     tolerance = atr * M1_RETEST_TOLERANCE_ATR
 
@@ -976,7 +982,7 @@ def adopt_positions(state, positions):
     if adopted:
         save_state(state)
         notify(
-            f"RIO GOLD V14.14 ADOPTED: {adopted}"
+            f"RIO GOLD {VERSION} ADOPTED: {adopted}"
         )
 
 
@@ -1002,10 +1008,6 @@ def reconcile_state(state, all_positions):
 
     if not managed and not state["positions"]:
         state["batch_be_stage"] = 0
-
-    # IMPORTANT:
-    # Never automatically clear a batch error or
-    # uncertain execution state after reconnect.
 
     save_state(state)
 
@@ -1117,7 +1119,7 @@ async def protect_positions(
         save_state(state)
 
         notify(
-            f"RIO GOLD V14.14 SHARED BE"
+            f"RIO GOLD {VERSION} SHARED BE"
             f"{current_stage} TRIGGERED\n"
             f"WEAKEST: {weakest_rr:.2f}R"
         )
@@ -1323,7 +1325,7 @@ async def open_batch(
     if not ENABLE_TRADING:
 
         notify(
-            "RIO GOLD V14.14 TEST SIGNAL\n"
+            f"RIO GOLD {VERSION} TEST SIGNAL\n"
             f"SIDE: {side}\n"
             f"M1: {signal['mode']}\n"
             f"SL: {levels['sl']}\n"
@@ -1480,10 +1482,10 @@ async def open_batch(
         save_state(state)
 
         notify(
-            "RIO GOLD V14.14 BATCH VERIFIED\n"
-            "20/20 POSITIONS OPENED\n"
-            f"LOT EACH: {LOT_SIZE}\n"
-            "TOTAL LOT: 0.40\n"
+            f"RIO GOLD {VERSION} BATCH VERIFIED\n"
+            f"{BATCH_SIZE}/{BATCH_SIZE} POSITIONS\n"
+            f"LOT EACH: {LOT_SIZE:.2f}\n"
+            f"TOTAL LOT: {BATCH_SIZE * LOT_SIZE:.2f}\n"
             "TP1: 10 x 0.60R\n"
             "TP2: 5 x 0.90R\n"
             "TP3: 5 x 1.20R"
@@ -1497,15 +1499,13 @@ async def open_batch(
             flush=True
         )
 
-        # Do not send any more orders after
-        # an uncertain or partially filled batch.
         state["halted"] = True
         state["order_uncertain"] = True
 
         save_state(state)
 
         notify(
-            "RIO GOLD V14.14 BATCH HALTED\n"
+            f"RIO GOLD {VERSION} BATCH HALTED\n"
             f"SENT: {sent}/{BATCH_SIZE}\n"
             f"ERROR: {str(e)[:180]}\n"
             "CHECK OPEN POSITIONS MANUALLY"
@@ -1551,15 +1551,16 @@ async def bot_session(state):
         )
 
         notify(
-            "RIO GOLD V14.14 CONNECTED\n"
+            f"RIO GOLD {VERSION} CONNECTED\n"
             "M15 STRICT: ACTIVE\n"
             "M5 CONFIRMATION: ACTIVE\n"
             "M1 CLEAN ENTRY: ACTIVE\n"
+            "M1 HISTORY FIX: ACTIVE\n"
             "FAST TREND: ACTIVE\n"
             "NORMAL RETEST: ACTIVE\n"
             "NO CHASE: ACTIVE\n"
             "SHARED BE: ACTIVE\n"
-            "20 x 0.02 LOT\n"
+            f"{BATCH_SIZE} x {LOT_SIZE:.2f} LOT\n"
             f"LIVE: {ENABLE_TRADING}"
         )
 
@@ -1698,7 +1699,7 @@ async def bot_session(state):
                 save_state(state)
 
                 print(
-                    "RIO GOLD V14.14 SETUP READY",
+                    f"RIO GOLD {VERSION} SETUP READY",
                     side,
                     signal["mode"],
                     f"ATR={atr:.2f}",
@@ -1744,7 +1745,7 @@ async def main():
     if not M_TOKEN or not M_ACC:
 
         telegram(
-            "RIO GOLD V14.14 ERROR\n"
+            f"RIO GOLD {VERSION} ERROR\n"
             "M_TOKEN OR M_ACC MISSING"
         )
         return
@@ -1752,8 +1753,8 @@ async def main():
     state = load_state()
 
     telegram(
-        "RIOBOT GOLD V14.14 START\n"
-        "CLEAN ENTRY FIX\n"
+        f"RIOBOT GOLD {VERSION} START\n"
+        "M1 HISTORY GAP FIX\n"
         "M15 STRICT + M5 SAME DIRECTION\n"
         "M1 FAST TREND + NORMAL RETEST\n"
         "NO M15 TRANSITION\n"
@@ -1765,9 +1766,9 @@ async def main():
         "BE2: 0.40R -> +0.22R\n"
         "BE3: 0.60R -> +0.38R\n"
         "TRAILING: OFF\n"
-        "20 POSITIONS / ONE SIGNAL\n"
-        "LOT EACH: 0.02\n"
-        "TOTAL LOT: 0.40\n"
+        f"{BATCH_SIZE} POSITIONS / ONE SIGNAL\n"
+        f"LOT EACH: {LOT_SIZE:.2f}\n"
+        f"TOTAL LOT: {BATCH_SIZE * LOT_SIZE:.2f}\n"
         "TP1: 10 x 0.60R\n"
         "TP2: 5 x 0.90R\n"
         "TP3: 5 x 1.20R\n"
