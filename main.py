@@ -1,3 +1,4 @@
+
 import os
 import json
 import time
@@ -12,12 +13,12 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V14.17 - FAST SCALP
-# M5 DIRECTION + M1 MOMENTUM / RETEST
-# SHARED BE / 20 POSITIONS
+# RIOBOT GOLD V14.18 - LIVE BATCH FIX
+# M5 FAST TREND + M1 FAST SCALP / RETEST
+# 20 POSITIONS / SHARED BREAK EVEN
 # =====================================================
 
-VERSION = "V14.17"
+VERSION = "V14.18"
 SYMBOL = "XAUUSD"
 COMMENT_PREFIX = "RIOGOLDV14"
 
@@ -53,6 +54,9 @@ MAX_SPREAD = 0.50
 MAX_FORWARD_DRIFT_ATR = 0.40
 MAX_ADVERSE_DRIFT_ATR = 0.18
 
+BATCH_MAX_FORWARD_ATR = 0.55
+BATCH_MAX_ADVERSE_ATR = 0.25
+
 M1_MAX_EMA9_DISTANCE_ATR = 0.85
 LIVE_EMA9_TOLERANCE_ATR = 0.08
 
@@ -66,7 +70,6 @@ FAST_MIN_BODY_RATIO = 0.30
 FAST_BREAK_BUFFER_ATR = 0.03
 FAST_CLOSE_POSITION_MIN = 0.60
 
-# Faster M5 direction, but still requires EMA trend.
 M5_SLOPE_BARS = 2
 M5_MIN_SLOPE_ATR = 0.02
 
@@ -81,10 +84,8 @@ MAX_SL_ATR_MULT = 3.50
 
 BE1_TRIGGER_RR = 0.35
 BE1_LOCK_DISTANCE = 0.15
-
 BE2_TRIGGER_RR = 0.40
 BE2_LOCK_RR = 0.22
-
 BE3_TRIGGER_RR = 0.60
 BE3_LOCK_RR = 0.38
 
@@ -158,7 +159,8 @@ def default_state():
         "setup_released": True,
         "batch_be_stage": 0,
         "order_uncertain": False,
-        "halted": False
+        "halted": False,
+        "batch_in_progress": False
     }
 
 
@@ -196,6 +198,10 @@ def load_state():
             traceback.format_exc(),
             flush=True
         )
+        state["halted"] = True
+        state["order_uncertain"] = True
+
+    if state["batch_in_progress"]:
         state["halted"] = True
         state["order_uncertain"] = True
 
@@ -451,10 +457,6 @@ def build_tf(candles, minutes):
     )
 
 
-# =====================================================
-# M15 - INFORMATION ONLY
-# =====================================================
-
 def m15_direction(candles):
 
     bars = build_tf(candles, 15)
@@ -482,11 +484,6 @@ def m15_direction(candles):
     return None
 
 
-# =====================================================
-# V14.17 - FASTER M5 TREND
-# No mandatory same-direction candle.
-# =====================================================
-
 def m5_direction(candles):
 
     bars = build_tf(candles, 5)
@@ -501,7 +498,6 @@ def m5_direction(candles):
 
     current = bars[-1]
 
-    # Require recent M5 candles to be continuous.
     if (
         parse_time(bars[-1]["time"])
         - parse_time(bars[-2]["time"])
@@ -537,10 +533,6 @@ def m5_direction(candles):
 
     return None
 
-
-# =====================================================
-# V14.17 - M1 FAST SCALP / RETEST
-# =====================================================
 
 def m1_trigger(candles, side, atr):
 
@@ -876,25 +868,13 @@ def get_levels(side, entry, anchor, atr, market):
     )
 
     if side == "BUY":
-
-        desired_sl = (
-            anchor - atr * SL_SWING_BUFFER_ATR
-        )
-
+        desired_sl = anchor - atr * SL_SWING_BUFFER_ATR
         structural_risk = entry - desired_sl
-
     else:
-
-        desired_sl = (
-            anchor + atr * SL_SWING_BUFFER_ATR
-        )
-
+        desired_sl = anchor + atr * SL_SWING_BUFFER_ATR
         structural_risk = desired_sl - entry
 
-    risk = max(
-        structural_risk,
-        minimum_risk
-    )
+    risk = max(structural_risk, minimum_risk)
 
     if risk <= 0 or risk > maximum_risk:
         return None
@@ -1010,7 +990,6 @@ def reconcile_state(state, all_positions):
     known_ids = set(state["positions"])
 
     for pid in known_ids - active_ids:
-
         state["positions"].pop(pid, None)
         state["last_trade_time"] = time.time()
 
@@ -1041,16 +1020,13 @@ def update_setup_lock(state, candles, atr):
     last_close = closes[-1]
 
     if side == "BUY":
-
         reset = (
             last_close <= ema20
             or last_close <= (
                 reference - atr * NEW_SETUP_RELEASE_ATR
             )
         )
-
     else:
-
         reset = (
             last_close >= ema20
             or last_close >= (
@@ -1059,12 +1035,10 @@ def update_setup_lock(state, candles, atr):
         )
 
     if reset:
-
         state["locked_side"] = None
         state["locked_reference"] = None
         state["setup_released"] = True
         state["last_signal"] = None
-
         save_state(state)
 
 
@@ -1129,8 +1103,8 @@ async def protect_positions(
         save_state(state)
 
         notify(
-            f"RIO GOLD {VERSION} SHARED BE"
-            f"{current_stage} TRIGGERED\n"
+            f"RIO GOLD {VERSION} "
+            f"SHARED BE{current_stage}\n"
             f"WEAKEST: {weakest_rr:.2f}R"
         )
 
@@ -1145,7 +1119,6 @@ async def protect_positions(
         info = state["positions"][pid]
 
         side = position_side(position)
-
         entry = float(position["openPrice"])
         risk = float(info["risk"])
 
@@ -1231,6 +1204,122 @@ async def protect_positions(
             )
 
 
+def batch_price_allowed(
+    side, entry, signal, atr, market
+):
+
+    direction = 1 if side == "BUY" else -1
+
+    drift = direction * (
+        entry - signal["close"]
+    )
+
+    if drift > BATCH_MAX_FORWARD_ATR * atr:
+        return False, "FORWARD DRIFT"
+
+    if drift < -BATCH_MAX_ADVERSE_ATR * atr:
+        return False, "ADVERSE DRIFT"
+
+    spread = market["ask"] - market["bid"]
+
+    if spread > MAX_SPREAD:
+        return False, "SPREAD"
+
+    return True, "OK"
+
+
+async def verify_batch_positions(
+    connection,
+    previous_ids,
+    side,
+    attempts=12
+):
+
+    found = []
+
+    for attempt in range(attempts):
+
+        positions = await get_positions(connection)
+
+        found = [
+            p for p in positions
+            if (
+                is_managed(p)
+                and str(p["id"]) not in previous_ids
+                and position_side(p) == side
+            )
+        ]
+
+        if len(found) >= BATCH_SIZE:
+            break
+
+        await asyncio.sleep(0.5)
+
+    return found
+
+
+async def reconcile_failed_batch(
+    connection,
+    state,
+    previous_ids,
+    side,
+    sent,
+    reason,
+    uncertain
+):
+
+    try:
+
+        found = await verify_batch_positions(
+            connection,
+            previous_ids,
+            side
+        )
+
+        adopt_positions(state, found)
+
+        state["last_trade_time"] = time.time()
+        state["batch_in_progress"] = False
+
+        if uncertain:
+            state["halted"] = True
+            state["order_uncertain"] = True
+        else:
+            state["halted"] = False
+            state["order_uncertain"] = False
+
+        save_state(state)
+
+        notify(
+            f"RIO GOLD {VERSION} "
+            "BATCH INTERRUPTED\n"
+            f"SENT: {sent}/{BATCH_SIZE}\n"
+            f"OPEN NOW: {len(found)}\n"
+            f"REASON: {reason[:150]}\n"
+            + (
+                "MANUAL REVIEW REQUIRED"
+                if uncertain
+                else
+                "NO AUTOMATIC TOP-UP"
+            )
+        )
+
+    except Exception as e:
+
+        state["halted"] = True
+        state["order_uncertain"] = True
+        state["batch_in_progress"] = True
+
+        save_state(state)
+
+        notify(
+            f"RIO GOLD {VERSION} "
+            "BATCH VERIFICATION FAILED\n"
+            f"{str(e)[:150]}\n"
+            "CHECK MT5 POSITIONS MANUALLY"
+        )
+
+
 async def open_batch(
     connection,
     state,
@@ -1240,7 +1329,11 @@ async def open_batch(
     atr
 ):
 
-    if state["halted"] or state["order_uncertain"]:
+    if (
+        state["halted"]
+        or state["order_uncertain"]
+        or state["batch_in_progress"]
+    ):
         return
 
     if (
@@ -1350,12 +1443,15 @@ async def open_batch(
     state["locked_side"] = side
     state["locked_reference"] = signal["close"]
     state["setup_released"] = False
-    state["order_uncertain"] = True
+    state["order_uncertain"] = False
+    state["batch_in_progress"] = True
     state["batch_be_stage"] = 0
 
     save_state(state)
 
     sent = 0
+    uncertain = False
+    reason = None
 
     try:
 
@@ -1363,11 +1459,8 @@ async def open_batch(
 
             for _ in range(count):
 
-                live_market = await get_market(connection)
-
-                live_spread = (
-                    live_market["ask"]
-                    - live_market["bid"]
+                live_market = await get_market(
+                    connection
                 )
 
                 live_entry = (
@@ -1376,26 +1469,17 @@ async def open_batch(
                     else live_market["bid"]
                 )
 
-                live_drift = direction * (
-                    live_entry - signal["close"]
+                allowed, why = batch_price_allowed(
+                    side,
+                    live_entry,
+                    signal,
+                    atr,
+                    live_market
                 )
 
-                live_ema_distance = direction * (
-                    live_entry - signal["ema9"]
-                )
-
-                if (
-                    live_spread > MAX_SPREAD
-                    or live_drift > MAX_FORWARD_DRIFT_ATR * atr
-                    or live_drift < -MAX_ADVERSE_DRIFT_ATR * atr
-                    or live_ema_distance
-                    < -LIVE_EMA9_TOLERANCE_ATR * atr
-                    or live_ema_distance
-                    > M1_MAX_EMA9_DISTANCE_ATR * atr
-                ):
-                    raise RuntimeError(
-                        "MARKET MOVED DURING BATCH"
-                    )
+                if not allowed:
+                    reason = "MARKET MOVED: " + why
+                    break
 
                 sl = levels["sl"]
                 tp = levels["tps"][group_name]
@@ -1403,9 +1487,10 @@ async def open_batch(
                 if not validate_market_levels(
                     side, sl, tp, live_market
                 ):
-                    raise RuntimeError(
+                    reason = (
                         "SL/TP INVALID DURING BATCH"
                     )
+                    break
 
                 comment = (
                     f"{COMMENT_PREFIX}_"
@@ -1415,85 +1500,110 @@ async def open_batch(
 
                 options = {"comment": comment}
 
-                if side == "BUY":
+                try:
 
-                    result = await meta_call(
-                        lambda sl=sl, tp=tp,
-                               options=options:
-                        connection.create_market_buy_order(
-                            SYMBOL,
-                            LOT_SIZE,
-                            sl,
-                            tp,
-                            options
-                        ),
-                        timeout=ORDER_TIMEOUT,
-                        retries=1
+                    if side == "BUY":
+
+                        result = await meta_call(
+                            lambda sl=sl, tp=tp,
+                                   options=options:
+                            connection.create_market_buy_order(
+                                SYMBOL,
+                                LOT_SIZE,
+                                sl,
+                                tp,
+                                options
+                            ),
+                            timeout=ORDER_TIMEOUT,
+                            retries=1
+                        )
+
+                    else:
+
+                        result = await meta_call(
+                            lambda sl=sl, tp=tp,
+                                   options=options:
+                            connection.create_market_sell_order(
+                                SYMBOL,
+                                LOT_SIZE,
+                                sl,
+                                tp,
+                                options
+                            ),
+                            timeout=ORDER_TIMEOUT,
+                            retries=1
+                        )
+
+                except Exception as e:
+
+                    uncertain = True
+                    reason = (
+                        "ORDER RESPONSE UNCERTAIN: "
+                        + str(e)[:150]
                     )
-
-                else:
-
-                    result = await meta_call(
-                        lambda sl=sl, tp=tp,
-                               options=options:
-                        connection.create_market_sell_order(
-                            SYMBOL,
-                            LOT_SIZE,
-                            sl,
-                            tp,
-                            options
-                        ),
-                        timeout=ORDER_TIMEOUT,
-                        retries=1
-                    )
+                    break
 
                 sent += 1
 
                 print(
-                    f"ORDER {sent}/{BATCH_SIZE} SENT",
+                    f"ORDER {sent}/{BATCH_SIZE} CONFIRMED",
                     result,
                     flush=True
                 )
 
-        new_positions = []
-
-        for attempt in range(16):
-
-            current_positions = await get_positions(
-                connection
-            )
-
-            new_positions = [
-                p for p in current_positions
-                if (
-                    is_managed(p)
-                    and str(p["id"]) not in previous_ids
-                    and position_side(p) == side
-                )
-            ]
-
-            if len(new_positions) >= BATCH_SIZE:
+            if reason:
                 break
 
-            await asyncio.sleep(0.5)
+        if reason:
+
+            await reconcile_failed_batch(
+                connection,
+                state,
+                previous_ids,
+                side,
+                sent,
+                reason,
+                uncertain
+            )
+            return
+
+        new_positions = await verify_batch_positions(
+            connection,
+            previous_ids,
+            side
+        )
 
         adopt_positions(state, new_positions)
 
+        state["last_trade_time"] = time.time()
+
         if len(new_positions) != BATCH_SIZE:
-            raise RuntimeError(
-                "BATCH NOT FULLY VERIFIED: "
-                f"{len(new_positions)}/{BATCH_SIZE}"
+
+            state["halted"] = True
+            state["order_uncertain"] = True
+            state["batch_in_progress"] = False
+
+            save_state(state)
+
+            notify(
+                f"RIO GOLD {VERSION} "
+                "BATCH VERIFICATION MISMATCH\n"
+                f"SENT: {sent}/{BATCH_SIZE}\n"
+                f"OPEN NOW: {len(new_positions)}\n"
+                "CHECK MT5 MANUALLY"
             )
+            return
 
         state["order_uncertain"] = False
         state["halted"] = False
-        state["last_trade_time"] = time.time()
+        state["batch_in_progress"] = False
 
         save_state(state)
 
         notify(
             f"RIO GOLD {VERSION} BATCH VERIFIED\n"
             f"{BATCH_SIZE}/{BATCH_SIZE} POSITIONS\n"
+            f"SIDE: {side}\n"
             f"LOT EACH: {LOT_SIZE:.2f}\n"
             f"TOTAL LOT: {BATCH_SIZE * LOT_SIZE:.2f}\n"
             "TP1: 10 x 0.60R\n"
@@ -1509,16 +1619,14 @@ async def open_batch(
             flush=True
         )
 
-        state["halted"] = True
-        state["order_uncertain"] = True
-
-        save_state(state)
-
-        notify(
-            f"RIO GOLD {VERSION} BATCH HALTED\n"
-            f"SENT: {sent}/{BATCH_SIZE}\n"
-            f"ERROR: {str(e)[:180]}\n"
-            "CHECK OPEN POSITIONS MANUALLY"
+        await reconcile_failed_batch(
+            connection,
+            state,
+            previous_ids,
+            side,
+            sent,
+            str(e),
+            True
         )
 
 
@@ -1566,7 +1674,7 @@ async def bot_session(state):
             "M5 FAST TREND: ACTIVE\n"
             "M1 FAST SCALP: ACTIVE\n"
             "M1 FAST RETEST: ACTIVE\n"
-            "NO CHASE: ACTIVE\n"
+            "BATCH FIX: ACTIVE\n"
             "SHARED BE: ACTIVE\n"
             f"{BATCH_SIZE} x {LOT_SIZE:.2f} LOT\n"
             f"LIVE: {ENABLE_TRADING}"
@@ -1608,6 +1716,7 @@ async def bot_session(state):
                 if (
                     state["halted"]
                     or state["order_uncertain"]
+                    or state["batch_in_progress"]
                 ):
 
                     print(
@@ -1651,7 +1760,6 @@ async def bot_session(state):
                 )
 
                 m15_side = m15_direction(candles)
-
                 side = m5_direction(candles)
 
                 if not side:
@@ -1757,7 +1865,7 @@ async def main():
 
     telegram(
         f"RIOBOT GOLD {VERSION} START\n"
-        "FAST SCALP V14.17 ACTIVE\n"
+        "FAST SCALP + LIVE BATCH FIX\n"
         "M15 INFORMATION ONLY\n"
         "M5 FAST TREND\n"
         "M1 FAST SCALP + FAST RETEST\n"
