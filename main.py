@@ -12,11 +12,12 @@ from metaapi_cloud_sdk import MetaApi
 
 
 # =====================================================
-# RIOBOT GOLD V14.16 - FAST SCALP
-# M5 TREND + M1 FAST ENTRY + SHARED BE
+# RIOBOT GOLD V14.17 - FAST SCALP
+# M5 DIRECTION + M1 MOMENTUM / RETEST
+# SHARED BE / 20 POSITIONS
 # =====================================================
 
-VERSION = "V14.16"
+VERSION = "V14.17"
 SYMBOL = "XAUUSD"
 COMMENT_PREFIX = "RIOGOLDV14"
 
@@ -30,7 +31,6 @@ TP_GROUPS = [
     ("TP3", 5, 1.20),
 ]
 
-# REAL TRADING
 ENABLE_TRADING = True
 
 LOOP_SECONDS = 2
@@ -62,9 +62,13 @@ M1_MIN_BODY_RATIO = 0.25
 M1_MIN_WICK_RATIO = 0.12
 MAX_M1_RANGE_ATR = 2.20
 
-FAST_MIN_BODY_RATIO = 0.35
-FAST_BREAK_BUFFER_ATR = 0.05
-FAST_CLOSE_POSITION_MIN = 0.65
+FAST_MIN_BODY_RATIO = 0.30
+FAST_BREAK_BUFFER_ATR = 0.03
+FAST_CLOSE_POSITION_MIN = 0.60
+
+# Faster M5 direction, but still requires EMA trend.
+M5_SLOPE_BARS = 2
+M5_MIN_SLOPE_ATR = 0.02
 
 SL_SWING_LOOKBACK = 16
 SL_FALLBACK_BARS = 10
@@ -479,7 +483,8 @@ def m15_direction(candles):
 
 
 # =====================================================
-# M5 - MAIN TREND
+# V14.17 - FASTER M5 TREND
+# No mandatory same-direction candle.
 # =====================================================
 
 def m5_direction(candles):
@@ -495,21 +500,38 @@ def m5_direction(candles):
     e20 = ema_series(closes, 20)
 
     current = bars[-1]
-    previous = bars[-2]
+
+    # Require recent M5 candles to be continuous.
+    if (
+        parse_time(bars[-1]["time"])
+        - parse_time(bars[-2]["time"])
+    ).total_seconds() != 300:
+        return None
+
+    slope = e9[-1] - e9[-1 - M5_SLOPE_BARS]
+
+    recent_ranges = [
+        b["high"] - b["low"]
+        for b in bars[-14:]
+    ]
+
+    average_range = (
+        sum(recent_ranges) / len(recent_ranges)
+    )
+
+    minimum_slope = (
+        average_range * M5_MIN_SLOPE_ATR
+    )
 
     if (
         current["close"] > e9[-1] > e20[-1]
-        and e9[-1] > e9[-2]
-        and current["close"] > current["open"]
-        and current["close"] > previous["close"]
+        and slope > minimum_slope
     ):
         return "BUY"
 
     if (
         current["close"] < e9[-1] < e20[-1]
-        and e9[-1] < e9[-2]
-        and current["close"] < current["open"]
-        and current["close"] < previous["close"]
+        and slope < -minimum_slope
     ):
         return "SELL"
 
@@ -517,7 +539,7 @@ def m5_direction(candles):
 
 
 # =====================================================
-# M1 - FAST SCALP ENTRY
+# V14.17 - M1 FAST SCALP / RETEST
 # =====================================================
 
 def m1_trigger(candles, side, atr):
@@ -527,7 +549,6 @@ def m1_trigger(candles, side, atr):
 
     current = candles[-1]
     previous = candles[-2]
-    previous2 = candles[-3]
 
     rng = current["high"] - current["low"]
 
@@ -591,10 +612,6 @@ def m1_trigger(candles, side, atr):
             close_position >= FAST_CLOSE_POSITION_MIN
         )
 
-        previous_momentum = (
-            previous["close"] >= previous2["close"]
-        )
-
     else:
 
         breakout = (
@@ -608,17 +625,11 @@ def m1_trigger(candles, side, atr):
             )
         )
 
-        previous_momentum = (
-            previous["close"] <= previous2["close"]
-        )
-
     if (
         body >= FAST_MIN_BODY_RATIO
         and breakout
         and strong_close
-        and previous_momentum
     ):
-
         return {
             "mode": "FAST SCALP",
             "close": current["close"],
@@ -651,10 +662,7 @@ def m1_trigger(candles, side, atr):
 
         momentum = (
             current["close"] > previous["close"]
-            and (
-                current["high"] > previous["high"]
-                or body >= 0.45
-            )
+            and current["high"] > previous["high"]
         )
 
         lower_wick = (
@@ -676,10 +684,7 @@ def m1_trigger(candles, side, atr):
 
         momentum = (
             current["close"] < previous["close"]
-            and (
-                current["low"] < previous["low"]
-                or body >= 0.45
-            )
+            and current["low"] < previous["low"]
         )
 
         upper_wick = (
@@ -697,7 +702,6 @@ def m1_trigger(candles, side, atr):
         and retest_found
         and (momentum or wick_confirm)
     ):
-
         return {
             "mode": "FAST RETEST",
             "close": current["close"],
@@ -1559,7 +1563,7 @@ async def bot_session(state):
         notify(
             f"RIO GOLD {VERSION} CONNECTED\n"
             "M15: INFORMATION ONLY\n"
-            "M5 TREND: ACTIVE\n"
+            "M5 FAST TREND: ACTIVE\n"
             "M1 FAST SCALP: ACTIVE\n"
             "M1 FAST RETEST: ACTIVE\n"
             "NO CHASE: ACTIVE\n"
@@ -1646,15 +1650,13 @@ async def bot_session(state):
                     state, candles, atr
                 )
 
-                # M15 ONLY CONTEXT
                 m15_side = m15_direction(candles)
 
-                # M5 IS MAIN TREND
                 side = m5_direction(candles)
 
                 if not side:
                     print(
-                        "WAIT: M5 TREND NOT READY",
+                        "WAIT: M5 FAST TREND NOT READY",
                         flush=True
                     )
                     continue
@@ -1665,7 +1667,7 @@ async def bot_session(state):
 
                 if not signal:
                     print(
-                        "WAIT: M1 FAST ENTRY NOT READY",
+                        "WAIT: M1 FAST SCALP NOT READY",
                         side,
                         flush=True
                     )
@@ -1755,9 +1757,9 @@ async def main():
 
     telegram(
         f"RIOBOT GOLD {VERSION} START\n"
-        "FAST SCALP ACTIVE\n"
+        "FAST SCALP V14.17 ACTIVE\n"
         "M15 INFORMATION ONLY\n"
-        "M5 MAIN TREND\n"
+        "M5 FAST TREND\n"
         "M1 FAST SCALP + FAST RETEST\n"
         "NO CHASE ACTIVE\n"
         "BROKER SL/TP CHECK ACTIVE\n"
